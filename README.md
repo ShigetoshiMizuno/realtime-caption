@@ -17,14 +17,21 @@ Python のインストールは不要です（Embeddable Python を同梱）。
 
 ## セットアップ（初回のみ）
 
-### 1. config.yaml に API キーを設定
+### 1. config.yaml を作成して API キーを設定
 
-`config.yaml` を開き、`api_key` に OpenAI API キーを入力してください。
+`config.yaml.example` をコピーして `config.yaml` にリネームし、`api_key` に OpenAI API キーを入力してください。
+
+```bat
+copy config.yaml.example config.yaml
+```
 
 ```yaml
 openai:
-  api_key: "sk-xxxxxxxxxxxxxxxxxxxx"  # ここを書き換える
+  api_key: "sk-xxxxxxxxxxxxxxxxxxxx"  # ここを自分の API キーに書き換える
 ```
+
+OpenAI API キーは [platform.openai.com](https://platform.openai.com/api-keys) から取得できます。
+API の利用には従量課金が発生します（翻訳1文あたり約 $0.001 程度）。
 
 ### 2. setup.bat を実行
 
