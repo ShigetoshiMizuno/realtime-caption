@@ -1,0 +1,17 @@
+openai:
+  api_key: "sk-xxxxxxxxxxxxxxxxxxxx"  # ここに OpenAI API キーを入力
+
+translation:
+  target_language: "日本語"
+  system_prompt: "与えられたテキストを自然な{target_language}に翻訳してください。翻訳結果のみ返してください。"
+
+whisper:
+  model: "small"   # small または medium
+  language: "en"   # 入力言語コード（自動検出にする場合は null）
+
+websocket:
+  host: "localhost"
+  port: 8765
+
+output:
+  log_dir: "."  # 翻訳ログの出力ディレクトリ（YYYY-MM-DD-n_translate.txt を自動生成）

@@ -1,0 +1,148 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>字幕オーバーレイ</title>
+  <style>
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+
+    body {
+      width: 1920px;
+      height: 1080px;
+      background: transparent;
+      overflow: hidden;
+      font-family: "Noto Sans JP", "Hiragino Kaku Gothic ProN", "Meiryo", sans-serif;
+    }
+
+    #subtitle-container {
+      position: absolute;
+      bottom: 60px;
+      left: 0;
+      right: 0;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 8px;
+      padding: 0 80px;
+      opacity: 0;
+      transition: opacity 0.4s ease-in-out;
+    }
+
+    #subtitle-container.visible {
+      opacity: 1;
+    }
+
+    .subtitle-box {
+      background: rgba(0, 0, 0, 0.65);
+      border-radius: 8px;
+      padding: 12px 24px;
+      max-width: 100%;
+      text-align: center;
+    }
+
+    #original-text {
+      color: #cccccc;
+      font-size: 22px;
+      line-height: 1.4;
+      font-weight: 400;
+    }
+
+    #translated-text {
+      color: #ffffff;
+      font-size: 36px;
+      line-height: 1.4;
+      font-weight: 700;
+      text-shadow: 1px 1px 3px rgba(0, 0, 0, 0.8);
+    }
+
+    #status {
+      position: absolute;
+      top: 20px;
+      right: 20px;
+      width: 12px;
+      height: 12px;
+      border-radius: 50%;
+      background: #ff4444;
+    }
+
+    #status.connected {
+      background: #44ff44;
+    }
+  </style>
+</head>
+<body>
+  <div id="status"></div>
+
+  <div id="subtitle-container">
+    <div class="subtitle-box">
+      <div id="original-text"></div>
+    </div>
+    <div class="subtitle-box">
+      <div id="translated-text"></div>
+    </div>
+  </div>
+
+  <script>
+    // config.yaml の websocket.port を変更した場合はこの値も合わせて変更すること
+    const WS_URL = "ws://localhost:8765";
+    const FADE_OUT_DELAY = 5000;
+
+    const container = document.getElementById("subtitle-container");
+    const originalText = document.getElementById("original-text");
+    const translatedText = document.getElementById("translated-text");
+    const statusIndicator = document.getElementById("status");
+
+    let fadeOutTimer = null;
+
+    function showSubtitle(original, translated) {
+      originalText.textContent = original;
+      translatedText.textContent = translated;
+
+      container.classList.add("visible");
+
+      if (fadeOutTimer) {
+        clearTimeout(fadeOutTimer);
+      }
+
+      fadeOutTimer = setTimeout(() => {
+        container.classList.remove("visible");
+      }, FADE_OUT_DELAY);
+    }
+
+    function connect() {
+      const ws = new WebSocket(WS_URL);
+
+      ws.addEventListener("open", () => {
+        statusIndicator.classList.add("connected");
+      });
+
+      ws.addEventListener("message", (event) => {
+        try {
+          const data = JSON.parse(event.data);
+          if (data.original !== undefined && data.translated !== undefined) {
+            showSubtitle(data.original, data.translated);
+          }
+        } catch (e) {
+          console.error("メッセージのパースに失敗:", e);
+        }
+      });
+
+      ws.addEventListener("close", () => {
+        statusIndicator.classList.remove("connected");
+        setTimeout(connect, 3000);
+      });
+
+      ws.addEventListener("error", () => {
+        ws.close();
+      });
+    }
+
+    connect();
+  </script>
+</body>
+</html>

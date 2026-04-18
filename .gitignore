@@ -1,0 +1,25 @@
+# APIキーを含む設定ファイル（絶対にコミットしない）
+config.yaml
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.venv/
+venv/
+
+# Embeddable Python（大容量・setup.bat で自動インストール）
+python/
+
+# AIモデルキャッシュ（大容量・setup.bat で自動ダウンロード）
+models/
+*.bin
+*.pt
+
+# ログファイル
+*_translate.txt
+*.log
+
+# その他
+*.docx
+新規*
