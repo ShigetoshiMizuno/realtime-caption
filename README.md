@@ -48,7 +48,7 @@ Double-click `setup.bat`. The following will be installed automatically:
 - Required Python packages
 - Whisper and Silero VAD models (into the `models/` folder)
 
-This takes a few minutes to complete.
+> **Note:** Setup downloads approximately **2.5 GB** in total (Python ~10 MB, packages ~2 GB, Whisper small model ~500 MB). A stable internet connection is recommended. Estimated time: 10–30 minutes depending on your connection speed.
 
 ---
 
@@ -184,7 +184,7 @@ API の利用には従量課金が発生します（翻訳1文あたり約 $0.00
 - 必要パッケージ一式
 - Whisper・Silero VAD モデル（`models/` フォルダへ）
 
-完了まで数分〜10分程度かかります。
+> **注意:** セットアップ時のダウンロード総量は約 **2.5 GB** です（Python 約10 MB・パッケージ類 約2 GB・Whisper small モデル 約500 MB）。安定したインターネット接続を推奨します。回線速度によって完了まで 10〜30 分程度かかります。
 
 ---
 
