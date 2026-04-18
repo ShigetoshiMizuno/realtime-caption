@@ -1,0 +1,5 @@
+# Force CRLF for Windows batch files (cmd.exe requires CRLF)
+*.bat text eol=crlf
+
+# Default: LF for everything else
+* text=auto
