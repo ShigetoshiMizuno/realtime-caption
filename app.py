@@ -333,7 +333,7 @@ def _build_gui():
     if font:
         dpg.bind_font(font)
 
-    dpg.create_viewport(title="Realtime Caption & Translation", width=900, height=650, resizable=False)
+    dpg.create_viewport(title="Realtime Caption & Translation", width=960, height=680, resizable=True)
     dpg.setup_dearpygui()
 
     rpc_port = _config.get("rpc", {}).get("port", 8767)
@@ -352,38 +352,41 @@ def _build_gui():
     with dpg.window(tag="main_window", no_title_bar=True, no_resize=True,
                     no_move=True, no_scrollbar=True):
 
-        # --- ツールバー 1行目: デバイス・モデル・Start ---
+        # --- ツールバー 1行目: デバイス ---
         with dpg.group(horizontal=True):
             dpg.add_text("Device:")
             dpg.add_combo(
                 tag=TAG_DEVICE_COMBO,
                 items=device_labels,
                 default_value=default_device,
-                width=450,
+                width=-1,
             )
-            dpg.add_text("  Model:")
+
+        # --- ツールバー 2行目: モデル・翻訳エンジン・Start ---
+        with dpg.group(horizontal=True):
+            dpg.add_text("Model:")
             dpg.add_combo(
                 tag=TAG_MODEL_COMBO,
                 items=["small", "medium"],
                 default_value=default_model if default_model in ["small", "medium"] else "small",
-                width=100,
+                width=120,
             )
             dpg.add_text("  Trans:")
             dpg.add_combo(
                 tag=TAG_TRANS_COMBO,
                 items=trans_models if trans_models else ["(no key)"],
                 default_value=default_trans if trans_models else "(no key)",
-                width=90,
+                width=120,
                 enabled=len(trans_models) > 1,
             )
-            dpg.add_button(tag=TAG_START_BTN, label="Start", width=100,
+            dpg.add_button(tag=TAG_START_BTN, label="Start", width=120,
                            callback=_on_start_stop_click,
                            enabled=bool(trans_models))
 
         dpg.add_separator()
 
-        # --- ログエリア ---
-        with dpg.child_window(tag=TAG_LOG_SCROLL, height=520, border=True,
+        # --- ログエリア（ウィンドウ高さに追従） ---
+        with dpg.child_window(tag=TAG_LOG_SCROLL, height=-40, border=True,
                                autosize_x=True):
             with dpg.group(tag=TAG_LOG_GROUP):
                 pass
