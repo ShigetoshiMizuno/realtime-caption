@@ -214,11 +214,13 @@ class TranslationService:
 class CaptionSystem:
     """文字起こし・翻訳・WebSocket 配信を統合管理するクラス。"""
 
-    def __init__(self, config: dict, device_info: dict, model_name: str, on_result=None):
+    def __init__(self, config: dict, device_info: dict, model_name: str,
+                 on_result=None, on_ready=None):
         self._config = config
         self._device_info = device_info
         self._model_name = model_name
         self._on_result = on_result  # callable(original: str, translated: str) | None
+        self._on_ready = on_ready    # callable() | None — モデル準備完了時に呼ばれる
 
         self._translator = TranslationService(config)
         self._broadcaster = SubtitleBroadcaster()
@@ -380,7 +382,9 @@ class CaptionSystem:
             capture_thread = threading.Thread(target=self._loopback_capture_thread, daemon=True)
             capture_thread.start()
 
-        print("\n[INFO] 録音を開始しました。Ctrl+C で終了します。\n")
+        print("\n[INFO] 録音を開始しました。\n")
+        if self._on_ready:
+            self._on_ready()
         try:
             while not self._stop_event.is_set():
                 self._recorder.text(self._on_transcription)

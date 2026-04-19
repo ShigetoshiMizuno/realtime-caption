@@ -115,6 +115,9 @@ def _drain_queue():
         if cmd == "append_log":
             _append_log_item(item["ts"], item["original"], item["translated"])
 
+        elif cmd == "set_status":
+            dpg.set_value(TAG_STATUS_STATE, item["text"])
+
         elif cmd == "set_running":
             global _is_running
             _is_running = item["value"]
@@ -177,7 +180,15 @@ def _do_start(device_index: int | None = None, model: str | None = None):
         print(f"[{ts}] EN: {original}")
         print(f"       JP: {translated}")
 
-    _system = CaptionSystem(_config, device_info, model_name, on_result=on_result)
+    def on_ready():
+        _enqueue("set_running", value=True)
+
+    _system = CaptionSystem(_config, device_info, model_name,
+                            on_result=on_result, on_ready=on_ready)
+
+    dpg.configure_item(TAG_START_BTN, label="Stop")
+    _enqueue("set_status", text=f"⏳ モデル読み込み中... ({model_name})")
+    print(f"[INFO] Whisper {model_name} モデルを読み込んでいます。しばらくお待ちください...")
 
     def run_in_thread():
         asyncio.run(_system.run())
@@ -185,7 +196,6 @@ def _do_start(device_index: int | None = None, model: str | None = None):
 
     _system_thread = threading.Thread(target=run_in_thread, daemon=True)
     _system_thread.start()
-    _enqueue("set_running", value=True)
 
 
 def _do_stop():

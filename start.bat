@@ -59,6 +59,7 @@ if exist "%PYTHON_DIR%\python.exe" (
 
 :: --- launch ---
 echo Starting...
+echo   (GUI の起動に 10〜30 秒かかることがあります。しばらくお待ちください)
 echo.
 if "%1"=="--cli" (
     %PYTHON_DIR%\python.exe main.py
