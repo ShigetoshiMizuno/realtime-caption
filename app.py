@@ -86,6 +86,7 @@ _rpc_server: HTTPServer | None = None
 TAG_DEVICE_COMBO = "device_combo"
 TAG_MODEL_COMBO = "model_combo"
 TAG_START_BTN = "start_btn"
+TAG_TRANS_COMBO = "trans_combo"
 TAG_LOG_GROUP = "log_group"
 TAG_LOG_SCROLL = "log_scroll"
 TAG_STATUS_DEVICE = "status_device"
@@ -179,6 +180,11 @@ def _do_start(device_index: int | None = None, model: str | None = None):
         _enqueue("append_log", ts=ts, original=original, translated=translated)
         print(f"[{ts}] EN: {original}")
         print(f"       JP: {translated}")
+
+    # GUI で選択した翻訳エンジンを config に反映
+    selected_trans = dpg.get_value(TAG_TRANS_COMBO)
+    if selected_trans in ("openai", "deepl"):
+        _config.setdefault("translation", {})["translation_model"] = selected_trans
 
     def on_ready():
         _enqueue("set_running", value=True)
@@ -293,6 +299,18 @@ def _start_rpc_server(port: int):
 # GUI 構築
 # ---------------------------------------------------------------------------
 
+def _available_trans_models(cfg: dict) -> list[str]:
+    """有効な API キーが設定されている翻訳エンジンだけリストで返す。"""
+    result = []
+    openai_key = cfg.get("openai", {}).get("api_key", "")
+    if openai_key and "xxx" not in openai_key and openai_key != "your-api-key-here":
+        result.append("openai")
+    deepl_key = cfg.get("deepl", {}).get("api_key", "")
+    if deepl_key and "xxx" not in deepl_key and deepl_key != "your-deepl-key-here":
+        result.append("deepl")
+    return result
+
+
 def _load_japanese_font(size: int = 16) -> int | None:
     candidates = [
         "C:/Windows/Fonts/meiryo.ttc",
@@ -320,6 +338,10 @@ def _build_gui():
 
     rpc_port = _config.get("rpc", {}).get("port", 8767)
     default_model = _config.get("whisper", {}).get("model", "small")
+    trans_models = _available_trans_models(_config)
+    default_trans = _config.get("translation", {}).get("translation_model", "openai").lower()
+    if default_trans not in trans_models:
+        default_trans = trans_models[0] if trans_models else "openai"
 
     device_labels = [_device_label(d) for d in _devices]
     default_device = next(
@@ -330,14 +352,14 @@ def _build_gui():
     with dpg.window(tag="main_window", no_title_bar=True, no_resize=True,
                     no_move=True, no_scrollbar=True):
 
-        # --- ツールバー ---
+        # --- ツールバー 1行目: デバイス・モデル・Start ---
         with dpg.group(horizontal=True):
             dpg.add_text("Device:")
             dpg.add_combo(
                 tag=TAG_DEVICE_COMBO,
                 items=device_labels,
                 default_value=default_device,
-                width=480,
+                width=450,
             )
             dpg.add_text("  Model:")
             dpg.add_combo(
@@ -346,13 +368,22 @@ def _build_gui():
                 default_value=default_model if default_model in ["small", "medium"] else "small",
                 width=100,
             )
-            dpg.add_button(tag=TAG_START_BTN, label="Start", width=120,
-                           callback=_on_start_stop_click)
+            dpg.add_text("  Trans:")
+            dpg.add_combo(
+                tag=TAG_TRANS_COMBO,
+                items=trans_models if trans_models else ["(no key)"],
+                default_value=default_trans if trans_models else "(no key)",
+                width=90,
+                enabled=len(trans_models) > 1,
+            )
+            dpg.add_button(tag=TAG_START_BTN, label="Start", width=100,
+                           callback=_on_start_stop_click,
+                           enabled=bool(trans_models))
 
         dpg.add_separator()
 
         # --- ログエリア ---
-        with dpg.child_window(tag=TAG_LOG_SCROLL, height=530, border=True,
+        with dpg.child_window(tag=TAG_LOG_SCROLL, height=520, border=True,
                                autosize_x=True):
             with dpg.group(tag=TAG_LOG_GROUP):
                 pass
