@@ -163,26 +163,52 @@ class SubtitleBroadcaster:
             )
 
 
-class TranslationService:
-    """OpenAI API を使って翻訳を行う。"""
+_DEEPL_LANG_MAP = {
+    "日本語": "JA", "japanese": "JA",
+    "英語": "EN-US", "english": "EN-US",
+    "中国語": "ZH", "chinese": "ZH",
+    "韓国語": "KO", "korean": "KO",
+    "ドイツ語": "DE", "german": "DE",
+    "フランス語": "FR", "french": "FR",
+}
 
-    def __init__(self, api_key: str, target_language: str, system_prompt_template: str):
-        self._client = OpenAI(api_key=api_key)
-        self._target_language = target_language
-        self._system_prompt = system_prompt_template.format(
-            target_language=target_language
-        )
+
+class TranslationService:
+    """翻訳サービス。config の translation_model に応じて OpenAI または DeepL を使う。"""
+
+    def __init__(self, config: dict):
+        trans_cfg = config.get("translation", {})
+        self._target_language = trans_cfg.get("target_language", "日本語")
+        model = trans_cfg.get("translation_model", "openai").lower()
+
+        if model == "deepl":
+            import deepl as _deepl
+            self._deepl = _deepl.Translator(config["deepl"]["api_key"])
+            self._deepl_target = _DEEPL_LANG_MAP.get(
+                self._target_language.lower(), self._target_language.upper()
+            )
+            self._mode = "deepl"
+        else:
+            self._client = OpenAI(api_key=config["openai"]["api_key"])
+            prompt_tmpl = trans_cfg.get("system_prompt",
+                "与えられたテキストを自然な{target_language}に翻訳してください。翻訳結果のみ返してください。")
+            self._system_prompt = prompt_tmpl.format(target_language=self._target_language)
+            self._mode = "openai"
 
     def translate(self, text: str) -> str:
-        response = self._client.chat.completions.create(
-            model="gpt-4o-mini",
-            messages=[
-                {"role": "system", "content": self._system_prompt},
-                {"role": "user", "content": text},
-            ],
-            temperature=0.3,
-        )
-        return response.choices[0].message.content.strip()
+        if self._mode == "deepl":
+            result = self._deepl.translate_text(text, target_lang=self._deepl_target)
+            return result.text
+        else:
+            response = self._client.chat.completions.create(
+                model="gpt-4o-mini",
+                messages=[
+                    {"role": "system", "content": self._system_prompt},
+                    {"role": "user", "content": text},
+                ],
+                temperature=0.3,
+            )
+            return response.choices[0].message.content.strip()
 
 
 class CaptionSystem:
@@ -194,11 +220,7 @@ class CaptionSystem:
         self._model_name = model_name
         self._on_result = on_result  # callable(original: str, translated: str) | None
 
-        self._translator = TranslationService(
-            api_key=config["openai"]["api_key"],
-            target_language=config["translation"]["target_language"],
-            system_prompt_template=config["translation"]["system_prompt"],
-        )
+        self._translator = TranslationService(config)
         self._broadcaster = SubtitleBroadcaster()
         self._loop: asyncio.AbstractEventLoop | None = None
         self._recorder: AudioToTextRecorder | None = None
@@ -251,8 +273,6 @@ class CaptionSystem:
             print(f"[翻訳エラー] {e}")
             translated = ""
 
-        print(f"[翻訳] {translated}")
-
         if translated:
             ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             with self._log_path.open("a", encoding="utf-8") as f:
@@ -260,6 +280,8 @@ class CaptionSystem:
 
         if self._on_result and translated:
             self._on_result(text, translated)
+        elif translated:
+            print(f"[翻訳] {translated}")
 
         payload = json.dumps({"original": text, "translated": translated}, ensure_ascii=False)
         await self._broadcaster.broadcast(payload)
