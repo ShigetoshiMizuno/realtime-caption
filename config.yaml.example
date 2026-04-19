@@ -7,7 +7,7 @@ translation:
 
 whisper:
   model: "small"   # small または medium
-  language: "en"   # 入力言語コード（自動検出にする場合は null）
+  language: null   # 入力言語コード（null で自動検出 / "en" や "ja" で固定）
 
 websocket:
   host: "localhost"
