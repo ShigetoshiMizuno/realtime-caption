@@ -60,7 +60,11 @@ if exist "%PYTHON_DIR%\python.exe" (
 :: --- launch ---
 echo Starting...
 echo.
-%PYTHON_DIR%\python.exe main.py
+if "%1"=="--cli" (
+    %PYTHON_DIR%\python.exe main.py
+) else (
+    %PYTHON_DIR%\python.exe app.py
+)
 if %ERRORLEVEL% neq 0 (
     echo.
     echo [ERROR] Exit code: %ERRORLEVEL%

@@ -15,3 +15,10 @@ websocket:
 
 output:
   log_dir: "."  # 翻訳ログの出力ディレクトリ（YYYY-MM-DD-n_translate.txt を自動生成）
+
+vad:
+  silero_sensitivity: 0.4    # 低いほど拾いやすい（0.0〜1.0、デフォルト 0.4）
+  post_speech_silence_duration: 0.6  # 無音何秒で発話終了（秒）
+
+rpc:
+  port: 8767

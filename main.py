@@ -149,6 +149,10 @@ class SubtitleBroadcaster:
             async with self._lock:
                 self._clients.discard(websocket)
 
+    @property
+    def client_count(self) -> int:
+        return len(self._clients)
+
     async def broadcast(self, message: str):
         async with self._lock:
             targets = set(self._clients)
@@ -184,10 +188,11 @@ class TranslationService:
 class CaptionSystem:
     """文字起こし・翻訳・WebSocket 配信を統合管理するクラス。"""
 
-    def __init__(self, config: dict, device_info: dict, model_name: str):
+    def __init__(self, config: dict, device_info: dict, model_name: str, on_result=None):
         self._config = config
         self._device_info = device_info
         self._model_name = model_name
+        self._on_result = on_result  # callable(original: str, translated: str) | None
 
         self._translator = TranslationService(
             api_key=config["openai"]["api_key"],
@@ -198,6 +203,7 @@ class CaptionSystem:
         self._loop: asyncio.AbstractEventLoop | None = None
         self._recorder: AudioToTextRecorder | None = None
         self._stop_event = threading.Event()
+        self._stop_event_async: asyncio.Event | None = None
         log_dir = config.get("output", {}).get("log_dir", ".")
         self._log_path = self._make_log_path(Path(log_dir))
 
@@ -208,6 +214,8 @@ class CaptionSystem:
                 self._recorder.stop()
             except Exception:
                 pass
+        if self._loop and self._stop_event_async:
+            self._loop.call_soon_threadsafe(self._stop_event_async.set)
         _release_subst(_subst_letter)
 
     @staticmethod
@@ -249,6 +257,9 @@ class CaptionSystem:
             ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             with self._log_path.open("a", encoding="utf-8") as f:
                 f.write(f"[{ts}]\n原文: {text}\n翻訳: {translated}\n\n")
+
+        if self._on_result and translated:
+            self._on_result(text, translated)
 
         payload = json.dumps({"original": text, "translated": translated}, ensure_ascii=False)
         await self._broadcaster.broadcast(payload)
@@ -318,12 +329,14 @@ class CaptionSystem:
 
         try:
             lang = self._config.get("whisper", {}).get("language", None) or None
+            vad_cfg = self._config.get("vad", {})
             common_args = dict(
                 model=self._model_name,
                 language=lang,
                 spinner=False,
                 enable_realtime_transcription=False,
-                post_speech_silence_duration=0.4,  # 無音0.4秒で発話区切り
+                silero_sensitivity=vad_cfg.get("silero_sensitivity", 0.4),
+                post_speech_silence_duration=vad_cfg.get("post_speech_silence_duration", 0.6),
                 min_length_of_recording=0.3,        # 0.3秒以上の発話を認識
             )
             if is_loopback:
@@ -356,6 +369,7 @@ class CaptionSystem:
     async def run(self):
         """WebSocket サーバーを起動し、録音スレッドを開始する。"""
         self._loop = asyncio.get_running_loop()
+        self._stop_event_async = asyncio.Event()
 
         ws_host = self._config["websocket"]["host"]
         ws_port = self._config["websocket"]["port"]
@@ -368,7 +382,7 @@ class CaptionSystem:
 
         try:
             async with websockets.serve(self._broadcaster.register, ws_host, ws_port):
-                await asyncio.Future()
+                await self._stop_event_async.wait()
         except asyncio.CancelledError:
             pass
         finally:
