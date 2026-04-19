@@ -174,6 +174,8 @@ def _do_start(device_index: int | None = None, model: str | None = None):
         if len(_log_entries) > 200:
             _log_entries.pop(0)
         _enqueue("append_log", ts=ts, original=original, translated=translated)
+        print(f"[{ts}] EN: {original}")
+        print(f"       JP: {translated}")
 
     _system = CaptionSystem(_config, device_info, model_name, on_result=on_result)
 
@@ -281,8 +283,28 @@ def _start_rpc_server(port: int):
 # GUI 構築
 # ---------------------------------------------------------------------------
 
+def _load_japanese_font(size: int = 16) -> int | None:
+    candidates = [
+        "C:/Windows/Fonts/meiryo.ttc",
+        "C:/Windows/Fonts/YuGothM.ttc",
+        "C:/Windows/Fonts/msgothic.ttc",
+    ]
+    for path in candidates:
+        if _Path(path).exists():
+            with dpg.font_registry():
+                with dpg.font(path, size) as font:
+                    pass
+            return font
+    return None
+
+
 def _build_gui():
     dpg.create_context()
+
+    font = _load_japanese_font(16)
+    if font:
+        dpg.bind_font(font)
+
     dpg.create_viewport(title="Realtime Caption & Translation", width=900, height=650, resizable=False)
     dpg.setup_dearpygui()
 
