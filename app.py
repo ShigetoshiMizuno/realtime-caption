@@ -129,7 +129,7 @@ def _drain_queue():
             _do_stop()
 
         elif cmd == "start_system":
-            _do_start()
+            _do_start(device_index=item.get("device_index"))
 
 
 def _append_log_item(ts: str, original: str, translated: str):
@@ -146,15 +146,20 @@ def _append_log_item(ts: str, original: str, translated: str):
 # CaptionSystem の起動・停止
 # ---------------------------------------------------------------------------
 
-def _do_start():
+def _do_start(device_index: int | None = None):
     global _system, _system_thread, _is_running
 
     if _is_running:
         return
 
-    # 選択されたデバイスを取得
-    device_label = dpg.get_value(TAG_DEVICE_COMBO)
-    device_info = next((d for d in _devices if _device_label(d) == device_label), None)
+    # device_index が指定されていればそちらを優先、なければコンボボックスの選択を使う
+    if device_index is not None:
+        device_info = next((d for d in _devices if d["index"] == device_index), None)
+        if device_info is not None:
+            dpg.set_value(TAG_DEVICE_COMBO, _device_label(device_info))
+    else:
+        device_label = dpg.get_value(TAG_DEVICE_COMBO)
+        device_info = next((d for d in _devices if _device_label(d) == device_label), None)
     if device_info is None:
         return
 
@@ -248,7 +253,14 @@ class _RPCHandler(BaseHTTPRequestHandler):
             _enqueue("stop_system")
             self._send_json({"ok": True})
         elif self.path == "/api/start":
-            _enqueue("start_system")
+            body = {}
+            length = int(self.headers.get("Content-Length", 0))
+            if length:
+                try:
+                    body = json.loads(self.rfile.read(length))
+                except Exception:
+                    pass
+            _enqueue("start_system", device_index=body.get("device_index"))
             self._send_json({"ok": True})
         else:
             self._send_json({"error": "not found"}, status=404)
