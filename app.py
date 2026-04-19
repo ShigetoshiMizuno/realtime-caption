@@ -129,7 +129,7 @@ def _drain_queue():
             _do_stop()
 
         elif cmd == "start_system":
-            _do_start(device_index=item.get("device_index"))
+            _do_start(device_index=item.get("device_index"), model=item.get("model"))
 
 
 def _append_log_item(ts: str, original: str, translated: str):
@@ -146,7 +146,7 @@ def _append_log_item(ts: str, original: str, translated: str):
 # CaptionSystem の起動・停止
 # ---------------------------------------------------------------------------
 
-def _do_start(device_index: int | None = None):
+def _do_start(device_index: int | None = None, model: str | None = None):
     global _system, _system_thread, _is_running
 
     if _is_running:
@@ -162,6 +162,9 @@ def _do_start(device_index: int | None = None):
         device_info = next((d for d in _devices if _device_label(d) == device_label), None)
     if device_info is None:
         return
+
+    if model in ("small", "medium"):
+        dpg.set_value(TAG_MODEL_COMBO, model)
 
     model_name = dpg.get_value(TAG_MODEL_COMBO)
 
@@ -260,7 +263,8 @@ class _RPCHandler(BaseHTTPRequestHandler):
                     body = json.loads(self.rfile.read(length))
                 except Exception:
                     pass
-            _enqueue("start_system", device_index=body.get("device_index"))
+            _enqueue("start_system", device_index=body.get("device_index"),
+                     model=body.get("model"))
             self._send_json({"ok": True})
         else:
             self._send_json({"error": "not found"}, status=404)
