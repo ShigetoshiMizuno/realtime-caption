@@ -46,10 +46,21 @@ def _release_subst(letter: str | None):
         subprocess.run(["subst", f"{letter}:", "/d"], capture_output=True)
 
 
-_MODEL_BASE = _Path(__file__).parent.resolve() / "models"
+# モデルキャッシュ先: プロジェクトディレクトリが ASCII なら ./models、
+# 非 ASCII なら %LOCALAPPDATA%\rc-models にフォールバック（torch.jit の fopen 制約を回避）
+_project_models = _Path(__file__).parent.resolve() / "models"
+if all(ord(c) < 128 for c in str(_project_models)):
+    _MODEL_BASE = _project_models
+else:
+    _localappdata = os.environ.get("LOCALAPPDATA") or os.path.expanduser(r"~\AppData\Local")
+    _MODEL_BASE = _Path(_localappdata) / "rc-models"
+    print(f"[app] プロジェクトパスに非ASCII文字を含むため、モデルキャッシュを {_MODEL_BASE} に配置します", flush=True)
+
 _ascii_models, _subst_letter = _ensure_ascii_path(_MODEL_BASE)
 os.environ.setdefault("HF_HOME", str(_ascii_models / "huggingface"))
 os.environ.setdefault("TORCH_HOME", str(_ascii_models / "torch"))
+# main.py の重複セットアップ/重複ログを抑制するマーカー
+os.environ["RC_MODELS_CONFIGURED"] = "1"
 
 import asyncio
 import io
@@ -199,14 +210,14 @@ def _start_loading(model_name: str):
     import time as _t
     _loading_model_name = model_name
     _loading_start_time = _t.time()
-    _loading_phase = "Initializing..."
+    _loading_phase = "初期化中..."
     _loading_active = True
     if dpg.does_item_exist(TAG_PROGRESS_BAR):
         dpg.configure_item(TAG_PROGRESS_BAR, show=True)
         dpg.set_value(TAG_PROGRESS_BAR, 0.0)
     if dpg.does_item_exist(TAG_PROGRESS_TEXT):
         dpg.configure_item(TAG_PROGRESS_TEXT, show=True)
-        dpg.set_value(TAG_PROGRESS_TEXT, f"Loading {model_name}: {_loading_phase}")
+        dpg.set_value(TAG_PROGRESS_TEXT, f"モデル読み込み中 ({model_name}): {_loading_phase}")
 
 
 def _end_loading():
@@ -246,19 +257,17 @@ def _update_loading_progress():
     # ダウンロード進捗を検出（サイズが目標の95%未満ならダウンロード中とみなす）
     if size_mb < expected_mb * 0.95:
         pct = min(0.95, size_mb / expected_mb)
-        _loading_phase = f"Downloading {size_mb:.0f}/{expected_mb} MB"
+        _loading_phase = f"ダウンロード中 {size_mb:.0f}/{expected_mb} MB"
     else:
         # ダウンロード済み → モデルをメモリへロード中（時間ベース）
-        # small: 約15秒、medium: 約40秒を目安に見せかけ進捗
         est_total = 40.0 if _loading_model_name == "medium" else 15.0
-        # ダウンロードが終わってからの経過を推定しにくいので、全体で scale する
         pct = min(0.95, elapsed / est_total)
-        _loading_phase = f"Loading model into memory... {elapsed:.1f}s"
+        _loading_phase = f"メモリ展開中... {elapsed:.1f}秒経過"
 
     if dpg.does_item_exist(TAG_PROGRESS_BAR):
         dpg.set_value(TAG_PROGRESS_BAR, pct)
     if dpg.does_item_exist(TAG_PROGRESS_TEXT):
-        dpg.set_value(TAG_PROGRESS_TEXT, f"Loading {_loading_model_name}: {_loading_phase}")
+        dpg.set_value(TAG_PROGRESS_TEXT, f"モデル読み込み中 ({_loading_model_name}): {_loading_phase}")
 
 
 # ---------------------------------------------------------------------------
@@ -338,22 +347,22 @@ def _drain_queue():
             dpg.set_value(TAG_STATUS_STATE, item["text"])
 
         elif cmd == "set_stt":
-            dpg.set_value(TAG_STATUS_STT, "STT 🔵" if item["busy"] else "STT ⚪")
+            dpg.set_value(TAG_STATUS_STT, "認識 ●" if item["busy"] else "認識 ○")
 
         elif cmd == "set_trl":
-            dpg.set_value(TAG_STATUS_TRL, "TRL 🟡" if item["busy"] else "TRL ⚪")
+            dpg.set_value(TAG_STATUS_TRL, "翻訳 ●" if item["busy"] else "翻訳 ○")
 
         elif cmd == "set_running":
             global _is_running
             _is_running = item["value"]
             if _is_running:
                 _end_loading()
-                dpg.configure_item(TAG_START_BTN, label="Stop")
-                dpg.set_value(TAG_STATUS_STATE, "🔴 Recording")
+                dpg.configure_item(TAG_START_BTN, label="停止")
+                dpg.set_value(TAG_STATUS_STATE, "● 録音中")
             else:
                 _end_loading()
-                dpg.configure_item(TAG_START_BTN, label="Start")
-                dpg.set_value(TAG_STATUS_STATE, "⏹ Stopped")
+                dpg.configure_item(TAG_START_BTN, label="開始")
+                dpg.set_value(TAG_STATUS_STATE, "■ 待機中")
 
         elif cmd == "stop_system":
             _do_stop()
@@ -479,13 +488,13 @@ def _do_start(device_index: int | None = None, model: str | None = None):
     _system.gain_mode = gain_mode
     _system.manual_gain = gain_value
 
-    dpg.configure_item(TAG_START_BTN, label="Stop")
+    dpg.configure_item(TAG_START_BTN, label="停止")
     if loading:
-        _enqueue("set_status", text=f"⏳ Loading model: {model_name} ...")
+        _enqueue("set_status", text=f"▸ モデル読み込み中: {model_name} ...")
         print(f"[INFO] Whisper {model_name} model loading, please wait...")
         _start_loading(model_name)
     else:
-        _enqueue("set_status", text="⏳ Starting ...")
+        _enqueue("set_status", text="▸ 起動中...")
 
     def run_in_thread():
         asyncio.run(_system.run())
@@ -502,8 +511,8 @@ def _do_stop():
         _system.shutdown()
         _system = None
     _is_running = False
-    dpg.configure_item(TAG_START_BTN, label="Start")
-    dpg.set_value(TAG_STATUS_STATE, "⏹ Stopped")
+    dpg.configure_item(TAG_START_BTN, label="開始")
+    dpg.set_value(TAG_STATUS_STATE, "■ 待機中")
     # プリロード機能は一時無効化（調査中）
     # threading.Thread(target=_trigger_preload, daemon=True).start()
 
@@ -641,14 +650,9 @@ def _load_fonts(size: int = 16):
 
     with dpg.font_registry():
         if jp_font_path:
-            with dpg.font(jp_font_path, size) as f:
-                pass
-            _font_main = f
-
-        if _Path(emoji_path).exists():
-            with dpg.font(emoji_path, size) as f:
-                pass
-            _font_emoji = f
+            # dearpygui 2.x では文字範囲は自動（add_font_range_hint は no-op）
+            _font_main = dpg.add_font(jp_font_path, size)
+        _font_emoji = None
 
 
 def _build_gui():
@@ -669,7 +673,9 @@ def _build_gui():
         with dpg.theme_component(dpg.mvProgressBar):
             dpg.add_theme_color(dpg.mvThemeCol_PlotHistogram, (230, 60, 60))
 
-    dpg.create_viewport(title="Realtime Caption & Translation", width=960, height=680, resizable=True)
+    # viewport title は Windows API 経由で ANSI 変換されるため ASCII で設定し、
+    # 表示後に Win32 API (SetWindowTextW) で UTF-16 に書き換える
+    dpg.create_viewport(title="Realtime Caption", width=960, height=680, resizable=True)
     dpg.setup_dearpygui()
 
     rpc_port = _config.get("rpc", {}).get("port", 8767)
@@ -701,7 +707,7 @@ def _build_gui():
 
         # --- ツールバー 1行目: デバイス + Start ---
         with dpg.group(horizontal=True):
-            dpg.add_text("Device:")
+            dpg.add_text("音声入力:")
             dpg.add_combo(
                 tag=TAG_DEVICE_COMBO,
                 items=device_labels,
@@ -709,13 +715,13 @@ def _build_gui():
                 width=-130,
                 callback=lambda: threading.Thread(target=_trigger_preload, daemon=True).start(),
             )
-            dpg.add_button(tag=TAG_START_BTN, label="Start", width=120,
+            dpg.add_button(tag=TAG_START_BTN, label="開始", width=120,
                            callback=_on_start_stop_click,
                            enabled=bool(trans_models))
 
         # --- ツールバー 2行目: 入力ゲイン + レベルメーター + Clear log ---
         with dpg.group(horizontal=True):
-            dpg.add_text("Gain:")
+            dpg.add_text("入力ゲイン:")
             dpg.add_combo(
                 tag=TAG_GAIN_MODE,
                 items=["off", "manual", "auto"],
@@ -723,7 +729,7 @@ def _build_gui():
                 width=90,
                 callback=_on_gain_mode_change,
             )
-            dpg.add_text("  Manual x:", tag=TAG_GAIN_LABEL,
+            dpg.add_text("  倍率:", tag=TAG_GAIN_LABEL,
                          show=(default_gain_mode == "manual"))
             dpg.add_slider_float(
                 tag=TAG_GAIN_SLIDER,
@@ -733,15 +739,15 @@ def _build_gui():
                 callback=_on_gain_value_change,
                 show=(default_gain_mode == "manual"),
             )
-            dpg.add_text("  Level:")
+            dpg.add_text("  音量:")
             dpg.add_progress_bar(tag=TAG_LEVEL_METER, default_value=0.0,
                                  width=180, overlay="0%")
-            dpg.add_button(label="Clear log", width=90, callback=_clear_log)
+            dpg.add_button(label="ログクリア", width=100, callback=_clear_log)
 
         # --- 詳細設定（初期状態は折りたたみ） ---
         with dpg.collapsing_header(label="詳細設定", default_open=False):
             with dpg.group(horizontal=True):
-                dpg.add_text("Model:")
+                dpg.add_text("認識モデル:")
                 dpg.add_combo(
                     tag=TAG_MODEL_COMBO,
                     items=["small", "medium"],
@@ -749,7 +755,7 @@ def _build_gui():
                     width=120,
                     callback=lambda: threading.Thread(target=_trigger_preload, daemon=True).start(),
                 )
-                dpg.add_text("  Trans:")
+                dpg.add_text("  翻訳エンジン:")
                 dpg.add_combo(
                     tag=TAG_TRANS_COMBO,
                     items=trans_models if trans_models else ["(APIキー未設定)"],
@@ -758,7 +764,7 @@ def _build_gui():
                     enabled=len(trans_models) > 1,
                 )
             with dpg.group(horizontal=True):
-                dpg.add_text("Sensitivity:")
+                dpg.add_text("発話検出感度:")
                 dpg.add_slider_float(
                     tag=TAG_VAD_SENSITIVITY,
                     default_value=default_sensitivity,
@@ -766,7 +772,7 @@ def _build_gui():
                     width=160, format="%.2f",
                     callback=_on_vad_sensitivity_change,
                 )
-                dpg.add_text("  Silence(s):")
+                dpg.add_text("  無音待機(秒):")
                 dpg.add_slider_float(
                     tag=TAG_VAD_SILENCE,
                     default_value=default_silence,
@@ -774,7 +780,7 @@ def _build_gui():
                     width=160, format="%.1f",
                     callback=_on_vad_silence_change,
                 )
-                dpg.add_button(label="Reset", width=80,
+                dpg.add_button(label="既定値に戻す", width=110,
                                callback=lambda: (
                                    dpg.set_value(TAG_VAD_SENSITIVITY, VAD_DEFAULT_SENSITIVITY),
                                    dpg.set_value(TAG_VAD_SILENCE, VAD_DEFAULT_SILENCE),
@@ -783,8 +789,9 @@ def _build_gui():
         dpg.add_separator()
 
         # --- ログエリア（ウィンドウ高さに追従） ---
-        with dpg.child_window(tag=TAG_LOG_SCROLL, height=-40, border=True,
-                               autosize_x=True):
+        # height=-60 はステータスバー + プログレスバー + separator 分の余白
+        with dpg.child_window(tag=TAG_LOG_SCROLL, height=-60, border=True,
+                               autosize_x=True, no_scrollbar=False):
             with dpg.group(tag=TAG_LOG_GROUP):
                 pass
 
@@ -797,20 +804,17 @@ def _build_gui():
 
         # --- ステータスバー ---
         with dpg.group(horizontal=True):
-            dpg.add_text("⏹ Stopped", tag=TAG_STATUS_STATE)
-            dpg.add_text("  |  STT ⚪", tag=TAG_STATUS_STT)
-            dpg.add_text("  TRL ⚪", tag=TAG_STATUS_TRL)
-            dpg.add_text("  |  WS clients:")
+            dpg.add_text("■ 待機中", tag=TAG_STATUS_STATE)
+            dpg.add_text("  |  認識 ○", tag=TAG_STATUS_STT)
+            dpg.add_text("  翻訳 ○", tag=TAG_STATUS_TRL)
+            dpg.add_text("  |  OBS接続:")
             dpg.add_text("0", tag=TAG_STATUS_WS)
             dpg.add_text("  |  RPC:")
             dpg.add_text(f"http://localhost:{rpc_port}", tag=TAG_STATUS_RPC)
 
     dpg.set_primary_window("main_window", True)
-
-    # ステータスバーに Segoe UI Emoji フォントを適用
-    if _font_emoji:
-        for tag in (TAG_STATUS_STATE, TAG_STATUS_STT, TAG_STATUS_TRL):
-            dpg.bind_item_font(tag, _font_emoji)
+    # ステータスバーの文字は Meiryo（グローバル）で統一する。
+    # ⏹⏳⚪🔵🟡🔴 等は Meiryo に収録されているためモノクロで表示可能。
 
 
 # ---------------------------------------------------------------------------
@@ -867,6 +871,15 @@ def main():
 
     _build_gui()
     dpg.show_viewport()
+
+    # Windows 上でウィンドウタイトルを UTF-16 で上書きして日本語化
+    try:
+        user32 = ctypes.windll.user32
+        hwnd = user32.FindWindowW(None, "Realtime Caption")
+        if hwnd:
+            user32.SetWindowTextW(hwnd, "リアルタイム字幕・翻訳")
+    except Exception:
+        pass
 
     # プリロード機能は一時無効化（RealtimeSTT のスレッド問題調査中）
     # threading.Thread(target=_trigger_preload, daemon=True).start()

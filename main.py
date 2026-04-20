@@ -38,10 +38,23 @@ def _release_subst(letter: str | None):
         subprocess.run(["subst", f"{letter}:", "/d"], capture_output=True)
 
 
-_MODEL_BASE = _Path(__file__).parent.resolve() / "models"
+# モデルキャッシュ先: プロジェクトディレクトリが ASCII なら ./models、
+# 非 ASCII なら %LOCALAPPDATA%\rc-models にフォールバック（torch.jit の fopen 制約を回避）
+# app.py から import された場合（RC_MODELS_CONFIGURED）は重複セットアップとログを回避
+_already_configured = os.environ.get("RC_MODELS_CONFIGURED") == "1"
+_project_models = _Path(__file__).parent.resolve() / "models"
+if all(ord(c) < 128 for c in str(_project_models)):
+    _MODEL_BASE = _project_models
+else:
+    _localappdata = os.environ.get("LOCALAPPDATA") or os.path.expanduser(r"~\AppData\Local")
+    _MODEL_BASE = _Path(_localappdata) / "rc-models"
+    if not _already_configured:
+        print(f"[main] プロジェクトパスに非ASCII文字を含むため、モデルキャッシュを {_MODEL_BASE} に配置します", flush=True)
+
 _ascii_models, _subst_letter = _ensure_ascii_path(_MODEL_BASE)
 os.environ.setdefault("HF_HOME", str(_ascii_models / "huggingface"))
 os.environ.setdefault("TORCH_HOME", str(_ascii_models / "torch"))
+os.environ["RC_MODELS_CONFIGURED"] = "1"
 
 import asyncio
 import io
@@ -65,13 +78,42 @@ if sys.stdout.encoding != "utf-8":
     sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
     sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding="utf-8", errors="replace")
 
+# RealtimeSTT シャットダウン時の既知ノイズを抑制（issue #4）
+# `_recording_worker` が閉じた multiprocessing queue にアクセスして WinError 6 を吐く
+import logging as _logging
+_logging.getLogger("realtimestt").setLevel(_logging.CRITICAL)
+
+_default_thread_excepthook = threading.excepthook
+def _rc_thread_excepthook(args):
+    # WinError 6 / ERROR_INVALID_HANDLE は停止時のレースで出るだけなので黙殺
+    exc = args.exc_value
+    if isinstance(exc, OSError) and getattr(exc, "winerror", None) == 6:
+        return
+    # その他はデフォルト動作へ
+    _default_thread_excepthook(args)
+threading.excepthook = _rc_thread_excepthook
+
 # Silero VAD モデルを信頼済みリポジトリとして事前登録（初回確認をスキップ）
+# このロードに失敗すると AudioToTextRecorder 初期化時に jit ファイル不在で落ちる。
+_hub_dir = _ascii_models / "torch" / "hub"
+torch.hub.set_dir(str(_hub_dir))
 try:
-    _hub_dir = _ascii_models / "torch" / "hub"
-    torch.hub.set_dir(str(_hub_dir))
     torch.hub.load('snakers4/silero-vad', 'silero_vad', trust_repo=True, verbose=False)
-except Exception:
-    pass
+except Exception as e:
+    print(f"[WARN] Silero VAD の事前ロードに失敗しました: {e}", flush=True)
+    print(f"[WARN] オフライン環境なら初回だけオンラインで起動してください", flush=True)
+    # モデルファイルが不完全な場合は再取得を試みる
+    import shutil
+    _silero_dir = _hub_dir / "snakers4_silero-vad_master"
+    _jit_path = _silero_dir / "src" / "silero_vad" / "data" / "silero_vad.jit"
+    if _silero_dir.exists() and not _jit_path.exists():
+        print(f"[WARN] 不完全な Silero キャッシュを削除して再取得します: {_silero_dir}", flush=True)
+        try:
+            shutil.rmtree(_silero_dir)
+            torch.hub.load('snakers4/silero-vad', 'silero_vad', trust_repo=True, verbose=False)
+            print(f"[INFO] Silero VAD 再取得に成功しました", flush=True)
+        except Exception as e2:
+            print(f"[ERROR] Silero VAD 再取得にも失敗: {e2}", flush=True)
 
 # RealtimeSTT が期待するサンプルレート
 REALTIMESTT_SAMPLE_RATE = 16000
@@ -247,7 +289,14 @@ class CaptionSystem:
         self.effective_gain: float = 1.0  # 実際に適用された直近 gain（RPC で参照）
 
     def shutdown(self):
+        # idempotent ガード: 二重 shutdown を防止（WinError 6 対策）
+        if self._stop_event.is_set():
+            return
         self._stop_event.set()
+        # capture スレッドを先に停止させて、feed_audio が止まってから recorder.stop() を呼ぶ
+        cap = getattr(self, "_capture_thread", None)
+        if cap is not None and cap.is_alive():
+            cap.join(timeout=1.0)
         if self._recorder:
             try:
                 self._recorder.stop()
@@ -256,7 +305,6 @@ class CaptionSystem:
         if self._loop and self._stop_event_async:
             self._loop.call_soon_threadsafe(self._stop_event_async.set)
         # subst ドライブの解除はアプリ終了時のみ（app.py の main() / main.py の main() で実施）。
-        # ここで呼ぶと Stop や プリロード破棄のたびにドライブが消え、後続のモデル参照で失敗する。
 
     @staticmethod
     def _make_log_path(log_dir: Path) -> Path:
@@ -483,8 +531,8 @@ class CaptionSystem:
 
         is_loopback = self._device_info.get("isLoopback", False)
         if is_loopback:
-            capture_thread = threading.Thread(target=self._loopback_capture_thread, daemon=True)
-            capture_thread.start()
+            self._capture_thread = threading.Thread(target=self._loopback_capture_thread, daemon=True)
+            self._capture_thread.start()
 
         print("\n[INFO] 録音を開始しました。\n")
         if self._on_ready:
@@ -514,9 +562,9 @@ class CaptionSystem:
             async with websockets.serve(self._broadcaster.register, ws_host, ws_port):
                 await self._stop_event_async.wait()
         except asyncio.CancelledError:
-            pass
-        finally:
+            # asyncio 中断時のみ shutdown 必要（Stop ボタン経由の正常終了は呼び出し側が責務）
             self.shutdown()
+        finally:
             print("[INFO] 終了しました。")
 
 
