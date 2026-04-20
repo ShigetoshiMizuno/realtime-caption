@@ -126,6 +126,26 @@ def _save_settings():
 
 
 # ---------------------------------------------------------------------------
+# VAD リアルタイム更新
+# ---------------------------------------------------------------------------
+
+def _on_vad_sensitivity_change(sender, value, user_data):
+    if _system and _system._recorder:
+        try:
+            _system._recorder.silero_sensitivity = value
+        except Exception:
+            pass
+
+
+def _on_vad_silence_change(sender, value, user_data):
+    if _system and _system._recorder:
+        try:
+            _system._recorder.post_speech_silence_duration = value
+        except Exception:
+            pass
+
+
+# ---------------------------------------------------------------------------
 # GUI キューコマンド処理
 # ---------------------------------------------------------------------------
 
@@ -444,6 +464,7 @@ def _build_gui():
                 default_value=default_sensitivity,
                 min_value=0.0, max_value=1.0,
                 width=160, format="%.2f",
+                callback=_on_vad_sensitivity_change,
             )
             dpg.add_text("  Silence(s):")
             dpg.add_slider_float(
@@ -451,6 +472,7 @@ def _build_gui():
                 default_value=default_silence,
                 min_value=0.1, max_value=3.0,
                 width=160, format="%.1f",
+                callback=_on_vad_silence_change,
             )
             dpg.add_button(label="Reset", width=80,
                            callback=lambda: (
