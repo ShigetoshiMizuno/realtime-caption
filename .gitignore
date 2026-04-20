@@ -24,3 +24,4 @@ models/
 *.docx
 *.pdf
 新規*
+settings.json

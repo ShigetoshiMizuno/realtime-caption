@@ -99,6 +99,31 @@ TAG_STATUS_STATE = "status_state"
 VAD_DEFAULT_SENSITIVITY = 0.4
 VAD_DEFAULT_SILENCE = 0.6
 
+_SETTINGS_PATH = _SCRIPT_DIR / "settings.json"
+
+
+def _load_settings() -> dict:
+    try:
+        with open(_SETTINGS_PATH, encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+
+def _save_settings():
+    try:
+        data = {
+            "device": dpg.get_value(TAG_DEVICE_COMBO),
+            "model": dpg.get_value(TAG_MODEL_COMBO),
+            "trans": dpg.get_value(TAG_TRANS_COMBO),
+            "vad_sensitivity": dpg.get_value(TAG_VAD_SENSITIVITY),
+            "vad_silence": dpg.get_value(TAG_VAD_SILENCE),
+        }
+        with open(_SETTINGS_PATH, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+    except Exception:
+        pass
+
 
 # ---------------------------------------------------------------------------
 # GUI キューコマンド処理
@@ -207,6 +232,7 @@ def _do_start(device_index: int | None = None, model: str | None = None):
         asyncio.run(_system.run())
         _enqueue("set_running", value=False)
 
+    _save_settings()
     _system_thread = threading.Thread(target=run_in_thread, daemon=True)
     _system_thread.start()
 
@@ -357,16 +383,23 @@ def _build_gui():
     dpg.setup_dearpygui()
 
     rpc_port = _config.get("rpc", {}).get("port", 8767)
-    default_model = _config.get("whisper", {}).get("model", "small")
+    saved = _load_settings()
+
+    default_model = saved.get("model") or _config.get("whisper", {}).get("model", "small")
     trans_models = _available_trans_models(_config)
-    default_trans = _config.get("translation", {}).get("translation_model", "openai").lower()
+    default_trans = saved.get("trans") or _config.get("translation", {}).get("translation_model", "openai").lower()
     if default_trans not in trans_models:
         default_trans = trans_models[0] if trans_models else "openai"
+    vad_cfg = _config.get("vad", {})
+    default_sensitivity = saved.get("vad_sensitivity", vad_cfg.get("silero_sensitivity", VAD_DEFAULT_SENSITIVITY))
+    default_silence = saved.get("vad_silence", vad_cfg.get("post_speech_silence_duration", VAD_DEFAULT_SILENCE))
 
     device_labels = [_device_label(d) for d in _devices]
-    default_device = next(
-        (lbl for lbl in device_labels if "[Loopback]" in lbl),
-        device_labels[0] if device_labels else "",
+    saved_device = saved.get("device", "")
+    default_device = (
+        saved_device if saved_device in device_labels
+        else next((lbl for lbl in device_labels if "[Loopback]" in lbl),
+                  device_labels[0] if device_labels else "")
     )
 
     with dpg.window(tag="main_window", no_title_bar=True, no_resize=True,
@@ -404,19 +437,18 @@ def _build_gui():
                            enabled=bool(trans_models))
 
         # --- ツールバー 3行目: VAD 設定 ---
-        vad_cfg = _config.get("vad", {})
         with dpg.group(horizontal=True):
             dpg.add_text("Sensitivity:")
             dpg.add_slider_float(
                 tag=TAG_VAD_SENSITIVITY,
-                default_value=vad_cfg.get("silero_sensitivity", VAD_DEFAULT_SENSITIVITY),
+                default_value=default_sensitivity,
                 min_value=0.0, max_value=1.0,
                 width=160, format="%.2f",
             )
             dpg.add_text("  Silence(s):")
             dpg.add_slider_float(
                 tag=TAG_VAD_SILENCE,
-                default_value=vad_cfg.get("post_speech_silence_duration", VAD_DEFAULT_SILENCE),
+                default_value=default_silence,
                 min_value=0.1, max_value=3.0,
                 width=160, format="%.1f",
             )
@@ -494,7 +526,8 @@ def main():
 
         dpg.render_dearpygui_frame()
 
-    # ウィンドウを閉じたらシステムを停止
+    # ウィンドウを閉じたらシステムを停止・設定を保存
+    _save_settings()
     if _system is not None:
         _system.shutdown()
 
