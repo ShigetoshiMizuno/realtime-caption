@@ -215,12 +215,15 @@ class CaptionSystem:
     """文字起こし・翻訳・WebSocket 配信を統合管理するクラス。"""
 
     def __init__(self, config: dict, device_info: dict, model_name: str,
-                 on_result=None, on_ready=None):
+                 on_result=None, on_ready=None,
+                 on_whisper_busy=None, on_trans_busy=None):
         self._config = config
         self._device_info = device_info
         self._model_name = model_name
-        self._on_result = on_result  # callable(original: str, translated: str) | None
-        self._on_ready = on_ready    # callable() | None — モデル準備完了時に呼ばれる
+        self._on_result = on_result          # callable(original: str, translated: str) | None
+        self._on_ready = on_ready            # callable() | None — モデル準備完了時に呼ばれる
+        self._on_whisper_busy = on_whisper_busy  # callable(bool) | None
+        self._on_trans_busy = on_trans_busy      # callable(bool) | None
 
         self._translator = TranslationService(config)
         self._broadcaster = SubtitleBroadcaster()
@@ -230,6 +233,9 @@ class CaptionSystem:
         self._stop_event_async: asyncio.Event | None = None
         log_dir = config.get("output", {}).get("log_dir", ".")
         self._log_path = self._make_log_path(Path(log_dir))
+        # 直近1秒の音量メーター（0〜32767 の int16 peak）
+        self.audio_peak: int = 0
+        self.audio_chunks_per_sec: int = 0
 
     def shutdown(self):
         self._stop_event.set()
@@ -260,6 +266,9 @@ class CaptionSystem:
         if not text:
             return
 
+        if self._on_whisper_busy:
+            self._on_whisper_busy(False)
+
         print(f"\n[原文] {text}")
 
         if self._loop and not self._loop.is_closed():
@@ -269,11 +278,16 @@ class CaptionSystem:
 
     async def _translate_and_broadcast(self, text: str):
         """翻訳を asyncio スレッドプールで実行し、WebSocket に配信する。"""
+        if self._on_trans_busy:
+            self._on_trans_busy(True)
         try:
             translated = await asyncio.to_thread(self._translator.translate, text)
         except Exception as e:
             print(f"[翻訳エラー] {e}")
             translated = ""
+        finally:
+            if self._on_trans_busy:
+                self._on_trans_busy(False)
 
         if translated:
             ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -315,7 +329,14 @@ class CaptionSystem:
             pa.terminate()
             return
 
-        print(f"[INFO] ループバックキャプチャ開始: {src_rate}Hz, {channels}ch -> {REALTIMESTT_SAMPLE_RATE}Hz mono")
+        print(f"[INFO] ループバックキャプチャ開始: {src_rate}Hz, {channels}ch -> {REALTIMESTT_SAMPLE_RATE}Hz mono", flush=True)
+
+        # デバッグ用: 1秒ごとに音量レベルを出力
+        import time as _time
+        level_window_max = 0
+        level_window_chunks = 0
+        next_log = _time.time() + 1.0
+        chunks_per_sec = max(1, src_rate // chunk_size)
 
         try:
             while not self._stop_event.is_set():
@@ -324,10 +345,25 @@ class CaptionSystem:
                 # bytes -> numpy int16 配列
                 audio = np.frombuffer(raw, dtype=np.int16)
 
+                # 音量レベル監視（モノラル化する前の生チャンネルから peak を取る）
+                chunk_max = int(np.abs(audio).max()) if audio.size else 0
+
                 # ステレオ（またはマルチチャンネル）→ モノラル変換
                 if channels > 1:
                     audio = audio.reshape(-1, channels)
                     audio = audio.mean(axis=1)
+                level_window_max = max(level_window_max, chunk_max)
+                level_window_chunks += 1
+                now = _time.time()
+                if now >= next_log:
+                    self.audio_peak = level_window_max
+                    self.audio_chunks_per_sec = level_window_chunks
+                    pct = level_window_max * 100 // 32767
+                    bar = "█" * (pct // 5)
+                    print(f"[AUDIO] peak={level_window_max:>5d} ({pct:3d}%) {bar} chunks={level_window_chunks}", flush=True)
+                    level_window_max = 0
+                    level_window_chunks = 0
+                    next_log = now + 1.0
 
                 # float32 に変換してリサンプリング
                 audio_f = audio.astype(np.float32)
@@ -343,31 +379,45 @@ class CaptionSystem:
         except Exception as e:
             print(f"[ERROR] ループバックキャプチャ中にエラーが発生しました: {e}")
         finally:
-            stream.stop_stream()
-            stream.close()
+            try:
+                stream.stop_stream()
+            except Exception:
+                pass
+            try:
+                stream.close()
+            except Exception:
+                pass
             pa.terminate()
 
-    def _start_recorder(self):
-        """別スレッドで RealtimeSTT を起動する。"""
-        is_loopback = self._device_info.get("isLoopback", False)
+    def prepare(self):
+        """Whisper モデルをロードして recorder を初期化する。
+        バックグラウンドスレッドから事前呼び出し可能。run() より前に呼ぶことで起動を高速化できる。"""
+        if self._recorder is not None:
+            return
 
+        is_loopback = self._device_info.get("isLoopback", False)
+        lang = self._config.get("whisper", {}).get("language", None) or None
+        vad_cfg = self._config.get("vad", {})
+
+        # on_transcription_start は self を動的参照するため、プリロード後に
+        # self._on_whisper_busy を設定しても正しく動作する。
+        def _on_transcription_start():
+            if self._on_whisper_busy:
+                self._on_whisper_busy(True)
+
+        common_args = dict(
+            model=self._model_name,
+            language=lang,
+            spinner=False,
+            enable_realtime_transcription=False,
+            silero_sensitivity=vad_cfg.get("silero_sensitivity", 0.4),
+            post_speech_silence_duration=vad_cfg.get("post_speech_silence_duration", 0.6),
+            min_length_of_recording=0.3,
+            on_transcription_start=_on_transcription_start,
+        )
         try:
-            lang = self._config.get("whisper", {}).get("language", None) or None
-            vad_cfg = self._config.get("vad", {})
-            common_args = dict(
-                model=self._model_name,
-                language=lang,
-                spinner=False,
-                enable_realtime_transcription=False,
-                silero_sensitivity=vad_cfg.get("silero_sensitivity", 0.4),
-                post_speech_silence_duration=vad_cfg.get("post_speech_silence_duration", 0.6),
-                min_length_of_recording=0.3,        # 0.3秒以上の発話を認識
-            )
             if is_loopback:
-                self._recorder = AudioToTextRecorder(
-                    **common_args,
-                    use_microphone=False,
-                )
+                self._recorder = AudioToTextRecorder(**common_args, use_microphone=False)
             else:
                 self._recorder = AudioToTextRecorder(
                     **common_args,
@@ -376,8 +426,15 @@ class CaptionSystem:
                 )
         except Exception as e:
             print(f"[ERROR] AudioToTextRecorder の初期化に失敗しました: {e}")
-            return
 
+    def _start_recorder(self):
+        """別スレッドで録音ループを起動する。prepare() が未完了なら先に呼ぶ。"""
+        if self._recorder is None:
+            self.prepare()
+        if self._recorder is None:
+            return  # prepare 失敗
+
+        is_loopback = self._device_info.get("isLoopback", False)
         if is_loopback:
             capture_thread = threading.Thread(target=self._loopback_capture_thread, daemon=True)
             capture_thread.start()

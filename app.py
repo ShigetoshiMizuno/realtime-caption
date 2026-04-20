@@ -82,6 +82,11 @@ _system_thread: threading.Thread | None = None
 _is_running = False
 _rpc_server: HTTPServer | None = None
 
+# プリロードキャッシュ
+_preloaded_system: CaptionSystem | None = None
+_preload_key: tuple | None = None   # (model_name, device_index)
+_preload_lock = threading.Lock()
+
 # GUI タグ
 TAG_DEVICE_COMBO = "device_combo"
 TAG_MODEL_COMBO = "model_combo"
@@ -95,6 +100,8 @@ TAG_STATUS_DEVICE = "status_device"
 TAG_STATUS_WS = "status_ws"
 TAG_STATUS_RPC = "status_rpc"
 TAG_STATUS_STATE = "status_state"
+TAG_STATUS_STT = "status_stt"
+TAG_STATUS_TRL = "status_trl"
 
 VAD_DEFAULT_SENSITIVITY = 0.4
 VAD_DEFAULT_SILENCE = 0.6
@@ -153,6 +160,58 @@ def _enqueue(cmd: str, **kwargs):
     _gui_queue.put({"cmd": cmd, **kwargs})
 
 
+def _trigger_preload():
+    """選択中のモデル・デバイスでバックグラウンドプリロードを開始する。
+    既に同じキーでプリロード済み/進行中なら何もしない。"""
+    global _preloaded_system, _preload_key
+
+    if not dpg.does_item_exist(TAG_DEVICE_COMBO):
+        return
+    device_label = dpg.get_value(TAG_DEVICE_COMBO)
+    device_info = next((d for d in _devices if _device_label(d) == device_label), None)
+    if device_info is None:
+        return
+    model_name = dpg.get_value(TAG_MODEL_COMBO)
+    key = (model_name, device_info["index"])
+
+    with _preload_lock:
+        if _preload_key == key:
+            return  # 既に同キーでプリロード済みまたは進行中
+        old = _preloaded_system
+        _preloaded_system = None
+        _preload_key = key  # 進行中フラグとして先に書く
+
+    # 古いプリロードを廃棄
+    if old is not None:
+        try:
+            old.shutdown()
+        except Exception:
+            pass
+
+    # プリロード用 CaptionSystem（コールバックなし）
+    cfg = {**_config}
+    cfg.setdefault("vad", {})["silero_sensitivity"] = dpg.get_value(TAG_VAD_SENSITIVITY)
+    cfg.setdefault("vad", {})["post_speech_silence_duration"] = dpg.get_value(TAG_VAD_SILENCE)
+    system = CaptionSystem(cfg, device_info, model_name)
+
+    def _do_prepare():
+        global _preloaded_system, _preload_key
+        print(f"[INFO] Preloading Whisper {model_name} ...")
+        system.prepare()
+        with _preload_lock:
+            # キャンセルされていなければキャッシュに格納
+            if _preload_key == key and not system._stop_event.is_set():
+                _preloaded_system = system
+                print(f"[INFO] Preload done: {model_name}")
+            else:
+                try:
+                    system.shutdown()
+                except Exception:
+                    pass
+
+    threading.Thread(target=_do_prepare, daemon=True).start()
+
+
 def _drain_queue():
     """レンダリングループから毎フレーム呼ぶ。キューを処理して GUI を更新する。"""
     while not _gui_queue.empty():
@@ -168,6 +227,12 @@ def _drain_queue():
 
         elif cmd == "set_status":
             dpg.set_value(TAG_STATUS_STATE, item["text"])
+
+        elif cmd == "set_stt":
+            dpg.set_value(TAG_STATUS_STT, "STT 🔵" if item["busy"] else "STT ⚪")
+
+        elif cmd == "set_trl":
+            dpg.set_value(TAG_STATUS_TRL, "TRL 🟡" if item["busy"] else "TRL ⚪")
 
         elif cmd == "set_running":
             global _is_running
@@ -187,13 +252,18 @@ def _drain_queue():
 
 
 def _append_log_item(ts: str, original: str, translated: str):
+    # 追加前に「最下部付近にいるか」を確認（ユーザーがスクロールバックしていれば False）
+    scroll_y = dpg.get_y_scroll(TAG_LOG_SCROLL)
+    scroll_max = dpg.get_y_scroll_max(TAG_LOG_SCROLL)
+    was_at_bottom = scroll_max <= 0 or scroll_y >= scroll_max - 20
+
     with dpg.group(parent=TAG_LOG_GROUP):
         dpg.add_text(f"[{ts}] EN: {original}", wrap=860)
         dpg.add_text(f"             JP: {translated}", wrap=860)
         dpg.add_separator()
 
-    # 自動スクロール
-    dpg.set_y_scroll(TAG_LOG_SCROLL, dpg.get_y_scroll_max(TAG_LOG_SCROLL))
+    if was_at_bottom:
+        dpg.set_y_scroll(TAG_LOG_SCROLL, dpg.get_y_scroll_max(TAG_LOG_SCROLL))
 
 
 # ---------------------------------------------------------------------------
@@ -201,7 +271,7 @@ def _append_log_item(ts: str, original: str, translated: str):
 # ---------------------------------------------------------------------------
 
 def _do_start(device_index: int | None = None, model: str | None = None):
-    global _system, _system_thread, _is_running
+    global _system, _system_thread, _is_running, _preloaded_system, _preload_key
 
     if _is_running:
         return
@@ -241,12 +311,55 @@ def _do_start(device_index: int | None = None, model: str | None = None):
     def on_ready():
         _enqueue("set_running", value=True)
 
-    _system = CaptionSystem(_config, device_info, model_name,
-                            on_result=on_result, on_ready=on_ready)
+    def on_whisper_busy(busy: bool):
+        _enqueue("set_stt", busy=busy)
+
+    def on_trans_busy(busy: bool):
+        _enqueue("set_trl", busy=busy)
+
+    # プリロード済みのシステムがあれば再利用
+    key = (model_name, device_info["index"])
+    with _preload_lock:
+        cached = _preloaded_system if (_preload_key == key
+                                       and _preloaded_system is not None
+                                       and _preloaded_system._recorder is not None) else None
+        if cached is not None:
+            _preloaded_system = None
+            _preload_key = None
+
+    if cached is not None:
+        _system = cached
+        _system._on_result = on_result
+        _system._on_ready = on_ready
+        _system._on_whisper_busy = on_whisper_busy
+        _system._on_trans_busy = on_trans_busy
+        _system._stop_event.clear()
+        # 翻訳エンジンを GUI の選択に合わせて更新
+        from main import TranslationService
+        _system._config.setdefault("translation", {})["translation_model"] = selected_trans
+        _system._translator = TranslationService(_system._config)
+        # VAD を GUI の値に更新
+        _system._config.setdefault("vad", {})["silero_sensitivity"] = dpg.get_value(TAG_VAD_SENSITIVITY)
+        _system._config.setdefault("vad", {})["post_speech_silence_duration"] = dpg.get_value(TAG_VAD_SILENCE)
+        try:
+            _system._recorder.silero_sensitivity = dpg.get_value(TAG_VAD_SENSITIVITY)
+            _system._recorder.post_speech_silence_duration = dpg.get_value(TAG_VAD_SILENCE)
+        except Exception:
+            pass
+        loading = False
+    else:
+        _system = CaptionSystem(_config, device_info, model_name,
+                                on_result=on_result, on_ready=on_ready,
+                                on_whisper_busy=on_whisper_busy,
+                                on_trans_busy=on_trans_busy)
+        loading = True
 
     dpg.configure_item(TAG_START_BTN, label="Stop")
-    _enqueue("set_status", text=f"⏳ Loading model: {model_name} ...")
-    print(f"[INFO] Whisper {model_name} model loading, please wait...")
+    if loading:
+        _enqueue("set_status", text=f"⏳ Loading model: {model_name} ...")
+        print(f"[INFO] Whisper {model_name} model loading, please wait...")
+    else:
+        _enqueue("set_status", text="⏳ Starting ...")
 
     def run_in_thread():
         asyncio.run(_system.run())
@@ -265,6 +378,8 @@ def _do_stop():
     _is_running = False
     dpg.configure_item(TAG_START_BTN, label="Start")
     dpg.set_value(TAG_STATUS_STATE, "⏹ Stopped")
+    # プリロード機能は一時無効化（調査中）
+    # threading.Thread(target=_trigger_preload, daemon=True).start()
 
 
 def _on_start_stop_click():
@@ -306,11 +421,16 @@ class _RPCHandler(BaseHTTPRequestHandler):
             ws_clients = _system._broadcaster.client_count if _system else 0
             device_label = dpg.get_value(TAG_DEVICE_COMBO) if dpg.does_item_exist(TAG_DEVICE_COMBO) else ""
             model = dpg.get_value(TAG_MODEL_COMBO) if dpg.does_item_exist(TAG_MODEL_COMBO) else ""
+            peak = _system.audio_peak if _system else 0
+            chunks = _system.audio_chunks_per_sec if _system else 0
             self._send_json({
                 "state": "running" if _is_running else "stopped",
                 "device": device_label,
                 "model": model,
                 "ws_clients": ws_clients,
+                "audio_peak": peak,
+                "audio_peak_pct": peak * 100 // 32767,
+                "audio_chunks_per_sec": chunks,
             })
 
         elif self.path == "/api/log":
@@ -318,6 +438,15 @@ class _RPCHandler(BaseHTTPRequestHandler):
 
         elif self.path == "/api/devices":
             self._send_json(_devices)
+
+        elif self.path == "/api/audio":
+            peak = _system.audio_peak if _system else 0
+            chunks = _system.audio_chunks_per_sec if _system else 0
+            self._send_json({
+                "peak": peak,
+                "peak_pct": peak * 100 // 32767,
+                "chunks_per_sec": chunks,
+            })
 
         else:
             self._send_json({"error": "not found"}, status=404)
@@ -433,6 +562,7 @@ def _build_gui():
                 items=device_labels,
                 default_value=default_device,
                 width=-1,
+                callback=lambda: threading.Thread(target=_trigger_preload, daemon=True).start(),
             )
 
         # --- ツールバー 2行目: モデル・翻訳エンジン・Start ---
@@ -443,6 +573,7 @@ def _build_gui():
                 items=["small", "medium"],
                 default_value=default_model if default_model in ["small", "medium"] else "small",
                 width=120,
+                callback=lambda: threading.Thread(target=_trigger_preload, daemon=True).start(),
             )
             dpg.add_text("  Trans:")
             dpg.add_combo(
@@ -493,6 +624,8 @@ def _build_gui():
         # --- ステータスバー ---
         with dpg.group(horizontal=True):
             dpg.add_text("⏹ Stopped", tag=TAG_STATUS_STATE)
+            dpg.add_text("  |  STT ⚪", tag=TAG_STATUS_STT)
+            dpg.add_text("  TRL ⚪", tag=TAG_STATUS_TRL)
             dpg.add_text("  |  WS clients:")
             dpg.add_text("0", tag=TAG_STATUS_WS)
             dpg.add_text("  |  RPC:")
@@ -502,7 +635,8 @@ def _build_gui():
 
     # ステータスバーに Segoe UI Emoji フォントを適用
     if _font_emoji:
-        dpg.bind_item_font(TAG_STATUS_STATE, _font_emoji)
+        for tag in (TAG_STATUS_STATE, TAG_STATUS_STT, TAG_STATUS_TRL):
+            dpg.bind_item_font(tag, _font_emoji)
 
 
 # ---------------------------------------------------------------------------
@@ -535,6 +669,9 @@ def main():
 
     _build_gui()
     dpg.show_viewport()
+
+    # プリロード機能は一時無効化（RealtimeSTT のスレッド問題調査中）
+    # threading.Thread(target=_trigger_preload, daemon=True).start()
 
     frame_count = 0
     while dpg.is_dearpygui_running():
