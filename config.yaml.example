@@ -12,6 +12,8 @@ translation:
 whisper:
   model: "small"   # small または medium
   language: null   # 入力言語コード（null で自動検出 / "en" や "ja" で固定）
+  compute_type: "int8"   # int8（CPU推奨・高速）/ float16（GPU推奨）/ float32（精度優先・遅い）
+  device: "cpu"          # cpu / cuda（GPU 環境のみ）
 
 websocket:
   host: "localhost"

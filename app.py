@@ -87,6 +87,14 @@ _preloaded_system: CaptionSystem | None = None
 _preload_key: tuple | None = None   # (model_name, device_index)
 _preload_lock = threading.Lock()
 
+# ロード進捗
+_loading_active: bool = False
+_loading_start_time: float = 0.0
+_loading_phase: str = ""          # 表示用テキスト
+_loading_model_name: str = ""     # small / medium
+# 期待ファイルサイズ（MB単位、ダウンロード進捗推定用）
+_MODEL_EXPECTED_MB = {"small": 500, "medium": 1500}
+
 # GUI タグ
 TAG_DEVICE_COMBO = "device_combo"
 TAG_MODEL_COMBO = "model_combo"
@@ -94,6 +102,15 @@ TAG_START_BTN = "start_btn"
 TAG_TRANS_COMBO = "trans_combo"
 TAG_VAD_SENSITIVITY = "vad_sensitivity"
 TAG_VAD_SILENCE = "vad_silence"
+TAG_GAIN_MODE = "gain_mode"
+TAG_GAIN_SLIDER = "gain_slider"
+TAG_GAIN_LABEL = "gain_label"
+TAG_PROGRESS_BAR = "progress_bar"
+TAG_PROGRESS_TEXT = "progress_text"
+TAG_LEVEL_METER = "level_meter"
+TAG_LEVEL_THEME_GREEN = "level_theme_green"
+TAG_LEVEL_THEME_YELLOW = "level_theme_yellow"
+TAG_LEVEL_THEME_RED = "level_theme_red"
 TAG_LOG_GROUP = "log_group"
 TAG_LOG_SCROLL = "log_scroll"
 TAG_STATUS_DEVICE = "status_device"
@@ -104,7 +121,9 @@ TAG_STATUS_STT = "status_stt"
 TAG_STATUS_TRL = "status_trl"
 
 VAD_DEFAULT_SENSITIVITY = 0.4
-VAD_DEFAULT_SILENCE = 0.6
+VAD_DEFAULT_SILENCE = 0.2
+GAIN_DEFAULT_MODE = "off"
+GAIN_DEFAULT_VALUE = 1.0
 
 _SETTINGS_PATH = _SCRIPT_DIR / "settings.json"
 
@@ -125,6 +144,8 @@ def _save_settings():
             "trans": dpg.get_value(TAG_TRANS_COMBO),
             "vad_sensitivity": dpg.get_value(TAG_VAD_SENSITIVITY),
             "vad_silence": dpg.get_value(TAG_VAD_SILENCE),
+            "gain_mode": dpg.get_value(TAG_GAIN_MODE),
+            "gain_value": dpg.get_value(TAG_GAIN_SLIDER),
         }
         with open(_SETTINGS_PATH, "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False, indent=2)
@@ -150,6 +171,94 @@ def _on_vad_silence_change(sender, value, user_data):
             _system._recorder.post_speech_silence_duration = value
         except Exception:
             pass
+
+
+def _on_gain_mode_change(sender, value, user_data):
+    if _system:
+        _system.gain_mode = value
+    # Manual スライダー・ラベルは manual モード時のみ表示
+    show_manual = (value == "manual")
+    if dpg.does_item_exist(TAG_GAIN_SLIDER):
+        dpg.configure_item(TAG_GAIN_SLIDER, show=show_manual)
+    if dpg.does_item_exist(TAG_GAIN_LABEL):
+        dpg.configure_item(TAG_GAIN_LABEL, show=show_manual)
+    _save_settings()
+
+
+def _on_gain_value_change(sender, value, user_data):
+    if _system:
+        _system.manual_gain = float(value)
+
+
+# ---------------------------------------------------------------------------
+# ロード進捗バー
+# ---------------------------------------------------------------------------
+
+def _start_loading(model_name: str):
+    global _loading_active, _loading_start_time, _loading_phase, _loading_model_name
+    import time as _t
+    _loading_model_name = model_name
+    _loading_start_time = _t.time()
+    _loading_phase = "Initializing..."
+    _loading_active = True
+    if dpg.does_item_exist(TAG_PROGRESS_BAR):
+        dpg.configure_item(TAG_PROGRESS_BAR, show=True)
+        dpg.set_value(TAG_PROGRESS_BAR, 0.0)
+    if dpg.does_item_exist(TAG_PROGRESS_TEXT):
+        dpg.configure_item(TAG_PROGRESS_TEXT, show=True)
+        dpg.set_value(TAG_PROGRESS_TEXT, f"Loading {model_name}: {_loading_phase}")
+
+
+def _end_loading():
+    global _loading_active
+    _loading_active = False
+    if dpg.does_item_exist(TAG_PROGRESS_BAR):
+        dpg.configure_item(TAG_PROGRESS_BAR, show=False)
+    if dpg.does_item_exist(TAG_PROGRESS_TEXT):
+        dpg.configure_item(TAG_PROGRESS_TEXT, show=False)
+
+
+def _model_dir_size_mb(model_name: str) -> float:
+    """models/huggingface のモデルディレクトリ合計サイズを MB で返す。"""
+    base = _SCRIPT_DIR / "models" / "huggingface" / "hub" / f"models--Systran--faster-whisper-{model_name}"
+    if not base.exists():
+        return 0.0
+    total = 0
+    for p in base.rglob("*"):
+        try:
+            if p.is_file():
+                total += p.stat().st_size
+        except Exception:
+            pass
+    return total / (1024 * 1024)
+
+
+def _update_loading_progress():
+    """レンダリングループから呼ばれる。ロード中なら進捗を更新する。"""
+    global _loading_phase
+    if not _loading_active:
+        return
+    import time as _t
+    elapsed = _t.time() - _loading_start_time
+    size_mb = _model_dir_size_mb(_loading_model_name)
+    expected_mb = _MODEL_EXPECTED_MB.get(_loading_model_name, 500)
+
+    # ダウンロード進捗を検出（サイズが目標の95%未満ならダウンロード中とみなす）
+    if size_mb < expected_mb * 0.95:
+        pct = min(0.95, size_mb / expected_mb)
+        _loading_phase = f"Downloading {size_mb:.0f}/{expected_mb} MB"
+    else:
+        # ダウンロード済み → モデルをメモリへロード中（時間ベース）
+        # small: 約15秒、medium: 約40秒を目安に見せかけ進捗
+        est_total = 40.0 if _loading_model_name == "medium" else 15.0
+        # ダウンロードが終わってからの経過を推定しにくいので、全体で scale する
+        pct = min(0.95, elapsed / est_total)
+        _loading_phase = f"Loading model into memory... {elapsed:.1f}s"
+
+    if dpg.does_item_exist(TAG_PROGRESS_BAR):
+        dpg.set_value(TAG_PROGRESS_BAR, pct)
+    if dpg.does_item_exist(TAG_PROGRESS_TEXT):
+        dpg.set_value(TAG_PROGRESS_TEXT, f"Loading {_loading_model_name}: {_loading_phase}")
 
 
 # ---------------------------------------------------------------------------
@@ -238,9 +347,11 @@ def _drain_queue():
             global _is_running
             _is_running = item["value"]
             if _is_running:
+                _end_loading()
                 dpg.configure_item(TAG_START_BTN, label="Stop")
                 dpg.set_value(TAG_STATUS_STATE, "🔴 Recording")
             else:
+                _end_loading()
                 dpg.configure_item(TAG_START_BTN, label="Start")
                 dpg.set_value(TAG_STATUS_STATE, "⏹ Stopped")
 
@@ -249,6 +360,13 @@ def _drain_queue():
 
         elif cmd == "start_system":
             _do_start(device_index=item.get("device_index"), model=item.get("model"))
+
+
+def _clear_log():
+    """字幕ログ（GUI・メモリ両方）をクリア。"""
+    _log_entries.clear()
+    if dpg.does_item_exist(TAG_LOG_GROUP):
+        dpg.delete_item(TAG_LOG_GROUP, children_only=True)
 
 
 def _append_log_item(ts: str, original: str, translated: str):
@@ -263,7 +381,8 @@ def _append_log_item(ts: str, original: str, translated: str):
         dpg.add_separator()
 
     if was_at_bottom:
-        dpg.set_y_scroll(TAG_LOG_SCROLL, dpg.get_y_scroll_max(TAG_LOG_SCROLL))
+        # dpg は -1.0 を渡すと「常に末尾」スクロールになる（レイアウト完了後に追従）
+        dpg.set_y_scroll(TAG_LOG_SCROLL, -1.0)
 
 
 # ---------------------------------------------------------------------------
@@ -307,6 +426,9 @@ def _do_start(device_index: int | None = None, model: str | None = None):
         _config.setdefault("translation", {})["translation_model"] = selected_trans
     _config.setdefault("vad", {})["silero_sensitivity"] = dpg.get_value(TAG_VAD_SENSITIVITY)
     _config.setdefault("vad", {})["post_speech_silence_duration"] = dpg.get_value(TAG_VAD_SILENCE)
+
+    gain_mode = dpg.get_value(TAG_GAIN_MODE)
+    gain_value = float(dpg.get_value(TAG_GAIN_SLIDER))
 
     def on_ready():
         _enqueue("set_running", value=True)
@@ -354,10 +476,14 @@ def _do_start(device_index: int | None = None, model: str | None = None):
                                 on_trans_busy=on_trans_busy)
         loading = True
 
+    _system.gain_mode = gain_mode
+    _system.manual_gain = gain_value
+
     dpg.configure_item(TAG_START_BTN, label="Stop")
     if loading:
         _enqueue("set_status", text=f"⏳ Loading model: {model_name} ...")
         print(f"[INFO] Whisper {model_name} model loading, please wait...")
+        _start_loading(model_name)
     else:
         _enqueue("set_status", text="⏳ Starting ...")
 
@@ -442,10 +568,14 @@ class _RPCHandler(BaseHTTPRequestHandler):
         elif self.path == "/api/audio":
             peak = _system.audio_peak if _system else 0
             chunks = _system.audio_chunks_per_sec if _system else 0
+            gain = _system.effective_gain if _system else 1.0
+            mode = _system.gain_mode if _system else "off"
             self._send_json({
                 "peak": peak,
                 "peak_pct": peak * 100 // 32767,
                 "chunks_per_sec": chunks,
+                "gain": round(gain, 2),
+                "gain_mode": mode,
             })
 
         else:
@@ -528,6 +658,17 @@ def _build_gui():
     if _font_main:
         dpg.bind_font(_font_main)  # 日本語テキストをデフォルトに
 
+    # レベルメーター色テーマ（progress bar の塗りを 緑/黄/赤 に切替）
+    with dpg.theme(tag=TAG_LEVEL_THEME_GREEN):
+        with dpg.theme_component(dpg.mvProgressBar):
+            dpg.add_theme_color(dpg.mvThemeCol_PlotHistogram, (60, 180, 75))
+    with dpg.theme(tag=TAG_LEVEL_THEME_YELLOW):
+        with dpg.theme_component(dpg.mvProgressBar):
+            dpg.add_theme_color(dpg.mvThemeCol_PlotHistogram, (240, 200, 40))
+    with dpg.theme(tag=TAG_LEVEL_THEME_RED):
+        with dpg.theme_component(dpg.mvProgressBar):
+            dpg.add_theme_color(dpg.mvThemeCol_PlotHistogram, (230, 60, 60))
+
     dpg.create_viewport(title="Realtime Caption & Translation", width=960, height=680, resizable=True)
     dpg.setup_dearpygui()
 
@@ -542,6 +683,10 @@ def _build_gui():
     vad_cfg = _config.get("vad", {})
     default_sensitivity = saved.get("vad_sensitivity", vad_cfg.get("silero_sensitivity", VAD_DEFAULT_SENSITIVITY))
     default_silence = saved.get("vad_silence", vad_cfg.get("post_speech_silence_duration", VAD_DEFAULT_SILENCE))
+    default_gain_mode = saved.get("gain_mode", GAIN_DEFAULT_MODE)
+    if default_gain_mode not in ("off", "manual", "auto"):
+        default_gain_mode = GAIN_DEFAULT_MODE
+    default_gain_value = float(saved.get("gain_value", GAIN_DEFAULT_VALUE))
 
     device_labels = [_device_label(d) for d in _devices]
     saved_device = saved.get("device", "")
@@ -554,62 +699,86 @@ def _build_gui():
     with dpg.window(tag="main_window", no_title_bar=True, no_resize=True,
                     no_move=True, no_scrollbar=True):
 
-        # --- ツールバー 1行目: デバイス ---
+        # --- ツールバー 1行目: デバイス + Start ---
         with dpg.group(horizontal=True):
             dpg.add_text("Device:")
             dpg.add_combo(
                 tag=TAG_DEVICE_COMBO,
                 items=device_labels,
                 default_value=default_device,
-                width=-1,
+                width=-130,
                 callback=lambda: threading.Thread(target=_trigger_preload, daemon=True).start(),
-            )
-
-        # --- ツールバー 2行目: モデル・翻訳エンジン・Start ---
-        with dpg.group(horizontal=True):
-            dpg.add_text("Model:")
-            dpg.add_combo(
-                tag=TAG_MODEL_COMBO,
-                items=["small", "medium"],
-                default_value=default_model if default_model in ["small", "medium"] else "small",
-                width=120,
-                callback=lambda: threading.Thread(target=_trigger_preload, daemon=True).start(),
-            )
-            dpg.add_text("  Trans:")
-            dpg.add_combo(
-                tag=TAG_TRANS_COMBO,
-                items=trans_models if trans_models else ["(no key)"],
-                default_value=default_trans if trans_models else "(no key)",
-                width=120,
-                enabled=len(trans_models) > 1,
             )
             dpg.add_button(tag=TAG_START_BTN, label="Start", width=120,
                            callback=_on_start_stop_click,
                            enabled=bool(trans_models))
 
-        # --- ツールバー 3行目: VAD 設定 ---
+        # --- ツールバー 2行目: 入力ゲイン + レベルメーター + Clear log ---
         with dpg.group(horizontal=True):
-            dpg.add_text("Sensitivity:")
-            dpg.add_slider_float(
-                tag=TAG_VAD_SENSITIVITY,
-                default_value=default_sensitivity,
-                min_value=0.0, max_value=1.0,
-                width=160, format="%.2f",
-                callback=_on_vad_sensitivity_change,
+            dpg.add_text("Gain:")
+            dpg.add_combo(
+                tag=TAG_GAIN_MODE,
+                items=["off", "manual", "auto"],
+                default_value=default_gain_mode,
+                width=90,
+                callback=_on_gain_mode_change,
             )
-            dpg.add_text("  Silence(s):")
+            dpg.add_text("  Manual x:", tag=TAG_GAIN_LABEL,
+                         show=(default_gain_mode == "manual"))
             dpg.add_slider_float(
-                tag=TAG_VAD_SILENCE,
-                default_value=default_silence,
-                min_value=0.1, max_value=3.0,
-                width=160, format="%.1f",
-                callback=_on_vad_silence_change,
+                tag=TAG_GAIN_SLIDER,
+                default_value=default_gain_value,
+                min_value=1.0, max_value=20.0,
+                width=200, format="%.2f",
+                callback=_on_gain_value_change,
+                show=(default_gain_mode == "manual"),
             )
-            dpg.add_button(label="Reset", width=80,
-                           callback=lambda: (
-                               dpg.set_value(TAG_VAD_SENSITIVITY, VAD_DEFAULT_SENSITIVITY),
-                               dpg.set_value(TAG_VAD_SILENCE, VAD_DEFAULT_SILENCE),
-                           ))
+            dpg.add_text("  Level:")
+            dpg.add_progress_bar(tag=TAG_LEVEL_METER, default_value=0.0,
+                                 width=180, overlay="0%")
+            dpg.add_button(label="Clear log", width=90, callback=_clear_log)
+
+        # --- 詳細設定（初期状態は折りたたみ） ---
+        with dpg.collapsing_header(label="詳細設定", default_open=False):
+            with dpg.group(horizontal=True):
+                dpg.add_text("Model:")
+                dpg.add_combo(
+                    tag=TAG_MODEL_COMBO,
+                    items=["small", "medium"],
+                    default_value=default_model if default_model in ["small", "medium"] else "small",
+                    width=120,
+                    callback=lambda: threading.Thread(target=_trigger_preload, daemon=True).start(),
+                )
+                dpg.add_text("  Trans:")
+                dpg.add_combo(
+                    tag=TAG_TRANS_COMBO,
+                    items=trans_models if trans_models else ["(APIキー未設定)"],
+                    default_value=default_trans if trans_models else "(APIキー未設定)",
+                    width=120,
+                    enabled=len(trans_models) > 1,
+                )
+            with dpg.group(horizontal=True):
+                dpg.add_text("Sensitivity:")
+                dpg.add_slider_float(
+                    tag=TAG_VAD_SENSITIVITY,
+                    default_value=default_sensitivity,
+                    min_value=0.0, max_value=1.0,
+                    width=160, format="%.2f",
+                    callback=_on_vad_sensitivity_change,
+                )
+                dpg.add_text("  Silence(s):")
+                dpg.add_slider_float(
+                    tag=TAG_VAD_SILENCE,
+                    default_value=default_silence,
+                    min_value=0.1, max_value=3.0,
+                    width=160, format="%.1f",
+                    callback=_on_vad_silence_change,
+                )
+                dpg.add_button(label="Reset", width=80,
+                               callback=lambda: (
+                                   dpg.set_value(TAG_VAD_SENSITIVITY, VAD_DEFAULT_SENSITIVITY),
+                                   dpg.set_value(TAG_VAD_SILENCE, VAD_DEFAULT_SILENCE),
+                               ))
 
         dpg.add_separator()
 
@@ -620,6 +789,11 @@ def _build_gui():
                 pass
 
         dpg.add_separator()
+
+        # --- プログレスバー（ロード中のみ表示） ---
+        dpg.add_text("", tag=TAG_PROGRESS_TEXT, show=False)
+        dpg.add_progress_bar(tag=TAG_PROGRESS_BAR, default_value=0.0,
+                             width=-1, show=False)
 
         # --- ステータスバー ---
         with dpg.group(horizontal=True):
@@ -644,6 +818,7 @@ def _build_gui():
 # ---------------------------------------------------------------------------
 
 _last_ws_count = -1
+_last_level_theme = ""
 
 
 def _update_ws_status():
@@ -652,6 +827,29 @@ def _update_ws_status():
     if count != _last_ws_count:
         _last_ws_count = count
         dpg.set_value(TAG_STATUS_WS, str(count))
+
+
+def _update_level_meter():
+    global _last_level_theme
+    peak = _system.audio_peak_now if _system else 0
+    gain = _system.effective_gain if _system else 1.0
+    level = min(1.0, peak / 32767.0)
+    pct = int(level * 100)
+    dpg.set_value(TAG_LEVEL_METER, level)
+    if gain > 1.05:
+        dpg.configure_item(TAG_LEVEL_METER, overlay=f"{pct}%  x{gain:.1f}")
+    else:
+        dpg.configure_item(TAG_LEVEL_METER, overlay=f"{pct}%")
+    # 色: 0-40%緑 / 40-80%黄 / 80-100%赤
+    if pct < 40:
+        theme = TAG_LEVEL_THEME_GREEN
+    elif pct < 80:
+        theme = TAG_LEVEL_THEME_YELLOW
+    else:
+        theme = TAG_LEVEL_THEME_RED
+    if theme != _last_level_theme:
+        _last_level_theme = theme
+        dpg.bind_item_theme(TAG_LEVEL_METER, theme)
 
 
 # ---------------------------------------------------------------------------
@@ -677,11 +875,19 @@ def main():
     while dpg.is_dearpygui_running():
         _drain_queue()
 
+        # レベルメーター: 毎 2 フレーム（~30Hz）で更新
+        if frame_count % 2 == 0:
+            _update_level_meter()
+
         # 1秒ごと（約60fps想定で60フレームごと）に WS クライアント数を更新
         frame_count += 1
         if frame_count >= 60:
             frame_count = 0
             _update_ws_status()
+
+        # ロード中は毎 10 フレーム（~6Hz）進捗更新
+        if _loading_active and frame_count % 10 == 0:
+            _update_loading_progress()
 
         dpg.render_dearpygui_frame()
 

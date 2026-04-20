@@ -236,6 +236,15 @@ class CaptionSystem:
         # 直近1秒の音量メーター（0〜32767 の int16 peak）
         self.audio_peak: int = 0
         self.audio_chunks_per_sec: int = 0
+        # リアルタイム表示用（チャンクごとに更新）
+        self.audio_peak_now: int = 0
+        # Gain 制御: "off" | "manual" | "auto"（実行中もスレッドセーフに変更可）
+        self.gain_mode: str = "off"
+        self.manual_gain: float = 1.0
+        # AGC の状態
+        self._agc_gain: float = 1.0
+        self._agc_envelope: float = 0.0  # 直近の peak 追従値（減衰付き）
+        self.effective_gain: float = 1.0  # 実際に適用された直近 gain（RPC で参照）
 
     def shutdown(self):
         self._stop_event.set()
@@ -246,7 +255,8 @@ class CaptionSystem:
                 pass
         if self._loop and self._stop_event_async:
             self._loop.call_soon_threadsafe(self._stop_event_async.set)
-        _release_subst(_subst_letter)
+        # subst ドライブの解除はアプリ終了時のみ（app.py の main() / main.py の main() で実施）。
+        # ここで呼ぶと Stop や プリロード破棄のたびにドライブが消え、後続のモデル参照で失敗する。
 
     @staticmethod
     def _make_log_path(log_dir: Path) -> Path:
@@ -345,13 +355,41 @@ class CaptionSystem:
                 # bytes -> numpy int16 配列
                 audio = np.frombuffer(raw, dtype=np.int16)
 
-                # 音量レベル監視（モノラル化する前の生チャンネルから peak を取る）
-                chunk_max = int(np.abs(audio).max()) if audio.size else 0
-
                 # ステレオ（またはマルチチャンネル）→ モノラル変換
                 if channels > 1:
                     audio = audio.reshape(-1, channels)
                     audio = audio.mean(axis=1)
+
+                # --- Gain 処理 ---
+                audio_f = audio.astype(np.float32)
+                if self.gain_mode == "manual":
+                    g = max(1.0, min(float(self.manual_gain), 20.0))
+                    self.effective_gain = g
+                    audio_f = audio_f * g
+                elif self.gain_mode == "auto":
+                    # AGC: 直近 peak を指数減衰で追跡、target=20000 (60%) に調整
+                    local_peak = float(np.abs(audio_f).max()) if audio_f.size else 0.0
+                    # envelope は減衰定数 0.995（約200ms のリリース時定数相当）
+                    self._agc_envelope = max(local_peak, self._agc_envelope * 0.995)
+                    if self._agc_envelope > 1.0:
+                        target = 20000.0
+                        desired = target / self._agc_envelope
+                        desired = max(1.0, min(desired, 20.0))
+                        # 急減は速く、増大は遅く（attack 0.3 / release 0.05）
+                        alpha = 0.3 if desired < self._agc_gain else 0.05
+                        self._agc_gain += (desired - self._agc_gain) * alpha
+                    self.effective_gain = self._agc_gain
+                    audio_f = audio_f * self._agc_gain
+                else:
+                    self.effective_gain = 1.0
+                audio = audio_f
+                # int16 範囲にクリップ（gain 適用後のオーバーフロー防止）
+                audio = np.clip(audio, -32768, 32767)
+
+                # 音量レベル監視（gain適用後の実効peak を採用）
+                chunk_max = int(np.abs(audio).max()) if audio.size else 0
+                # リアルタイム表示用: ピークホールド（減衰つき）
+                self.audio_peak_now = max(chunk_max, int(self.audio_peak_now * 0.85))
                 level_window_max = max(level_window_max, chunk_max)
                 level_window_chunks += 1
                 now = _time.time()
@@ -401,9 +439,16 @@ class CaptionSystem:
 
         # on_transcription_start は self を動的参照するため、プリロード後に
         # self._on_whisper_busy を設定しても正しく動作する。
-        def _on_transcription_start():
+        # RealtimeSTT は audio_copy を引数に渡し、戻り値が truthy なら転記を中断するので注意。
+        def _on_transcription_start(audio_copy=None):
             if self._on_whisper_busy:
                 self._on_whisper_busy(True)
+            return None  # 転記を中断しない
+
+        # Whisper compute_type: config で指定（未指定なら int8 で CPU 高速化）
+        whisper_cfg = self._config.get("whisper", {})
+        compute_type = whisper_cfg.get("compute_type", "int8")
+        device = whisper_cfg.get("device", "auto")  # "auto"/"cpu"/"cuda"
 
         common_args = dict(
             model=self._model_name,
@@ -414,6 +459,8 @@ class CaptionSystem:
             post_speech_silence_duration=vad_cfg.get("post_speech_silence_duration", 0.6),
             min_length_of_recording=0.3,
             on_transcription_start=_on_transcription_start,
+            compute_type=compute_type,
+            device=device,
         )
         try:
             if is_loopback:
@@ -490,6 +537,8 @@ def main():
         asyncio.run(system.run())
     except KeyboardInterrupt:
         pass
+    finally:
+        _release_subst(_subst_letter)
 
 
 if __name__ == "__main__":
