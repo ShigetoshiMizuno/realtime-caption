@@ -1,11 +1,20 @@
+# 音声取得・転記（pyaudio は RealtimeSTT の推移的依存。pyaudiowpatch が WASAPI loopback を提供）
 RealtimeSTT>=0.3.0
 faster-whisper>=1.0.0
-openai>=1.0.0
-websockets>=12.0
 pyaudio>=0.2.14
 pyaudiowpatch>=0.2.12
+
+# 翻訳
+openai>=1.0.0
+deepl>=1.17.0
+
+# WebSocket で OBS に字幕配信
+websockets>=12.0
+
+# GUI
+dearpygui>=2.0
+
+# ユーティリティ
 pyyaml>=6.0
 numpy>=1.24.0
 scipy>=1.11.0
-dearpygui>=2.0
-deepl>=1.17.0

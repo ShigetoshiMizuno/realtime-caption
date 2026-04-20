@@ -8,10 +8,10 @@ __pycache__/
 .venv/
 venv/
 
-# Embeddable Python（大容量・setup.bat で自動インストール）
+# Embeddable Python（大容量・start.bat で自動インストール）
 python/
 
-# AIモデルキャッシュ（大容量・setup.bat で自動ダウンロード）
+# AIモデルキャッシュ（大容量・start.bat で自動ダウンロード）
 models/
 *.bin
 *.pt
