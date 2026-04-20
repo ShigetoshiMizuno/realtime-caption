@@ -25,3 +25,6 @@ models/
 *.pdf
 新規*
 settings.json
+
+# Claude セッション間の引き継ぎメモ（ローカルのみ）
+handover/
