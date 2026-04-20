@@ -87,12 +87,17 @@ TAG_DEVICE_COMBO = "device_combo"
 TAG_MODEL_COMBO = "model_combo"
 TAG_START_BTN = "start_btn"
 TAG_TRANS_COMBO = "trans_combo"
+TAG_VAD_SENSITIVITY = "vad_sensitivity"
+TAG_VAD_SILENCE = "vad_silence"
 TAG_LOG_GROUP = "log_group"
 TAG_LOG_SCROLL = "log_scroll"
 TAG_STATUS_DEVICE = "status_device"
 TAG_STATUS_WS = "status_ws"
 TAG_STATUS_RPC = "status_rpc"
 TAG_STATUS_STATE = "status_state"
+
+VAD_DEFAULT_SENSITIVITY = 0.4
+VAD_DEFAULT_SILENCE = 0.6
 
 
 # ---------------------------------------------------------------------------
@@ -181,10 +186,12 @@ def _do_start(device_index: int | None = None, model: str | None = None):
         print(f"[{ts}] EN: {original}")
         print(f"       JP: {translated}")
 
-    # GUI で選択した翻訳エンジンを config に反映
+    # GUI の設定を config に反映
     selected_trans = dpg.get_value(TAG_TRANS_COMBO)
     if selected_trans in ("openai", "deepl"):
         _config.setdefault("translation", {})["translation_model"] = selected_trans
+    _config.setdefault("vad", {})["silero_sensitivity"] = dpg.get_value(TAG_VAD_SENSITIVITY)
+    _config.setdefault("vad", {})["post_speech_silence_duration"] = dpg.get_value(TAG_VAD_SILENCE)
 
     def on_ready():
         _enqueue("set_running", value=True)
@@ -382,6 +389,29 @@ def _build_gui():
             dpg.add_button(tag=TAG_START_BTN, label="Start", width=120,
                            callback=_on_start_stop_click,
                            enabled=bool(trans_models))
+
+        # --- ツールバー 3行目: VAD 設定 ---
+        vad_cfg = _config.get("vad", {})
+        with dpg.group(horizontal=True):
+            dpg.add_text("Sensitivity:")
+            dpg.add_slider_float(
+                tag=TAG_VAD_SENSITIVITY,
+                default_value=vad_cfg.get("silero_sensitivity", VAD_DEFAULT_SENSITIVITY),
+                min_value=0.0, max_value=1.0,
+                width=160, format="%.2f",
+            )
+            dpg.add_text("  Silence(s):")
+            dpg.add_slider_float(
+                tag=TAG_VAD_SILENCE,
+                default_value=vad_cfg.get("post_speech_silence_duration", VAD_DEFAULT_SILENCE),
+                min_value=0.1, max_value=3.0,
+                width=160, format="%.1f",
+            )
+            dpg.add_button(label="Reset", width=80,
+                           callback=lambda: (
+                               dpg.set_value(TAG_VAD_SENSITIVITY, VAD_DEFAULT_SENSITIVITY),
+                               dpg.set_value(TAG_VAD_SILENCE, VAD_DEFAULT_SILENCE),
+                           ))
 
         dpg.add_separator()
 
