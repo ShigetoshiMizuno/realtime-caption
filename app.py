@@ -129,10 +129,10 @@ def _drain_queue():
             _is_running = item["value"]
             if _is_running:
                 dpg.configure_item(TAG_START_BTN, label="Stop")
-                dpg.set_value(TAG_STATUS_STATE, "[REC] Recording")
+                dpg.set_value(TAG_STATUS_STATE, "🔴 Recording")
             else:
                 dpg.configure_item(TAG_START_BTN, label="Start")
-                dpg.set_value(TAG_STATUS_STATE, "[---] Stopped")
+                dpg.set_value(TAG_STATUS_STATE, "⏹ Stopped")
 
         elif cmd == "stop_system":
             _do_stop()
@@ -200,7 +200,7 @@ def _do_start(device_index: int | None = None, model: str | None = None):
                             on_result=on_result, on_ready=on_ready)
 
     dpg.configure_item(TAG_START_BTN, label="Stop")
-    _enqueue("set_status", text=f"[Loading] model: {model_name} ...")
+    _enqueue("set_status", text=f"⏳ Loading model: {model_name} ...")
     print(f"[INFO] Whisper {model_name} model loading, please wait...")
 
     def run_in_thread():
@@ -218,7 +218,7 @@ def _do_stop():
         _system = None
     _is_running = False
     dpg.configure_item(TAG_START_BTN, label="Start")
-    dpg.set_value(TAG_STATUS_STATE, "[---] Stopped")
+    dpg.set_value(TAG_STATUS_STATE, "⏹ Stopped")
 
 
 def _on_start_stop_click():
@@ -318,27 +318,40 @@ def _available_trans_models(cfg: dict) -> list[str]:
     return result
 
 
-def _load_japanese_font(size: int = 16) -> int | None:
-    candidates = [
+_font_main: int | None = None    # 日本語テキスト用（Meiryo 等）
+_font_emoji: int | None = None   # アイコン用（Segoe UI Emoji）
+
+
+def _load_fonts(size: int = 16):
+    global _font_main, _font_emoji
+
+    jp_candidates = [
         "C:/Windows/Fonts/meiryo.ttc",
         "C:/Windows/Fonts/YuGothM.ttc",
         "C:/Windows/Fonts/msgothic.ttc",
     ]
-    for path in candidates:
-        if _Path(path).exists():
-            with dpg.font_registry():
-                with dpg.font(path, size) as font:
-                    pass
-            return font
-    return None
+    emoji_path = "C:/Windows/Fonts/seguiemj.ttf"
+
+    jp_font_path = next((p for p in jp_candidates if _Path(p).exists()), None)
+
+    with dpg.font_registry():
+        if jp_font_path:
+            with dpg.font(jp_font_path, size) as f:
+                pass
+            _font_main = f
+
+        if _Path(emoji_path).exists():
+            with dpg.font(emoji_path, size) as f:
+                pass
+            _font_emoji = f
 
 
 def _build_gui():
     dpg.create_context()
 
-    font = _load_japanese_font(16)
-    if font:
-        dpg.bind_font(font)
+    _load_fonts(16)
+    if _font_main:
+        dpg.bind_font(_font_main)  # 日本語テキストをデフォルトに
 
     dpg.create_viewport(title="Realtime Caption & Translation", width=960, height=680, resizable=True)
     dpg.setup_dearpygui()
@@ -425,13 +438,17 @@ def _build_gui():
 
         # --- ステータスバー ---
         with dpg.group(horizontal=True):
-            dpg.add_text("[---] Stopped", tag=TAG_STATUS_STATE)
+            dpg.add_text("⏹ Stopped", tag=TAG_STATUS_STATE)
             dpg.add_text("  |  WS clients:")
             dpg.add_text("0", tag=TAG_STATUS_WS)
             dpg.add_text("  |  RPC:")
             dpg.add_text(f"http://localhost:{rpc_port}", tag=TAG_STATUS_RPC)
 
     dpg.set_primary_window("main_window", True)
+
+    # ステータスバーに Segoe UI Emoji フォントを適用
+    if _font_emoji:
+        dpg.bind_item_font(TAG_STATUS_STATE, _font_emoji)
 
 
 # ---------------------------------------------------------------------------
