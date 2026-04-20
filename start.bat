@@ -47,7 +47,7 @@ if exist "%PYTHON_DIR%\python.exe" (
     del get-pip.py
 
     echo [3/4] Installing packages (approx. 2 GB^)...
-    %PYTHON_DIR%\python.exe -m pip install -r requirements.txt || goto error
+    %PYTHON_DIR%\python.exe -m pip install -r requirements.txt --no-warn-script-location || goto error
 
     echo [4/4] Downloading models (Whisper approx. 500 MB^)...
     %PYTHON_DIR%\python.exe download_models.py || goto error
@@ -59,8 +59,13 @@ if exist "%PYTHON_DIR%\python.exe" (
 
 :: --- launch ---
 echo Starting...
+echo   (Please wait 10-30 seconds for the GUI to appear.)
 echo.
-%PYTHON_DIR%\python.exe main.py
+if "%1"=="--cli" (
+    %PYTHON_DIR%\python.exe main.py
+) else (
+    %PYTHON_DIR%\python.exe app.py
+)
 if %ERRORLEVEL% neq 0 (
     echo.
     echo [ERROR] Exit code: %ERRORLEVEL%

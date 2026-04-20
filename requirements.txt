@@ -7,3 +7,5 @@ pyaudiowpatch>=0.2.12
 pyyaml>=6.0
 numpy>=1.24.0
 scipy>=1.11.0
+dearpygui>=2.0
+deepl>=1.17.0

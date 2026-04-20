@@ -1,13 +1,19 @@
 openai:
-  api_key: "sk-xxxxxxxxxxxxxxxxxxxx"  # ここに OpenAI API キーを入力
+  api_key: "sk-xxxxxxxxxxxxxxxxxxxx"  # OpenAI を使う場合に入力
+
+deepl:
+  api_key: "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx:fx"  # DeepL を使う場合に入力
 
 translation:
   target_language: "日本語"
+  translation_model: "deepl"  # "openai" または "deepl"
   system_prompt: "与えられたテキストを自然な{target_language}に翻訳してください。翻訳結果のみ返してください。"
 
 whisper:
   model: "small"   # small または medium
-  language: "en"   # 入力言語コード（自動検出にする場合は null）
+  language: null   # 入力言語コード（null で自動検出 / "en" や "ja" で固定）
+  compute_type: "int8"   # int8（CPU推奨・高速）/ float16（GPU推奨）/ float32（精度優先・遅い）
+  device: "cpu"          # cpu / cuda（GPU 環境のみ）
 
 websocket:
   host: "localhost"
@@ -15,3 +21,10 @@ websocket:
 
 output:
   log_dir: "."  # 翻訳ログの出力ディレクトリ（YYYY-MM-DD-n_translate.txt を自動生成）
+
+vad:
+  silero_sensitivity: 0.4    # 低いほど拾いやすい（0.0〜1.0、デフォルト 0.4）
+  post_speech_silence_duration: 0.6  # 無音何秒で発話終了（秒）
+
+rpc:
+  port: 8767

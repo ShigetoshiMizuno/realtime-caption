@@ -38,10 +38,23 @@ def _release_subst(letter: str | None):
         subprocess.run(["subst", f"{letter}:", "/d"], capture_output=True)
 
 
-_MODEL_BASE = _Path(__file__).parent.resolve() / "models"
+# モデルキャッシュ先: プロジェクトディレクトリが ASCII なら ./models、
+# 非 ASCII なら %LOCALAPPDATA%\rc-models にフォールバック（torch.jit の fopen 制約を回避）
+# app.py から import された場合（RC_MODELS_CONFIGURED）は重複セットアップとログを回避
+_already_configured = os.environ.get("RC_MODELS_CONFIGURED") == "1"
+_project_models = _Path(__file__).parent.resolve() / "models"
+if all(ord(c) < 128 for c in str(_project_models)):
+    _MODEL_BASE = _project_models
+else:
+    _localappdata = os.environ.get("LOCALAPPDATA") or os.path.expanduser(r"~\AppData\Local")
+    _MODEL_BASE = _Path(_localappdata) / "rc-models"
+    if not _already_configured:
+        print(f"[main] プロジェクトパスに非ASCII文字を含むため、モデルキャッシュを {_MODEL_BASE} に配置します", flush=True)
+
 _ascii_models, _subst_letter = _ensure_ascii_path(_MODEL_BASE)
 os.environ.setdefault("HF_HOME", str(_ascii_models / "huggingface"))
 os.environ.setdefault("TORCH_HOME", str(_ascii_models / "torch"))
+os.environ["RC_MODELS_CONFIGURED"] = "1"
 
 import asyncio
 import io
@@ -65,13 +78,42 @@ if sys.stdout.encoding != "utf-8":
     sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
     sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding="utf-8", errors="replace")
 
+# RealtimeSTT シャットダウン時の既知ノイズを抑制（issue #4）
+# `_recording_worker` が閉じた multiprocessing queue にアクセスして WinError 6 を吐く
+import logging as _logging
+_logging.getLogger("realtimestt").setLevel(_logging.CRITICAL)
+
+_default_thread_excepthook = threading.excepthook
+def _rc_thread_excepthook(args):
+    # WinError 6 / ERROR_INVALID_HANDLE は停止時のレースで出るだけなので黙殺
+    exc = args.exc_value
+    if isinstance(exc, OSError) and getattr(exc, "winerror", None) == 6:
+        return
+    # その他はデフォルト動作へ
+    _default_thread_excepthook(args)
+threading.excepthook = _rc_thread_excepthook
+
 # Silero VAD モデルを信頼済みリポジトリとして事前登録（初回確認をスキップ）
+# このロードに失敗すると AudioToTextRecorder 初期化時に jit ファイル不在で落ちる。
+_hub_dir = _ascii_models / "torch" / "hub"
+torch.hub.set_dir(str(_hub_dir))
 try:
-    _hub_dir = _ascii_models / "torch" / "hub"
-    torch.hub.set_dir(str(_hub_dir))
     torch.hub.load('snakers4/silero-vad', 'silero_vad', trust_repo=True, verbose=False)
-except Exception:
-    pass
+except Exception as e:
+    print(f"[WARN] Silero VAD の事前ロードに失敗しました: {e}", flush=True)
+    print(f"[WARN] オフライン環境なら初回だけオンラインで起動してください", flush=True)
+    # モデルファイルが不完全な場合は再取得を試みる
+    import shutil
+    _silero_dir = _hub_dir / "snakers4_silero-vad_master"
+    _jit_path = _silero_dir / "src" / "silero_vad" / "data" / "silero_vad.jit"
+    if _silero_dir.exists() and not _jit_path.exists():
+        print(f"[WARN] 不完全な Silero キャッシュを削除して再取得します: {_silero_dir}", flush=True)
+        try:
+            shutil.rmtree(_silero_dir)
+            torch.hub.load('snakers4/silero-vad', 'silero_vad', trust_repo=True, verbose=False)
+            print(f"[INFO] Silero VAD 再取得に成功しました", flush=True)
+        except Exception as e2:
+            print(f"[ERROR] Silero VAD 再取得にも失敗: {e2}", flush=True)
 
 # RealtimeSTT が期待するサンプルレート
 REALTIMESTT_SAMPLE_RATE = 16000
@@ -149,6 +191,10 @@ class SubtitleBroadcaster:
             async with self._lock:
                 self._clients.discard(websocket)
 
+    @property
+    def client_count(self) -> int:
+        return len(self._clients)
+
     async def broadcast(self, message: str):
         async with self._lock:
             targets = set(self._clients)
@@ -159,56 +205,106 @@ class SubtitleBroadcaster:
             )
 
 
-class TranslationService:
-    """OpenAI API を使って翻訳を行う。"""
+_DEEPL_LANG_MAP = {
+    "日本語": "JA", "japanese": "JA",
+    "英語": "EN-US", "english": "EN-US",
+    "中国語": "ZH", "chinese": "ZH",
+    "韓国語": "KO", "korean": "KO",
+    "ドイツ語": "DE", "german": "DE",
+    "フランス語": "FR", "french": "FR",
+}
 
-    def __init__(self, api_key: str, target_language: str, system_prompt_template: str):
-        self._client = OpenAI(api_key=api_key)
-        self._target_language = target_language
-        self._system_prompt = system_prompt_template.format(
-            target_language=target_language
-        )
+
+class TranslationService:
+    """翻訳サービス。config の translation_model に応じて OpenAI または DeepL を使う。"""
+
+    def __init__(self, config: dict):
+        trans_cfg = config.get("translation", {})
+        self._target_language = trans_cfg.get("target_language", "日本語")
+        model = trans_cfg.get("translation_model", "openai").lower()
+
+        if model == "deepl":
+            import deepl as _deepl
+            self._deepl = _deepl.Translator(config["deepl"]["api_key"])
+            self._deepl_target = _DEEPL_LANG_MAP.get(
+                self._target_language.lower(), self._target_language.upper()
+            )
+            self._mode = "deepl"
+        else:
+            self._client = OpenAI(api_key=config["openai"]["api_key"])
+            prompt_tmpl = trans_cfg.get("system_prompt",
+                "与えられたテキストを自然な{target_language}に翻訳してください。翻訳結果のみ返してください。")
+            self._system_prompt = prompt_tmpl.format(target_language=self._target_language)
+            self._mode = "openai"
 
     def translate(self, text: str) -> str:
-        response = self._client.chat.completions.create(
-            model="gpt-4o-mini",
-            messages=[
-                {"role": "system", "content": self._system_prompt},
-                {"role": "user", "content": text},
-            ],
-            temperature=0.3,
-        )
-        return response.choices[0].message.content.strip()
+        if self._mode == "deepl":
+            result = self._deepl.translate_text(text, target_lang=self._deepl_target)
+            return result.text
+        else:
+            response = self._client.chat.completions.create(
+                model="gpt-4o-mini",
+                messages=[
+                    {"role": "system", "content": self._system_prompt},
+                    {"role": "user", "content": text},
+                ],
+                temperature=0.3,
+            )
+            return response.choices[0].message.content.strip()
 
 
 class CaptionSystem:
     """文字起こし・翻訳・WebSocket 配信を統合管理するクラス。"""
 
-    def __init__(self, config: dict, device_info: dict, model_name: str):
+    def __init__(self, config: dict, device_info: dict, model_name: str,
+                 on_result=None, on_ready=None,
+                 on_whisper_busy=None, on_trans_busy=None):
         self._config = config
         self._device_info = device_info
         self._model_name = model_name
+        self._on_result = on_result          # callable(original: str, translated: str) | None
+        self._on_ready = on_ready            # callable() | None — モデル準備完了時に呼ばれる
+        self._on_whisper_busy = on_whisper_busy  # callable(bool) | None
+        self._on_trans_busy = on_trans_busy      # callable(bool) | None
 
-        self._translator = TranslationService(
-            api_key=config["openai"]["api_key"],
-            target_language=config["translation"]["target_language"],
-            system_prompt_template=config["translation"]["system_prompt"],
-        )
+        self._translator = TranslationService(config)
         self._broadcaster = SubtitleBroadcaster()
         self._loop: asyncio.AbstractEventLoop | None = None
         self._recorder: AudioToTextRecorder | None = None
         self._stop_event = threading.Event()
+        self._stop_event_async: asyncio.Event | None = None
         log_dir = config.get("output", {}).get("log_dir", ".")
         self._log_path = self._make_log_path(Path(log_dir))
+        # 直近1秒の音量メーター（0〜32767 の int16 peak）
+        self.audio_peak: int = 0
+        self.audio_chunks_per_sec: int = 0
+        # リアルタイム表示用（チャンクごとに更新）
+        self.audio_peak_now: int = 0
+        # Gain 制御: "off" | "manual" | "auto"（実行中もスレッドセーフに変更可）
+        self.gain_mode: str = "off"
+        self.manual_gain: float = 1.0
+        # AGC の状態
+        self._agc_gain: float = 1.0
+        self._agc_envelope: float = 0.0  # 直近の peak 追従値（減衰付き）
+        self.effective_gain: float = 1.0  # 実際に適用された直近 gain（RPC で参照）
 
     def shutdown(self):
+        # idempotent ガード: 二重 shutdown を防止（WinError 6 対策）
+        if self._stop_event.is_set():
+            return
         self._stop_event.set()
+        # capture スレッドを先に停止させて、feed_audio が止まってから recorder.stop() を呼ぶ
+        cap = getattr(self, "_capture_thread", None)
+        if cap is not None and cap.is_alive():
+            cap.join(timeout=1.0)
         if self._recorder:
             try:
                 self._recorder.stop()
             except Exception:
                 pass
-        _release_subst(_subst_letter)
+        if self._loop and self._stop_event_async:
+            self._loop.call_soon_threadsafe(self._stop_event_async.set)
+        # subst ドライブの解除はアプリ終了時のみ（app.py の main() / main.py の main() で実施）。
 
     @staticmethod
     def _make_log_path(log_dir: Path) -> Path:
@@ -228,6 +324,9 @@ class CaptionSystem:
         if not text:
             return
 
+        if self._on_whisper_busy:
+            self._on_whisper_busy(False)
+
         print(f"\n[原文] {text}")
 
         if self._loop and not self._loop.is_closed():
@@ -237,18 +336,26 @@ class CaptionSystem:
 
     async def _translate_and_broadcast(self, text: str):
         """翻訳を asyncio スレッドプールで実行し、WebSocket に配信する。"""
+        if self._on_trans_busy:
+            self._on_trans_busy(True)
         try:
             translated = await asyncio.to_thread(self._translator.translate, text)
         except Exception as e:
             print(f"[翻訳エラー] {e}")
             translated = ""
-
-        print(f"[翻訳] {translated}")
+        finally:
+            if self._on_trans_busy:
+                self._on_trans_busy(False)
 
         if translated:
             ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             with self._log_path.open("a", encoding="utf-8") as f:
                 f.write(f"[{ts}]\n原文: {text}\n翻訳: {translated}\n\n")
+
+        if self._on_result and translated:
+            self._on_result(text, translated)
+        elif translated:
+            print(f"[翻訳] {translated}")
 
         payload = json.dumps({"original": text, "translated": translated}, ensure_ascii=False)
         await self._broadcaster.broadcast(payload)
@@ -280,7 +387,14 @@ class CaptionSystem:
             pa.terminate()
             return
 
-        print(f"[INFO] ループバックキャプチャ開始: {src_rate}Hz, {channels}ch -> {REALTIMESTT_SAMPLE_RATE}Hz mono")
+        print(f"[INFO] ループバックキャプチャ開始: {src_rate}Hz, {channels}ch -> {REALTIMESTT_SAMPLE_RATE}Hz mono", flush=True)
+
+        # デバッグ用: 1秒ごとに音量レベルを出力
+        import time as _time
+        level_window_max = 0
+        level_window_chunks = 0
+        next_log = _time.time() + 1.0
+        chunks_per_sec = max(1, src_rate // chunk_size)
 
         try:
             while not self._stop_event.is_set():
@@ -293,6 +407,49 @@ class CaptionSystem:
                 if channels > 1:
                     audio = audio.reshape(-1, channels)
                     audio = audio.mean(axis=1)
+
+                # --- Gain 処理 ---
+                audio_f = audio.astype(np.float32)
+                if self.gain_mode == "manual":
+                    g = max(1.0, min(float(self.manual_gain), 20.0))
+                    self.effective_gain = g
+                    audio_f = audio_f * g
+                elif self.gain_mode == "auto":
+                    # AGC: 直近 peak を指数減衰で追跡、target=20000 (60%) に調整
+                    local_peak = float(np.abs(audio_f).max()) if audio_f.size else 0.0
+                    # envelope は減衰定数 0.995（約200ms のリリース時定数相当）
+                    self._agc_envelope = max(local_peak, self._agc_envelope * 0.995)
+                    if self._agc_envelope > 1.0:
+                        target = 20000.0
+                        desired = target / self._agc_envelope
+                        desired = max(1.0, min(desired, 20.0))
+                        # 急減は速く、増大は遅く（attack 0.3 / release 0.05）
+                        alpha = 0.3 if desired < self._agc_gain else 0.05
+                        self._agc_gain += (desired - self._agc_gain) * alpha
+                    self.effective_gain = self._agc_gain
+                    audio_f = audio_f * self._agc_gain
+                else:
+                    self.effective_gain = 1.0
+                audio = audio_f
+                # int16 範囲にクリップ（gain 適用後のオーバーフロー防止）
+                audio = np.clip(audio, -32768, 32767)
+
+                # 音量レベル監視（gain適用後の実効peak を採用）
+                chunk_max = int(np.abs(audio).max()) if audio.size else 0
+                # リアルタイム表示用: ピークホールド（減衰つき）
+                self.audio_peak_now = max(chunk_max, int(self.audio_peak_now * 0.85))
+                level_window_max = max(level_window_max, chunk_max)
+                level_window_chunks += 1
+                now = _time.time()
+                if now >= next_log:
+                    self.audio_peak = level_window_max
+                    self.audio_chunks_per_sec = level_window_chunks
+                    pct = level_window_max * 100 // 32767
+                    bar = "█" * (pct // 5)
+                    print(f"[AUDIO] peak={level_window_max:>5d} ({pct:3d}%) {bar} chunks={level_window_chunks}", flush=True)
+                    level_window_max = 0
+                    level_window_chunks = 0
+                    next_log = now + 1.0
 
                 # float32 に変換してリサンプリング
                 audio_f = audio.astype(np.float32)
@@ -308,29 +465,54 @@ class CaptionSystem:
         except Exception as e:
             print(f"[ERROR] ループバックキャプチャ中にエラーが発生しました: {e}")
         finally:
-            stream.stop_stream()
-            stream.close()
+            try:
+                stream.stop_stream()
+            except Exception:
+                pass
+            try:
+                stream.close()
+            except Exception:
+                pass
             pa.terminate()
 
-    def _start_recorder(self):
-        """別スレッドで RealtimeSTT を起動する。"""
-        is_loopback = self._device_info.get("isLoopback", False)
+    def prepare(self):
+        """Whisper モデルをロードして recorder を初期化する。
+        バックグラウンドスレッドから事前呼び出し可能。run() より前に呼ぶことで起動を高速化できる。"""
+        if self._recorder is not None:
+            return
 
+        is_loopback = self._device_info.get("isLoopback", False)
+        lang = self._config.get("whisper", {}).get("language", None) or None
+        vad_cfg = self._config.get("vad", {})
+
+        # on_transcription_start は self を動的参照するため、プリロード後に
+        # self._on_whisper_busy を設定しても正しく動作する。
+        # RealtimeSTT は audio_copy を引数に渡し、戻り値が truthy なら転記を中断するので注意。
+        def _on_transcription_start(audio_copy=None):
+            if self._on_whisper_busy:
+                self._on_whisper_busy(True)
+            return None  # 転記を中断しない
+
+        # Whisper compute_type: config で指定（未指定なら int8 で CPU 高速化）
+        whisper_cfg = self._config.get("whisper", {})
+        compute_type = whisper_cfg.get("compute_type", "int8")
+        device = whisper_cfg.get("device", "auto")  # "auto"/"cpu"/"cuda"
+
+        common_args = dict(
+            model=self._model_name,
+            language=lang,
+            spinner=False,
+            enable_realtime_transcription=False,
+            silero_sensitivity=vad_cfg.get("silero_sensitivity", 0.4),
+            post_speech_silence_duration=vad_cfg.get("post_speech_silence_duration", 0.6),
+            min_length_of_recording=0.3,
+            on_transcription_start=_on_transcription_start,
+            compute_type=compute_type,
+            device=device,
+        )
         try:
-            lang = self._config.get("whisper", {}).get("language", None) or None
-            common_args = dict(
-                model=self._model_name,
-                language=lang,
-                spinner=False,
-                enable_realtime_transcription=False,
-                post_speech_silence_duration=0.4,  # 無音0.4秒で発話区切り
-                min_length_of_recording=0.3,        # 0.3秒以上の発話を認識
-            )
             if is_loopback:
-                self._recorder = AudioToTextRecorder(
-                    **common_args,
-                    use_microphone=False,
-                )
+                self._recorder = AudioToTextRecorder(**common_args, use_microphone=False)
             else:
                 self._recorder = AudioToTextRecorder(
                     **common_args,
@@ -339,13 +521,22 @@ class CaptionSystem:
                 )
         except Exception as e:
             print(f"[ERROR] AudioToTextRecorder の初期化に失敗しました: {e}")
-            return
 
+    def _start_recorder(self):
+        """別スレッドで録音ループを起動する。prepare() が未完了なら先に呼ぶ。"""
+        if self._recorder is None:
+            self.prepare()
+        if self._recorder is None:
+            return  # prepare 失敗
+
+        is_loopback = self._device_info.get("isLoopback", False)
         if is_loopback:
-            capture_thread = threading.Thread(target=self._loopback_capture_thread, daemon=True)
-            capture_thread.start()
+            self._capture_thread = threading.Thread(target=self._loopback_capture_thread, daemon=True)
+            self._capture_thread.start()
 
-        print("\n[INFO] 録音を開始しました。Ctrl+C で終了します。\n")
+        print("\n[INFO] 録音を開始しました。\n")
+        if self._on_ready:
+            self._on_ready()
         try:
             while not self._stop_event.is_set():
                 self._recorder.text(self._on_transcription)
@@ -356,6 +547,7 @@ class CaptionSystem:
     async def run(self):
         """WebSocket サーバーを起動し、録音スレッドを開始する。"""
         self._loop = asyncio.get_running_loop()
+        self._stop_event_async = asyncio.Event()
 
         ws_host = self._config["websocket"]["host"]
         ws_port = self._config["websocket"]["port"]
@@ -368,11 +560,11 @@ class CaptionSystem:
 
         try:
             async with websockets.serve(self._broadcaster.register, ws_host, ws_port):
-                await asyncio.Future()
+                await self._stop_event_async.wait()
         except asyncio.CancelledError:
-            pass
-        finally:
+            # asyncio 中断時のみ shutdown 必要（Stop ボタン経由の正常終了は呼び出し側が責務）
             self.shutdown()
+        finally:
             print("[INFO] 終了しました。")
 
 
@@ -393,6 +585,8 @@ def main():
         asyncio.run(system.run())
     except KeyboardInterrupt:
         pass
+    finally:
+        _release_subst(_subst_letter)
 
 
 if __name__ == "__main__":
