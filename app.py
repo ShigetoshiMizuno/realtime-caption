@@ -129,10 +129,10 @@ def _drain_queue():
             _is_running = item["value"]
             if _is_running:
                 dpg.configure_item(TAG_START_BTN, label="Stop")
-                dpg.set_value(TAG_STATUS_STATE, "● Recording")
+                dpg.set_value(TAG_STATUS_STATE, "[REC] Recording")
             else:
                 dpg.configure_item(TAG_START_BTN, label="Start")
-                dpg.set_value(TAG_STATUS_STATE, "○ Stopped")
+                dpg.set_value(TAG_STATUS_STATE, "[---] Stopped")
 
         elif cmd == "stop_system":
             _do_stop()
@@ -200,8 +200,8 @@ def _do_start(device_index: int | None = None, model: str | None = None):
                             on_result=on_result, on_ready=on_ready)
 
     dpg.configure_item(TAG_START_BTN, label="Stop")
-    _enqueue("set_status", text=f"⏳ モデル読み込み中... ({model_name})")
-    print(f"[INFO] Whisper {model_name} モデルを読み込んでいます。しばらくお待ちください...")
+    _enqueue("set_status", text=f"[Loading] model: {model_name} ...")
+    print(f"[INFO] Whisper {model_name} model loading, please wait...")
 
     def run_in_thread():
         asyncio.run(_system.run())
@@ -218,7 +218,7 @@ def _do_stop():
         _system = None
     _is_running = False
     dpg.configure_item(TAG_START_BTN, label="Start")
-    dpg.set_value(TAG_STATUS_STATE, "○ Stopped")
+    dpg.set_value(TAG_STATUS_STATE, "[---] Stopped")
 
 
 def _on_start_stop_click():
@@ -425,7 +425,7 @@ def _build_gui():
 
         # --- ステータスバー ---
         with dpg.group(horizontal=True):
-            dpg.add_text("○ Stopped", tag=TAG_STATUS_STATE)
+            dpg.add_text("[---] Stopped", tag=TAG_STATUS_STATE)
             dpg.add_text("  |  WS clients:")
             dpg.add_text("0", tag=TAG_STATUS_WS)
             dpg.add_text("  |  RPC:")
