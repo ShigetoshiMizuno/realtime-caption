@@ -122,6 +122,7 @@ TAG_LEVEL_METER = "level_meter"
 TAG_LEVEL_THEME_GREEN = "level_theme_green"
 TAG_LEVEL_THEME_YELLOW = "level_theme_yellow"
 TAG_LEVEL_THEME_RED = "level_theme_red"
+TAG_VERBOSE_BTN = "verbose_btn"
 TAG_LOG_GROUP = "log_group"
 TAG_LOG_SCROLL = "log_scroll"
 TAG_STATUS_DEVICE = "status_device"
@@ -137,6 +138,9 @@ GAIN_DEFAULT_MODE = "off"
 GAIN_DEFAULT_VALUE = 1.0
 
 _SETTINGS_PATH = _SCRIPT_DIR / "settings.json"
+
+# Verbose ロギング状態（settings.json で永続化）
+_verbose_state: bool = False
 
 
 def _load_settings() -> dict:
@@ -157,6 +161,7 @@ def _save_settings():
             "vad_silence": dpg.get_value(TAG_VAD_SILENCE),
             "gain_mode": dpg.get_value(TAG_GAIN_MODE),
             "gain_value": dpg.get_value(TAG_GAIN_SLIDER),
+            "verbose": _verbose_state,
         }
         with open(_SETTINGS_PATH, "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False, indent=2)
@@ -199,6 +204,18 @@ def _on_gain_mode_change(sender, value, user_data):
 def _on_gain_value_change(sender, value, user_data):
     if _system:
         _system.manual_gain = float(value)
+
+
+def _on_verbose_toggle():
+    """Verbose ボタン押下: ON/OFF をトグルし、稼働中のシステムにも反映。"""
+    global _verbose_state
+    _verbose_state = not _verbose_state
+    if _system:
+        _system.verbose = _verbose_state
+    if dpg.does_item_exist(TAG_VERBOSE_BTN):
+        dpg.configure_item(TAG_VERBOSE_BTN,
+                           label="Verbose ●" if _verbose_state else "Verbose ○")
+    _save_settings()
 
 
 # ---------------------------------------------------------------------------
@@ -487,6 +504,7 @@ def _do_start(device_index: int | None = None, model: str | None = None):
 
     _system.gain_mode = gain_mode
     _system.manual_gain = gain_value
+    _system.verbose = _verbose_state
 
     dpg.configure_item(TAG_START_BTN, label="停止")
     if loading:
@@ -693,6 +711,8 @@ def _build_gui():
     if default_gain_mode not in ("off", "manual", "auto"):
         default_gain_mode = GAIN_DEFAULT_MODE
     default_gain_value = float(saved.get("gain_value", GAIN_DEFAULT_VALUE))
+    global _verbose_state
+    _verbose_state = bool(saved.get("verbose", False))
 
     device_labels = [_device_label(d) for d in _devices]
     saved_device = saved.get("device", "")
@@ -743,6 +763,11 @@ def _build_gui():
             dpg.add_progress_bar(tag=TAG_LEVEL_METER, default_value=0.0,
                                  width=180, overlay="0%")
             dpg.add_button(label="ログクリア", width=100, callback=_clear_log)
+            dpg.add_button(
+                tag=TAG_VERBOSE_BTN,
+                label="Verbose ●" if _verbose_state else "Verbose ○",
+                width=110, callback=_on_verbose_toggle,
+            )
 
         # --- 詳細設定（初期状態は折りたたみ） ---
         with dpg.collapsing_header(label="詳細設定", default_open=False):

@@ -287,6 +287,10 @@ class CaptionSystem:
         self._agc_gain: float = 1.0
         self._agc_envelope: float = 0.0  # 直近の peak 追従値（減衰付き）
         self.effective_gain: float = 1.0  # 実際に適用された直近 gain（RPC で参照）
+        # Verbose ログ（STT 結果・翻訳リクエスト・成功失敗を時系列で別ファイルに残す）
+        self.verbose: bool = False
+        self._verbose_log_path: Path | None = None
+        self._verbose_lock = threading.Lock()
 
     def shutdown(self):
         # idempotent ガード: 二重 shutdown を防止（WinError 6 対策）
@@ -305,6 +309,31 @@ class CaptionSystem:
         if self._loop and self._stop_event_async:
             self._loop.call_soon_threadsafe(self._stop_event_async.set)
         # subst ドライブの解除はアプリ終了時のみ（app.py の main() / main.py の main() で実施）。
+
+    def _ensure_verbose_log_path(self) -> Path:
+        """verbose ログファイルパスを遅延生成。translate ログと同じ N を使う。"""
+        if self._verbose_log_path is None:
+            base = self._log_path.stem.replace("_translate", "_verbose")
+            self._verbose_log_path = self._log_path.parent / f"{base}.txt"
+        return self._verbose_log_path
+
+    def _log_verbose(self, event: str, **fields):
+        """verbose=True のときのみ、verbose ログにイベントを書く。"""
+        if not self.verbose:
+            return
+        try:
+            ts = datetime.now().strftime("%H:%M:%S.%f")[:-3]
+            with self._verbose_lock:
+                with self._ensure_verbose_log_path().open("a", encoding="utf-8") as f:
+                    f.write(f"[{ts}] {event}\n")
+                    for k, v in fields.items():
+                        s = str(v).replace("\n", "\\n")
+                        if len(s) > 500:
+                            s = s[:500] + "..."
+                        f.write(f"  {k}: {s}\n")
+                    f.write("\n")
+        except Exception:
+            pass  # ロギング自体で失敗してもアプリは止めない
 
     @staticmethod
     def _make_log_path(log_dir: Path) -> Path:
@@ -327,6 +356,7 @@ class CaptionSystem:
         if self._on_whisper_busy:
             self._on_whisper_busy(False)
 
+        self._log_verbose("STT", text=text)
         print(f"\n[原文] {text}")
 
         if self._loop and not self._loop.is_closed():
@@ -336,24 +366,40 @@ class CaptionSystem:
 
     async def _translate_and_broadcast(self, text: str):
         """翻訳を asyncio スレッドプールで実行し、WebSocket に配信する。"""
+        self._log_verbose("TRANS_REQ", text=text)
         if self._on_trans_busy:
             self._on_trans_busy(True)
+        error_msg = None
         try:
             translated = await asyncio.to_thread(self._translator.translate, text)
         except Exception as e:
-            print(f"[翻訳エラー] {e}")
+            error_msg = f"{type(e).__name__}: {e}"
+            print(f"[翻訳エラー] {error_msg}")
             translated = ""
         finally:
             if self._on_trans_busy:
                 self._on_trans_busy(False)
 
         if translated:
-            ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            with self._log_path.open("a", encoding="utf-8") as f:
-                f.write(f"[{ts}]\n原文: {text}\n翻訳: {translated}\n\n")
+            self._log_verbose("TRANS_OK", original=text, translated=translated)
+        else:
+            self._log_verbose("TRANS_ERR", original=text, error=error_msg or "empty response")
 
-        if self._on_result and translated:
-            self._on_result(text, translated)
+        # メイン translate ログには成功・失敗の両方を残す（ブラックホール防止）
+        ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        try:
+            with self._log_path.open("a", encoding="utf-8") as f:
+                if translated:
+                    f.write(f"[{ts}]\n原文: {text}\n翻訳: {translated}\n\n")
+                else:
+                    f.write(f"[{ts}]\n原文: {text}\n翻訳: [失敗: {error_msg or '空応答'}]\n\n")
+        except Exception:
+            pass
+
+        # GUI への反映: 成功時は原文+翻訳、失敗時は原文+エラー表示
+        if self._on_result:
+            display = translated if translated else f"[翻訳失敗: {error_msg or '空応答'}]"
+            self._on_result(text, display)
         elif translated:
             print(f"[翻訳] {translated}")
 
