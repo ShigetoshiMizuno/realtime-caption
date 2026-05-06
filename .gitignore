@@ -16,8 +16,9 @@ models/
 *.bin
 *.pt
 
-# ログファイル
+# ログファイル（ユーザの会話内容が含まれるため絶対にコミットしない）
 *_translate.txt
+*_verbose.txt
 *.log
 
 # その他
