@@ -133,7 +133,9 @@ TAG_STATUS_STT = "status_stt"
 TAG_STATUS_TRL = "status_trl"
 
 VAD_DEFAULT_SENSITIVITY = 0.4
-VAD_DEFAULT_SILENCE = 0.2
+# 0.6 秒: 自然な息継ぎ程度の沈黙では文を切らず、文末の本格的な無音で確定する。
+# 短すぎる（0.2 等）と長文の途中で分断され、Whisper が冒頭/末尾を取りこぼしやすい。
+VAD_DEFAULT_SILENCE = 0.6
 GAIN_DEFAULT_MODE = "off"
 GAIN_DEFAULT_VALUE = 1.0
 
