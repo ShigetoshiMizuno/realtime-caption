@@ -73,6 +73,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 import dearpygui.dearpygui as dpg
 
 from main import CaptionSystem, list_audio_devices, load_config
+from config_utils import decode_api_key, encode_api_key
 
 # Windows コンソールの文字化け対策
 if sys.stdout.encoding != "utf-8":
@@ -140,6 +141,15 @@ GAIN_DEFAULT_MODE = "off"
 GAIN_DEFAULT_VALUE = 1.0
 
 _SETTINGS_PATH = _SCRIPT_DIR / "settings.json"
+CONFIG_PATH = _SCRIPT_DIR / "config.yaml"
+
+# API キー UI タグ
+TAG_OPENAI_KEY_INPUT = "openai_key_input"
+TAG_DEEPL_KEY_INPUT = "deepl_key_input"
+TAG_KEY_SHOW_OPENAI = "key_show_openai"
+TAG_KEY_SHOW_DEEPL = "key_show_deepl"
+TAG_KEY_SAVE_BTN = "key_save_btn"
+TAG_KEY_STATUS = "key_status"
 
 # Verbose ロギング状態（settings.json で永続化）
 _verbose_state: bool = False
@@ -169,6 +179,113 @@ def _save_settings():
             json.dump(data, f, ensure_ascii=False, indent=2)
     except Exception:
         pass
+
+
+# ---------------------------------------------------------------------------
+# API キー保存
+# ---------------------------------------------------------------------------
+
+import re as _re
+import logging as _app_logging
+_app_logger = _app_logging.getLogger(__name__)
+
+
+def _save_api_keys_to_config(openai_key_plain: str, deepl_key_plain: str) -> bool:
+    """
+    config.yaml の openai.api_key / deepl.api_key を b64: 形式で上書きする。
+
+    空文字のキーはそのセクションを変更しない。
+    行単位スキャンでセクションヘッダーを検出して対象行だけ置換する方式を採用。
+    正規表現による一括置換より安全で、既存コメント・空行・インデントを保持できる。
+    """
+    try:
+        text = CONFIG_PATH.read_text(encoding="utf-8")
+        lines = text.splitlines(keepends=True)
+        current_section = None
+        out = []
+        for line in lines:
+            # トップレベルセクション検出（インデント無しの "name:" 行）
+            m = _re.match(r'^([a-zA-Z_]+):\s*(?:#.*)?$', line)
+            if m:
+                current_section = m.group(1)
+                out.append(line)
+                continue
+
+            # api_key 行検出（任意のインデント）
+            m = _re.match(r'^(\s+api_key:\s*)(.*)$', line)
+            if m:
+                indent_key = m.group(1)
+                rest = m.group(2)
+                # コメント部分を保持
+                comment_idx = rest.find('#')
+                comment = rest[comment_idx:] if comment_idx >= 0 else ""
+
+                if current_section == "openai" and openai_key_plain:
+                    new_val = f'"{encode_api_key(openai_key_plain)}"'
+                    line = (f"{indent_key}{new_val}  {comment}\n"
+                            if comment else f"{indent_key}{new_val}\n")
+                elif current_section == "deepl" and deepl_key_plain:
+                    new_val = f'"{encode_api_key(deepl_key_plain)}"'
+                    line = (f"{indent_key}{new_val}  {comment}\n"
+                            if comment else f"{indent_key}{new_val}\n")
+
+            out.append(line)
+
+        CONFIG_PATH.write_text("".join(out), encoding="utf-8")
+        return True
+    except Exception as e:
+        _app_logger.error("config.yaml write failed: %s", e)
+        return False
+
+
+def _on_key_show_toggle(sender, app_data, user_data):
+    """Show/Hide トグルボタンのコールバック。パスワードモードを切り替える。"""
+    tag = user_data  # TAG_OPENAI_KEY_INPUT または TAG_DEEPL_KEY_INPUT
+    if not dpg.does_item_exist(tag):
+        return
+    # dearpygui の input_text は password パラメータを動的変更できないため、
+    # ラベルで状態を管理し、現在の password 設定を反転して再設定する。
+    current_label = dpg.get_item_label(sender)
+    show_now = (current_label == "表示")
+    dpg.configure_item(tag, password=not show_now)
+    dpg.configure_item(sender, label="非表示" if show_now else "表示")
+
+
+def _on_save_api_keys():
+    """保存ボタン押下のコールバック。"""
+    openai_plain = dpg.get_value(TAG_OPENAI_KEY_INPUT) if dpg.does_item_exist(TAG_OPENAI_KEY_INPUT) else ""
+    deepl_plain = dpg.get_value(TAG_DEEPL_KEY_INPUT) if dpg.does_item_exist(TAG_DEEPL_KEY_INPUT) else ""
+
+    if not openai_plain and not deepl_plain:
+        if dpg.does_item_exist(TAG_KEY_STATUS):
+            dpg.set_value(TAG_KEY_STATUS, "キーが未入力です")
+        return
+
+    ok = _save_api_keys_to_config(openai_plain, deepl_plain)
+
+    if dpg.does_item_exist(TAG_KEY_STATUS):
+        if ok:
+            if _is_running:
+                dpg.set_value(TAG_KEY_STATUS, "変更は次回起動時に反映されます")
+            else:
+                dpg.set_value(TAG_KEY_STATUS, "保存しました")
+                # 停止中のみ: 翻訳エンジンコンボを再構築して Start ボタンを有効化
+                global _config
+                try:
+                    import yaml as _yaml
+                    _config = _yaml.safe_load(CONFIG_PATH.read_text(encoding="utf-8"))
+                except Exception:
+                    pass
+                new_models = _available_trans_models(_config)
+                if dpg.does_item_exist(TAG_TRANS_COMBO):
+                    dpg.configure_item(TAG_TRANS_COMBO,
+                                       items=new_models if new_models else ["(APIキー未設定)"])
+                    if new_models:
+                        dpg.set_value(TAG_TRANS_COMBO, new_models[0])
+                if dpg.does_item_exist(TAG_START_BTN):
+                    dpg.configure_item(TAG_START_BTN, enabled=bool(new_models))
+        else:
+            dpg.set_value(TAG_KEY_STATUS, "保存に失敗しました")
 
 
 # ---------------------------------------------------------------------------
@@ -643,10 +760,11 @@ def _start_rpc_server(port: int):
 def _available_trans_models(cfg: dict) -> list[str]:
     """有効な API キーが設定されている翻訳エンジンだけリストで返す。"""
     result = []
-    openai_key = cfg.get("openai", {}).get("api_key", "")
+    # decode_api_key 経由で b64: 形式にも対応
+    openai_key = decode_api_key(cfg.get("openai", {}).get("api_key", ""))
     if openai_key and "xxx" not in openai_key and openai_key != "your-api-key-here":
         result.append("openai")
-    deepl_key = cfg.get("deepl", {}).get("api_key", "")
+    deepl_key = decode_api_key(cfg.get("deepl", {}).get("api_key", ""))
     if deepl_key and "xxx" not in deepl_key and deepl_key != "your-deepl-key-here":
         result.append("deepl")
     return result
@@ -700,6 +818,11 @@ def _build_gui():
 
     rpc_port = _config.get("rpc", {}).get("port", 8767)
     saved = _load_settings()
+
+    # 起動時: config.yaml からデコード済みのキーを input_text の default_value に設定
+    # パスワードモードで表示するため、実際のキーを初期表示する（空なら空のまま）
+    _init_openai_key = decode_api_key(_config.get("openai", {}).get("api_key", ""))
+    _init_deepl_key = decode_api_key(_config.get("deepl", {}).get("api_key", ""))
 
     default_model = saved.get("model") or _config.get("whisper", {}).get("model", "small")
     trans_models = _available_trans_models(_config)
@@ -812,6 +935,50 @@ def _build_gui():
                                    dpg.set_value(TAG_VAD_SENSITIVITY, VAD_DEFAULT_SENSITIVITY),
                                    dpg.set_value(TAG_VAD_SILENCE, VAD_DEFAULT_SILENCE),
                                ))
+
+            # --- API キー設定 ---
+            dpg.add_separator()
+            dpg.add_text("API キー設定（b64 難読化して config.yaml に保存）")
+            with dpg.group(horizontal=True):
+                dpg.add_text("OpenAI:  ", )
+                dpg.add_input_text(
+                    tag=TAG_OPENAI_KEY_INPUT,
+                    default_value=_init_openai_key,
+                    password=True,
+                    width=500,
+                    hint="sk-... (空白のままなら変更しない)",
+                )
+                dpg.add_button(
+                    tag=TAG_KEY_SHOW_OPENAI,
+                    label="表示",
+                    width=70,
+                    callback=_on_key_show_toggle,
+                    user_data=TAG_OPENAI_KEY_INPUT,
+                )
+            with dpg.group(horizontal=True):
+                dpg.add_text("DeepL:   ")
+                dpg.add_input_text(
+                    tag=TAG_DEEPL_KEY_INPUT,
+                    default_value=_init_deepl_key,
+                    password=True,
+                    width=500,
+                    hint="xxxxxxxx-xxxx-... (空白のままなら変更しない)",
+                )
+                dpg.add_button(
+                    tag=TAG_KEY_SHOW_DEEPL,
+                    label="表示",
+                    width=70,
+                    callback=_on_key_show_toggle,
+                    user_data=TAG_DEEPL_KEY_INPUT,
+                )
+            with dpg.group(horizontal=True):
+                dpg.add_button(
+                    tag=TAG_KEY_SAVE_BTN,
+                    label="保存",
+                    width=80,
+                    callback=_on_save_api_keys,
+                )
+                dpg.add_text("", tag=TAG_KEY_STATUS)
 
         dpg.add_separator()
 
