@@ -35,3 +35,5 @@ openai_realtime:                          # openai-realtime モード専用設�
   connect_timeout: 10                    # 接続タイムアウト（秒）
   reconnect_max_attempts: 5             # 最大再接続試行回数
   reconnect_backoff_base: 1.5           # 指数バックオフの底（n回目は base^n 秒待機）
+  audio_output:                          # Zoom 同時通訳用音声出力設定（任意）
+    sample_rate: 24000                   # 出力サンプルレート（gpt-realtime-translate は 24000Hz）
