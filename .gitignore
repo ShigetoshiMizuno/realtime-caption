@@ -7,6 +7,8 @@ __pycache__/
 *.pyo
 .venv/
 venv/
+.coverage
+.pytest_cache/
 
 # Embeddable Python（大容量・start.bat で自動インストール）
 python/
