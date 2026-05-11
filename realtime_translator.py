@@ -13,7 +13,7 @@ API ドキュメント確認情報:
       session.output_transcript.done   - テキスト確定
   - イベント名（送信）:
       session.update                   - セッション設定更新
-      input_audio_buffer.append        - 音声チャンク送信
+      session.input_audio_buffer.append - 音声チャンク送信
   - NOTE: gpt-realtime-translate は 2026 年リリース直後のため仕様変動の可能性あり。
     verbose ログ（RT_* イベント）で全受信メッセージを記録し、後日デバッグで確認できるようにしている。
 
@@ -361,7 +361,7 @@ class RealtimeTranslator:
             audio_b64 = base64.b64encode(pcm_bytes).decode("utf-8")
             try:
                 await ws.send(json.dumps({
-                    "type": "input_audio_buffer.append",
+                    "type": "session.input_audio_buffer.append",
                     "audio": audio_b64,
                 }))
             except Exception:

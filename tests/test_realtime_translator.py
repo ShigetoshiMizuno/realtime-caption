@@ -189,7 +189,7 @@ class TestRealtimeTranslatorBasic:
 
         assert len(received_messages) >= 1, "音声メッセージが送信されていない"
         audio_msg = received_messages[0]
-        assert audio_msg["type"] == "input_audio_buffer.append", \
+        assert audio_msg["type"] == "session.input_audio_buffer.append", \
             f"イベントタイプが不一致: {audio_msg.get('type')!r}"
         expected_b64 = base64.b64encode(pcm_bytes).decode("utf-8")
         assert audio_msg["audio"] == expected_b64, \
