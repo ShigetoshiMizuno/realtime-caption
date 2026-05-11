@@ -72,7 +72,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 
 import dearpygui.dearpygui as dpg
 
-from main import CaptionSystem, list_audio_devices, load_config
+from main import CaptionSystem, list_audio_devices, find_device_by_name, load_config
 
 # Windows コンソールの文字化け対策
 if sys.stdout.encoding != "utf-8":
@@ -131,6 +131,8 @@ TAG_STATUS_RPC = "status_rpc"
 TAG_STATUS_STATE = "status_state"
 TAG_STATUS_STT = "status_stt"
 TAG_STATUS_TRL = "status_trl"
+TAG_OUTPUT_DEVICE_COMBO = "output_device_combo"
+TAG_ZOOM_PRESET_BTN = "zoom_preset_btn"
 
 VAD_DEFAULT_SENSITIVITY = 0.4
 # 0.6 秒: 自然な息継ぎ程度の沈黙では文を切らず、文末の本格的な無音で確定する。
@@ -158,6 +160,9 @@ def _save_settings():
         # 翻訳エンジンは表示ラベルではなく内部キーで保存する
         trans_label = dpg.get_value(TAG_TRANS_COMBO)
         trans_key = _trans_label_to_key(trans_label)
+        output_device = ""
+        if dpg.does_item_exist(TAG_OUTPUT_DEVICE_COMBO):
+            output_device = dpg.get_value(TAG_OUTPUT_DEVICE_COMBO)
         data = {
             "device": dpg.get_value(TAG_DEVICE_COMBO),
             "model": dpg.get_value(TAG_MODEL_COMBO),
@@ -167,6 +172,7 @@ def _save_settings():
             "gain_mode": dpg.get_value(TAG_GAIN_MODE),
             "gain_value": dpg.get_value(TAG_GAIN_SLIDER),
             "verbose": _verbose_state,
+            "output_device": output_device,
         }
         with open(_SETTINGS_PATH, "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False, indent=2)
@@ -209,6 +215,32 @@ def _on_gain_mode_change(sender, value, user_data):
 def _on_gain_value_change(sender, value, user_data):
     if _system:
         _system.manual_gain = float(value)
+
+
+def _on_zoom_preset_click():
+    """
+    Zoom 同時通訳プリセットボタン押下。
+    - 翻訳エンジンを OpenAI Realtime に設定
+    - 出力デバイスを CABLE Input（VB-CABLE）に自動選択
+    設定を適用するのみ。起動はしない。
+    """
+    # 翻訳エンジンを openai-realtime に変更
+    realtime_label = _trans_key_to_label("openai-realtime")
+    if dpg.does_item_exist(TAG_TRANS_COMBO):
+        items = dpg.get_item_configuration(TAG_TRANS_COMBO).get("items", [])
+        if realtime_label in items:
+            dpg.set_value(TAG_TRANS_COMBO, realtime_label)
+
+    # 出力デバイスを CABLE Input に自動選択
+    if dpg.does_item_exist(TAG_OUTPUT_DEVICE_COMBO):
+        items = dpg.get_item_configuration(TAG_OUTPUT_DEVICE_COMBO).get("items", [])
+        cable_item = next((it for it in items if "cable input" in it.lower()), None)
+        if cable_item:
+            dpg.set_value(TAG_OUTPUT_DEVICE_COMBO, cable_item)
+        else:
+            print("[INFO] CABLE Input デバイスが見つかりませんでした。VB-CABLE をインストールしてください。")
+
+    _save_settings()
 
 
 def _on_verbose_toggle():
@@ -448,12 +480,23 @@ def _proceed_start(device_info: dict, model_name: str, selected_trans: str):
     def on_trans_busy(busy: bool):
         _enqueue("set_trl", busy=busy)
 
+    # 出力デバイスのインデックスを取得（コンボボックスで選択されている場合）
+    output_device_index: int | None = None
+    if dpg.does_item_exist(TAG_OUTPUT_DEVICE_COMBO):
+        output_label = dpg.get_value(TAG_OUTPUT_DEVICE_COMBO)
+        if output_label and output_label != "(なし)":
+            output_devices = list_audio_devices(device_type="output")
+            matched = find_device_by_name(output_label, output_devices)
+            if matched:
+                output_device_index = matched["index"]
+
     # Realtime モードの場合はプリロードキャッシュを使わない（Whisper 不要なので不要）
     if selected_trans == "openai-realtime":
         _system = CaptionSystem(_config, device_info, model_name,
                                 on_result=on_result, on_ready=on_ready,
                                 on_whisper_busy=on_whisper_busy,
-                                on_trans_busy=on_trans_busy)
+                                on_trans_busy=on_trans_busy,
+                                output_device_index=output_device_index)
         loading = False
     else:
         # プリロード済みのシステムがあれば再利用
@@ -804,6 +847,15 @@ def _build_gui():
                   device_labels[0] if device_labels else "")
     )
 
+    # 出力デバイス一覧（VB-CABLE 等）
+    _output_devices = list_audio_devices(device_type="output")
+    output_device_labels = ["(なし)"] + [d["name"] for d in _output_devices]
+    saved_output_device = saved.get("output_device", "")
+    default_output_device = (
+        saved_output_device if saved_output_device in output_device_labels
+        else "(なし)"
+    )
+
     with dpg.window(tag="main_window", no_title_bar=True, no_resize=True,
                     no_move=True, no_scrollbar=True):
 
@@ -869,6 +921,22 @@ def _build_gui():
                     default_value=default_trans if trans_models else "(APIキー未設定)",
                     width=120,
                     enabled=len(trans_models) > 1,
+                )
+            with dpg.group(horizontal=True):
+                dpg.add_text("音声出力先:")
+                dpg.add_combo(
+                    tag=TAG_OUTPUT_DEVICE_COMBO,
+                    items=output_device_labels,
+                    default_value=default_output_device,
+                    width=280,
+                    callback=_save_settings,
+                )
+                dpg.add_text("  ")
+                dpg.add_button(
+                    tag=TAG_ZOOM_PRESET_BTN,
+                    label="Zoom 同時通訳プリセット",
+                    width=200,
+                    callback=_on_zoom_preset_click,
                 )
             with dpg.group(horizontal=True):
                 dpg.add_text("発話検出感度:")
