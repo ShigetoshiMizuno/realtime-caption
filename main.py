@@ -126,23 +126,60 @@ def load_config(path: str = "config.yaml") -> dict:
         return yaml.safe_load(f)
 
 
-def list_audio_devices() -> list[dict]:
-    """通常の入力デバイスとWASAPIループバックデバイスを両方リストアップする。"""
+def list_audio_devices(device_type: str = "input") -> list[dict]:
+    """
+    オーディオデバイスをリストアップする。
+
+    Parameters
+    ----------
+    device_type:
+        "input"  - 入力デバイス（マイク）と WASAPI ループバックデバイス（後方互換デフォルト）
+        "output" - 出力デバイス（スピーカー / 仮想ケーブル）
+        "all"    - 入出力すべてのデバイス
+    """
     pa = pyaudio.PyAudio()
     devices = []
     for i in range(pa.get_device_count()):
         info = pa.get_device_info_by_index(i)
         is_loopback = info.get("isLoopbackDevice", False)
-        if info["maxInputChannels"] > 0 or is_loopback:
+        has_input = info.get("maxInputChannels", 0) > 0
+        has_output = info.get("maxOutputChannels", 0) > 0
+
+        if device_type == "output":
+            include = has_output and not is_loopback
+        elif device_type == "all":
+            include = has_input or has_output or is_loopback
+        else:  # "input" (デフォルト・後方互換)
+            include = has_input or is_loopback
+
+        if include:
             devices.append({
                 "index": i,
                 "name": info["name"],
                 "isLoopback": is_loopback,
                 "defaultSampleRate": info.get("defaultSampleRate", 44100),
-                "maxInputChannels": info.get("maxInputChannels", 2),
+                "maxInputChannels": info.get("maxInputChannels", 0),
+                "maxOutputChannels": info.get("maxOutputChannels", 0),
             })
     pa.terminate()
     return devices
+
+
+def find_device_by_name(name_keyword: str, devices: list[dict]) -> dict | None:
+    """
+    デバイス名の部分一致（大小文字無視）でデバイス情報を返す。
+    見つからない場合は None を返す。
+
+    Parameters
+    ----------
+    name_keyword:  デバイス名の一部（"CABLE Input" 等）
+    devices:       list_audio_devices() の戻り値
+    """
+    keyword_lower = name_keyword.lower()
+    return next(
+        (d for d in devices if keyword_lower in d["name"].lower()),
+        None,
+    )
 
 
 def select_audio_device() -> dict:
@@ -157,6 +194,24 @@ def select_audio_device() -> dict:
     while True:
         try:
             choice = int(input("デバイス番号を入力してください: "))
+            matched = next((d for d in devices if d["index"] == choice), None)
+            if matched is not None:
+                return matched
+            print("無効な番号です。再度入力してください。")
+        except ValueError:
+            print("数字を入力してください。")
+
+
+def select_output_device() -> dict:
+    """出力デバイスを選択し、デバイス情報の辞書を返す。"""
+    devices = list_audio_devices(device_type="output")
+    print("\n利用可能な出力デバイス一覧:")
+    for d in devices:
+        print(f"  [{d['index']}] {d['name']}")
+    print()
+    while True:
+        try:
+            choice = int(input("出力デバイス番号を入力してください: "))
             matched = next((d for d in devices if d["index"] == choice), None)
             if matched is not None:
                 return matched
@@ -260,7 +315,8 @@ class CaptionSystem:
 
     def __init__(self, config: dict, device_info: dict, model_name: str,
                  on_result=None, on_ready=None,
-                 on_whisper_busy=None, on_trans_busy=None):
+                 on_whisper_busy=None, on_trans_busy=None,
+                 output_device_index: int | None = None):
         self._config = config
         self._device_info = device_info
         self._model_name = model_name
@@ -272,6 +328,11 @@ class CaptionSystem:
         # 翻訳モード判定
         trans_model = config.get("translation", {}).get("translation_model", "openai").lower()
         self._realtime_mode: bool = (trans_model == "openai-realtime")
+
+        # 音声出力モード: 出力デバイスが指定されていれば有効
+        self._audio_output_mode: bool = output_device_index is not None
+        self._output_device_index: int | None = output_device_index
+        self._audio_stream = None  # AudioOutputStream インスタンス（起動時に生成）
 
         if not self._realtime_mode:
             self._translator = TranslationService(config)
@@ -285,6 +346,7 @@ class CaptionSystem:
                     "[ERROR] openai-realtime モードには config.yaml の openai.api_key が必要です。"
                 )
             rt_cfg = config.get("openai_realtime", {})
+            ao_cfg = config.get("openai_realtime", {}).get("audio_output", {})
             from realtime_translator import RealtimeTranslator
             self._realtime_translator = RealtimeTranslator(
                 api_key=api_key,
@@ -296,6 +358,8 @@ class CaptionSystem:
                 on_transcript=self._on_realtime_transcript,
                 on_error=self._on_realtime_error,
                 on_connected=on_ready,
+                request_audio_output=self._audio_output_mode,
+                on_audio_delta=self._on_audio_delta if self._audio_output_mode else None,
             )
 
         self._broadcaster = SubtitleBroadcaster()
@@ -344,6 +408,12 @@ class CaptionSystem:
                 self._realtime_translator.stop()
             except Exception:
                 pass
+        # 音声出力ストリームを停止
+        if getattr(self, "_audio_stream", None) is not None:
+            try:
+                self._audio_stream.stop()
+            except Exception:
+                pass
         # subst ドライブの解除はアプリ終了時のみ（app.py の main() / main.py の main() で実施）。
 
     def _ensure_verbose_log_path(self) -> Path:
@@ -381,6 +451,11 @@ class CaptionSystem:
             if not path.exists():
                 return path
             n += 1
+
+    def _on_audio_delta(self, pcm16_bytes: bytes) -> None:
+        """RealtimeTranslator から音声出力チャンクを受け取るコールバック。"""
+        if self._audio_stream is not None:
+            self._audio_stream.write(pcm16_bytes)
 
     def _on_realtime_transcript(self, text: str):
         """RealtimeTranslator から翻訳テキストを受け取るコールバック。"""
@@ -474,11 +549,14 @@ class CaptionSystem:
         payload = json.dumps({"original": text, "translated": translated}, ensure_ascii=False)
         await self._broadcaster.broadcast(payload)
 
-    def _loopback_capture_thread(self):
-        """WASAPIループバックデバイスから音声をキャプチャし、recorder に feed する。"""
+    def _capture_thread_body(self):
+        """
+        入力デバイス（ループバック / マイク）から音声をキャプチャし、
+        recorder または realtime_translator に feed する。
+        """
         device_index = self._device_info["index"]
         src_rate = int(self._device_info["defaultSampleRate"])
-        channels = max(1, int(self._device_info["maxInputChannels"]))
+        channels = max(1, int(self._device_info.get("maxInputChannels", 1)))
         chunk_size = 1024
 
         # リサンプリング先レートをモードで切替
@@ -650,26 +728,14 @@ class CaptionSystem:
     def _start_recorder(self):
         """別スレッドで録音ループを起動する。prepare() が未完了なら先に呼ぶ。"""
         if self._realtime_mode:
-            # Realtime モード: ループバックキャプチャのみ起動（Whisper 録音ループは不要）
-            is_loopback = self._device_info.get("isLoopback", False)
-            if is_loopback:
-                self._capture_thread = threading.Thread(
-                    target=self._loopback_capture_thread, daemon=True
-                )
-                self._capture_thread.start()
-            else:
-                msg = (
-                    "Realtime モードはループバックデバイスのみ対応しています。"
-                    "ループバックデバイス（[Loopback] と表示されるもの）を選択してください。"
-                )
-                print(f"[ERROR] {msg}", flush=True)
-                if self._on_realtime_error:
-                    self._on_realtime_error(msg)
-                # 録音は開始しないが WS 接続は維持される。on_ready は呼ばない
-                return
+            # Realtime モード: キャプチャスレッド起動（ループバック / マイク両対応）
+            self._capture_thread = threading.Thread(
+                target=self._capture_thread_body, daemon=True
+            )
+            self._capture_thread.start()
             print("\n[INFO] 録音を開始しました（Realtimeモード）。\n")
             # on_ready は RealtimeTranslator の on_connected で呼ばれるため、ここでは呼ばない
-            # ループバックキャプチャスレッドの終了を待つ（stop_event が set されるまで）
+            # キャプチャスレッドの終了を待つ（stop_event が set されるまで）
             while not self._stop_event.is_set():
                 self._stop_event.wait(timeout=0.5)
             return
@@ -681,7 +747,9 @@ class CaptionSystem:
 
         is_loopback = self._device_info.get("isLoopback", False)
         if is_loopback:
-            self._capture_thread = threading.Thread(target=self._loopback_capture_thread, daemon=True)
+            self._capture_thread = threading.Thread(
+                target=self._capture_thread_body, daemon=True
+            )
             self._capture_thread.start()
 
         print("\n[INFO] 録音を開始しました。\n")
@@ -701,6 +769,19 @@ class CaptionSystem:
 
         ws_host = self._config["websocket"]["host"]
         ws_port = self._config["websocket"]["port"]
+
+        # 音声出力モードが有効なら AudioOutputStream を起動
+        if self._audio_output_mode:
+            from audio_output import AudioOutputStream
+            ao_cfg = self._config.get("openai_realtime", {}).get("audio_output", {})
+            sample_rate = ao_cfg.get("sample_rate", 24000)
+            self._audio_stream = AudioOutputStream(
+                pyaudio_instance=pyaudio.PyAudio(),
+                device_index=self._output_device_index,
+                sample_rate=sample_rate,
+            )
+            self._audio_stream.start()
+            print(f"[INFO] 音声出力ストリーム開始: device_index={self._output_device_index}", flush=True)
 
         # Realtime モードでは RealtimeTranslator を起動
         if self._realtime_mode and self._realtime_translator is not None:
