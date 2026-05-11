@@ -243,8 +243,7 @@ def _on_key_show_toggle(sender, app_data, user_data):
     tag = user_data  # TAG_OPENAI_KEY_INPUT または TAG_DEEPL_KEY_INPUT
     if not dpg.does_item_exist(tag):
         return
-    # dearpygui の input_text は password パラメータを動的変更できないため、
-    # ラベルで状態を管理し、現在の password 設定を反転して再設定する。
+    # ボタンラベルで現在の表示状態を判定し、configure_item で password モードを切り替える。
     current_label = dpg.get_item_label(sender)
     show_now = (current_label == "表示")
     dpg.configure_item(tag, password=not show_now)
