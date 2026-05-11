@@ -25,4 +25,5 @@ regexes = [
 paths = [
     '''config\.yaml\.example''',
     '''README\.md''',
+    '''CONTRIBUTING\.md''',
 ]

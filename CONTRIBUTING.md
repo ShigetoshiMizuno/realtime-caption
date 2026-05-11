@@ -9,18 +9,23 @@
 
 ---
 
-## フェイク値の命名規約
+## フェイク値命名規約
 
-テストや fixture でダミーの API キーが必要な場合、以下のプレフィックスを使用すること：
+テスト fixture・ドキュメント例には、`.gitleaks.toml` allowlist に登録された
+以下のパターンのみを使用すること。これらは gitleaks スキャンで素通りする。
 
-| 用途 | 命名例 |
-|------|--------|
-| 汎用フェイクキー | `FAKE-TEST-KEY-0000-0000` |
-| OpenAI 形式のフェイク | `sk-test-fake-xxxxxxxxxx` |
-| DeepL 形式のフェイク | `FAKE-TEST-KEY-deepl:fx` |
+| 用途 | 推奨パターン | 例 |
+|---|---|---|
+| OpenAI 風 | `sk-test-fake-...` または `sk-xxxxxxxxxxxxxxxxxxxx` | `"sk-test-fake-0000000000000000"` |
+| DeepL 風 | `FAKE-TEST-KEY-...:fx` または `xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx:fx` | `"FAKE-TEST-KEY-0000-0000-aaaaaaaaaaaa:fx"` |
+| プレースホルダー | `your-api-key-here` | `"your-api-key-here"` |
 
-- `FAKE-`、`-fake-`、`-test-` のいずれかのプレフィックス/インフィックスを含めること
-- 実在しそうな文字列（`sk-` から始まりランダムな英数字が続く等）は絶対に使わないこと
+**禁止例:**
+- 実在しそうな UUID（`72bc1168-...:fx` のように `hex-hex-...:fx` パターン）
+- ランダム生成した sk-XXXX 形式
+- 任意の `-fake-` / `-test-` インフィックス（allowlist 対象外なので検出される）
+
+新しいフェイク値パターンが必要なら、まず `.gitleaks.toml` の allowlist に追加してから使用すること。
 
 ---
 
