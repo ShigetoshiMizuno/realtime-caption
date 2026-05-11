@@ -657,6 +657,16 @@ class CaptionSystem:
                     target=self._loopback_capture_thread, daemon=True
                 )
                 self._capture_thread.start()
+            else:
+                msg = (
+                    "Realtime モードはループバックデバイスのみ対応しています。"
+                    "ループバックデバイス（[Loopback] と表示されるもの）を選択してください。"
+                )
+                print(f"[ERROR] {msg}", flush=True)
+                if self._on_realtime_error:
+                    self._on_realtime_error(msg)
+                # 録音は開始しないが WS 接続は維持される。on_ready は呼ばない
+                return
             print("\n[INFO] 録音を開始しました（Realtimeモード）。\n")
             # on_ready は RealtimeTranslator の on_connected で呼ばれるため、ここでは呼ばない
             # ループバックキャプチャスレッドの終了を待つ（stop_event が set されるまで）

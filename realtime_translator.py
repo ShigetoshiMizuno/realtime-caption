@@ -22,6 +22,7 @@ API ドキュメント確認情報:
 
 import asyncio
 import base64
+import concurrent.futures
 import hashlib
 import json
 import logging
@@ -92,6 +93,7 @@ class RealtimeTranslator:
         self._audio_queue: asyncio.Queue | None = None
         self._stop_event: asyncio.Event | None = None
         self._task: asyncio.Task | None = None
+        self._future: "concurrent.futures.Future | None" = None
         self._thread: threading.Thread | None = None
 
         # テスト用フラグ（test_force_401: 最初の接続を 401 として扱う）
@@ -121,7 +123,7 @@ class RealtimeTranslator:
             # ループが既に動いているスレッドからタスク投入
             self._audio_queue = asyncio.Queue()
             self._stop_event = asyncio.Event()
-            asyncio.run_coroutine_threadsafe(self._connect_loop_async(), loop)
+            self._future = asyncio.run_coroutine_threadsafe(self._connect_loop_async(), loop)
         else:
             # 別スレッドでループを起動
             self._thread = threading.Thread(target=_bootstrap, daemon=True)
@@ -146,6 +148,8 @@ class RealtimeTranslator:
             self._loop.call_soon_threadsafe(self._stop_event.set)
         if self._task is not None and self._loop.is_running():
             self._loop.call_soon_threadsafe(self._task.cancel)
+        if self._future is not None and not self._future.done():
+            self._future.cancel()
 
     # ------------------------------------------------------------------
     # 内部: ループ起動時の初期化

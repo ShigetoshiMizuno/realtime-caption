@@ -246,8 +246,9 @@ class TestRealtimeTranslatorError:
     def test_reconnect_after_disconnect(self):
         """
         切断後に自動再接続（指数バックオフ）が実行されること。
-        reconnect_backoff_base=0.1 を使って短時間でバックオフが完了するようにする。
+        reconnect_backoff_base=0.01 を使って短時間でバックオフが完了するようにする。
         asyncio.sleep は patch せず、短いバックオフ値で実時間テストを行う。
+        タイムアウトは 10 秒に設定（--cov 付き実行のオーバーヘッドを吸収するため）。
         """
         connect_count = [0]
         connected_event = threading.Event()
@@ -272,15 +273,15 @@ class TestRealtimeTranslatorError:
                 api_key="sk-test",
                 target_language_code="ja",
                 reconnect_max_attempts=3,
-                reconnect_backoff_base=0.1,  # テスト用に短縮（0.1^1 = 0.1秒待機）
+                reconnect_backoff_base=0.01,  # テスト用に短縮（0.01^1 = 0.01秒待機）
             )
             translator._ws_url = "ws://localhost:19768"
 
             client_loop = asyncio.new_event_loop()
             translator.start(client_loop)
 
-            # 再接続を待つ（バックオフ 0.1秒 + 余裕 5秒）
-            assert connected_event.wait(timeout=5), "再接続タイムアウト"
+            # 再接続を待つ（バックオフ 0.01秒 + 余裕 10秒、--cov オーバーヘッドを考慮）
+            assert connected_event.wait(timeout=10), "再接続タイムアウト"
 
             translator.stop()
         finally:
