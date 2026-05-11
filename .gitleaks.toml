@@ -1,0 +1,28 @@
+title = "realtime-caption gitleaks config"
+
+[extend]
+useDefault = true
+
+# DeepL API キー検出ルール（組み込みルールにないため追加）
+# 形式: xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx:fx
+[[rules]]
+id = "deepl-api-key"
+description = "Found a DeepL API Key (free tier ends with :fx)"
+regex = '''\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}:fx\b'''
+entropy = 3
+keywords = [":fx"]
+
+[allowlist]
+description = "Test fixtures and example placeholders"
+regexes = [
+    '''FAKE-TEST-KEY-[A-Za-z0-9-]+''',
+    '''sk-test-fake-[A-Za-z0-9]+''',
+    '''sk-xxxxxxxxxxxxxxxxxxxx''',
+    '''your-api-key-here''',
+    '''your-api-key''',
+    '''xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx''',
+]
+paths = [
+    '''config\.yaml\.example''',
+    '''README\.md''',
+]
