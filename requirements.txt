@@ -8,8 +8,8 @@ pyaudiowpatch>=0.2.12
 openai>=1.0.0
 deepl>=1.17.0
 
-# WebSocket で OBS に字幕配信
-websockets>=12.0
+# WebSocket で OBS に字幕配信（14.0 以降の asyncio.client API を使用）
+websockets>=14.0
 
 # GUI
 dearpygui>=2.0

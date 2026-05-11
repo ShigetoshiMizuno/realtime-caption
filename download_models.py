@@ -76,9 +76,13 @@ def download_silero():
 if __name__ == "__main__":
     try:
         cfg = load_config()
-        model_name = cfg.get("whisper", {}).get("model", "small")
-        download_whisper(model_name)
-        download_silero()
-        print("\n[INFO] All models ready.")
+        trans_model = cfg.get("translation", {}).get("translation_model", "openai").lower()
+        if trans_model == "openai-realtime":
+            print("[INFO] openai-realtime モードのため、ローカルモデルのダウンロードをスキップします。")
+        else:
+            model_name = cfg.get("whisper", {}).get("model", "small")
+            download_whisper(model_name)
+            download_silero()
+            print("\n[INFO] All models ready.")
     finally:
         _release_subst(_subst_letter)

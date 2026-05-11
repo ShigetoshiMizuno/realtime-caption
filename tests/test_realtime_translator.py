@@ -17,7 +17,6 @@ import json
 import threading
 import time
 import unittest
-from unittest.mock import patch, MagicMock
 
 import pytest
 
@@ -247,6 +246,8 @@ class TestRealtimeTranslatorError:
     def test_reconnect_after_disconnect(self):
         """
         切断後に自動再接続（指数バックオフ）が実行されること。
+        reconnect_backoff_base=0.1 を使って短時間でバックオフが完了するようにする。
+        asyncio.sleep は patch せず、短いバックオフ値で実時間テストを行う。
         """
         connect_count = [0]
         connected_event = threading.Event()
@@ -267,22 +268,21 @@ class TestRealtimeTranslatorError:
         server_loop, stop_event, _ = _start_mock_server_in_thread(mock_handler, port=19768)
 
         try:
-            with patch("realtime_translator.asyncio.sleep", new=_fast_sleep):
-                translator = RealtimeTranslator(
-                    api_key="sk-test",
-                    target_language_code="ja",
-                    reconnect_max_attempts=3,
-                    reconnect_backoff_base=0.1,  # テスト用に短縮
-                )
-                translator._ws_url = "ws://localhost:19768"
+            translator = RealtimeTranslator(
+                api_key="sk-test",
+                target_language_code="ja",
+                reconnect_max_attempts=3,
+                reconnect_backoff_base=0.1,  # テスト用に短縮（0.1^1 = 0.1秒待機）
+            )
+            translator._ws_url = "ws://localhost:19768"
 
-                client_loop = asyncio.new_event_loop()
-                translator.start(client_loop)
+            client_loop = asyncio.new_event_loop()
+            translator.start(client_loop)
 
-                # 再接続を待つ
-                assert connected_event.wait(timeout=5), "再接続タイムアウト"
+            # 再接続を待つ（バックオフ 0.1秒 + 余裕 5秒）
+            assert connected_event.wait(timeout=5), "再接続タイムアウト"
 
-                translator.stop()
+            translator.stop()
         finally:
             _stop_mock_server(server_loop, stop_event)
 
@@ -339,16 +339,6 @@ class TestRealtimeTranslatorFallback:
 
         assert len(received) >= 1, "句読点フォールバックで on_transcript が呼ばれなかった"
         assert "こんにちは。" in received[0], f"テキストが不一致: {received[0]!r}"
-
-
-# ---------------------------------------------------------------------------
-# ヘルパー: asyncio.sleep を瞬時に返すモック
-# ---------------------------------------------------------------------------
-
-async def _fast_sleep(delay, result=None):
-    """テスト用: asyncio.sleep をほぼ即座に返す。"""
-    await asyncio.sleep(0.001)
-    return result
 
 
 # ---------------------------------------------------------------------------
