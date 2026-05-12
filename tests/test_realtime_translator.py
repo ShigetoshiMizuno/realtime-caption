@@ -128,7 +128,7 @@ class TestRealtimeTranslatorBasic:
 
         try:
             translator = RealtimeTranslator(
-                api_key="sk-test",
+                api_key="sk-test-fake-deltadone",
                 target_language_code="ja",
                 on_transcript=lambda text: received.append(text),
                 on_error=lambda msg: errors.append(msg),
@@ -181,7 +181,7 @@ class TestRealtimeTranslatorBasic:
 
         try:
             translator = RealtimeTranslator(
-                api_key="sk-test",
+                api_key="sk-test-fake-feedaudio",
                 target_language_code="ja",
                 reconnect_max_attempts=0,
             )
@@ -235,7 +235,7 @@ class TestRealtimeTranslatorError:
 
         try:
             translator = RealtimeTranslator(
-                api_key="sk-test",
+                api_key="sk-test-fake-401",
                 target_language_code="ja",
                 on_error=lambda msg: errors.append(msg),
                 reconnect_max_attempts=3,
@@ -288,7 +288,7 @@ class TestRealtimeTranslatorError:
 
         try:
             translator = RealtimeTranslator(
-                api_key="sk-test",
+                api_key="sk-test-fake-reconnect",
                 target_language_code="ja",
                 reconnect_max_attempts=3,
                 reconnect_backoff_base=0.01,  # テスト用に短縮（0.01^1 = 0.01秒待機）
@@ -337,7 +337,7 @@ class TestRealtimeTranslatorFallback:
 
         try:
             translator = RealtimeTranslator(
-                api_key="sk-test",
+                api_key="sk-test-fake-punctuation",
                 target_language_code="ja",
                 on_transcript=lambda text: received.append(text),
                 reconnect_max_attempts=0,
