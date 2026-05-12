@@ -136,6 +136,7 @@ TAG_STATUS_TRL = "status_trl"
 TAG_OUTPUT_DEVICE_COMBO = "output_device_combo"
 TAG_ZOOM_PRESET_BTN = "zoom_preset_btn"
 TAG_STATUS_COST = "status_cost"
+TAG_HOST_API_COMBO = "host_api_combo"
 
 VAD_DEFAULT_SENSITIVITY = 0.4
 # 0.6 秒: 自然な息継ぎ程度の沈黙では文を切らず、文末の本格的な無音で確定する。
@@ -334,6 +335,29 @@ def _on_save_api_keys():
                     dpg.configure_item(TAG_START_BTN, enabled=bool(new_models))
         else:
             dpg.set_value(TAG_KEY_STATUS, "保存に失敗しました")
+
+
+# ---------------------------------------------------------------------------
+# Host API フィルタ変更
+# ---------------------------------------------------------------------------
+
+def _on_host_api_change(sender, value, user_data):
+    """Host API フィルタ変更時にデバイスコンボを再列挙する。"""
+    global _devices
+    host_api_value = value.split()[0].lower()  # "wasapi (default)" -> "wasapi"
+    _devices = list_audio_devices(host_api=host_api_value)
+    device_labels = [_device_label(d) for d in _devices]
+    if dpg.does_item_exist(TAG_DEVICE_COMBO):
+        dpg.configure_item(TAG_DEVICE_COMBO, items=device_labels)
+        if device_labels:
+            dpg.set_value(TAG_DEVICE_COMBO, device_labels[0])
+    # 出力デバイスも再列挙
+    output_devices = list_audio_devices(device_type="output", host_api=host_api_value)
+    output_labels = ["(なし)"] + [d["name"] for d in output_devices]
+    if dpg.does_item_exist(TAG_OUTPUT_DEVICE_COMBO):
+        dpg.configure_item(TAG_OUTPUT_DEVICE_COMBO, items=output_labels)
+        dpg.set_value(TAG_OUTPUT_DEVICE_COMBO, "(なし)")
+    _save_settings()
 
 
 # ---------------------------------------------------------------------------
@@ -710,7 +734,8 @@ def _proceed_start(device_info: dict, model_name: str, selected_trans: str):
     if dpg.does_item_exist(TAG_OUTPUT_DEVICE_COMBO):
         output_label = dpg.get_value(TAG_OUTPUT_DEVICE_COMBO)
         if output_label and output_label != "(なし)":
-            output_devices = list_audio_devices(device_type="output")
+            _host_api_sel = _config.get("audio", {}).get("host_api", "wasapi")
+            output_devices = list_audio_devices(device_type="output", host_api=_host_api_sel)
             matched = find_device_by_name(output_label, output_devices)
             if matched:
                 output_device_index = matched["index"]
@@ -1083,7 +1108,8 @@ def _build_gui():
     )
 
     # 出力デバイス一覧（VB-CABLE 等）
-    _output_devices = list_audio_devices(device_type="output")
+    _host_api_cfg = _config.get("audio", {}).get("host_api", "wasapi")
+    _output_devices = list_audio_devices(device_type="output", host_api=_host_api_cfg)
     output_device_labels = ["(なし)"] + [d["name"] for d in _output_devices]
     saved_output_device = saved.get("output_device", "")
     default_output_device = (
@@ -1240,6 +1266,23 @@ def _build_gui():
                 )
                 dpg.add_text("", tag=TAG_KEY_STATUS)
 
+            # --- Host API フィルタ（詳細設定最下部） ---
+            dpg.add_separator()
+            with dpg.group(horizontal=True):
+                dpg.add_text("デバイスフィルタ:")
+                _host_api_items = ["wasapi", "all", "mme", "directsound"]
+                _host_api_default = _config.get("audio", {}).get("host_api", "wasapi")
+                if _host_api_default not in _host_api_items:
+                    _host_api_default = "wasapi"
+                dpg.add_combo(
+                    tag=TAG_HOST_API_COMBO,
+                    items=_host_api_items,
+                    default_value=_host_api_default,
+                    width=140,
+                    callback=_on_host_api_change,
+                )
+                dpg.add_text("  ※ 同名デバイスが重複する場合は「all」に切り替え")
+
         dpg.add_separator()
 
         # --- ログエリア（ウィンドウ高さに追従） ---
@@ -1338,7 +1381,8 @@ def main():
     global _config, _devices
 
     _config = load_config("config.yaml")
-    _devices = list_audio_devices()
+    _host_api = _config.get("audio", {}).get("host_api", "wasapi")
+    _devices = list_audio_devices(host_api=_host_api)
 
     rpc_port = _config.get("rpc", {}).get("port", 8767)
     _start_rpc_server(rpc_port)
