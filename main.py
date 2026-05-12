@@ -127,7 +127,10 @@ def load_config(path: str = "config.yaml") -> dict:
         return yaml.safe_load(f)
 
 
-def list_audio_devices(device_type: str = "input") -> list[dict]:
+def list_audio_devices(
+    device_type: str = "input",
+    host_api: str = "wasapi",
+) -> list[dict]:
     """
     オーディオデバイスをリストアップする。
 
@@ -137,32 +140,66 @@ def list_audio_devices(device_type: str = "input") -> list[dict]:
         "input"  - 入力デバイス（マイク）と WASAPI ループバックデバイス（後方互換デフォルト）
         "output" - 出力デバイス（スピーカー / 仮想ケーブル）
         "all"    - 入出力すべてのデバイス
+    host_api:
+        "wasapi"      - WASAPI のみ表示（デフォルト。重複表示を抑制）
+        "all"         - 全 Host API を表示
+        "mme"         - MME のみ
+        "directsound" - DirectSound のみ
     """
     pa = pyaudio.PyAudio()
     devices = []
-    for i in range(pa.get_device_count()):
-        info = pa.get_device_info_by_index(i)
-        is_loopback = info.get("isLoopbackDevice", False)
-        has_input = info.get("maxInputChannels", 0) > 0
-        has_output = info.get("maxOutputChannels", 0) > 0
+    try:
+        for i in range(pa.get_device_count()):
+            info = pa.get_device_info_by_index(i)
+            host_idx = info.get("hostApi", -1)
+            try:
+                host_info = pa.get_host_api_info_by_index(host_idx)
+            except Exception:
+                continue
+            host_name = host_info.get("name", "").lower()
 
-        if device_type == "output":
-            include = has_output and not is_loopback
-        elif device_type == "all":
-            include = has_input or has_output or is_loopback
-        else:  # "input" (デフォルト・後方互換)
-            include = has_input or is_loopback
+            # Host API フィルタ
+            if host_api != "all":
+                if host_api == "wasapi" and "wasapi" not in host_name:
+                    continue
+                elif host_api == "mme" and "mme" not in host_name:
+                    continue
+                elif host_api == "directsound" and "directsound" not in host_name:
+                    continue
 
-        if include:
+            is_loopback = info.get("isLoopbackDevice", False)
+            has_input = info.get("maxInputChannels", 0) > 0
+            has_output = info.get("maxOutputChannels", 0) > 0
+
+            # デバイスタイプ判定
+            if device_type == "output":
+                if not (has_output and not is_loopback):
+                    continue
+            elif device_type == "all":
+                if not (has_input or has_output or is_loopback):
+                    continue
+            else:  # "input" (デフォルト・後方互換)
+                if not (has_input or is_loopback):
+                    continue
+
+            # 名前の整形（loopback 明示）
+            name = info["name"]
+            if is_loopback and "[Loopback]" not in name:
+                name = f"{name} [Loopback]"
+            elif not is_loopback and "[Loopback]" in name:
+                name = name.replace(" [Loopback]", "")
+
             devices.append({
                 "index": i,
-                "name": info["name"],
+                "name": name,
                 "isLoopback": is_loopback,
                 "defaultSampleRate": info.get("defaultSampleRate", 44100),
                 "maxInputChannels": info.get("maxInputChannels", 0),
                 "maxOutputChannels": info.get("maxOutputChannels", 0),
+                "hostApi": host_name,
             })
-    pa.terminate()
+    finally:
+        pa.terminate()
     return devices
 
 
