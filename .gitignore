@@ -29,5 +29,9 @@ models/
 新規*
 settings.json
 
-# Claude セッション間の引き継ぎメモ（ローカルのみ）
-handover/
+# Claude セッション間の引き継ぎメモ
+# handover/*.md は git 管理（共有用）、*.done.md はローカル完了マーカーで除外
+handover/*.done.md
+
+# raw_logs（ハルシネーション防止用の一次資料、ローカルのみ）
+raw_logs/
