@@ -148,6 +148,11 @@ GAIN_DEFAULT_VALUE = 1.0
 _SETTINGS_PATH = _SCRIPT_DIR / "settings.json"
 CONFIG_PATH = _SCRIPT_DIR / "config.yaml"
 
+# 動的可視性制御用グループタグ
+TAG_WHISPER_SETTINGS_GROUP = "whisper_settings_group"
+TAG_REALTIME_SETTINGS_GROUP = "realtime_settings_group"
+TAG_DEEPL_KEY_GROUP = "deepl_key_group"
+
 # API キー UI タグ
 TAG_OPENAI_KEY_INPUT = "openai_key_input"
 TAG_DEEPL_KEY_INPUT = "deepl_key_input"
@@ -162,6 +167,41 @@ _verbose_state: bool = False
 # コスト警告: スレッドセーフなフラグ（メインスレッドの描画ループで検査）
 _pending_cost_warnings: list[float] = []
 _cost_warning_lock = threading.Lock()
+
+
+def _resolve_settings_visibility(trans_key: str) -> dict[str, bool]:
+    """
+    翻訳エンジンキーに応じた設定グループの表示/非表示マップを返す純関数。
+
+    Parameters
+    ----------
+    trans_key:
+        翻訳エンジンの内部キー ("openai" / "deepl" / "openai-realtime")。
+
+    Returns
+    -------
+    dict[str, bool]
+        "whisper": Whisper/VAD 設定グループの表示フラグ
+        "realtime": Realtime 専用設定グループの表示フラグ
+        "deepl_key": DeepL API キーグループの表示フラグ
+    """
+    is_realtime = trans_key == "openai-realtime"
+    return {
+        "whisper": not is_realtime,
+        "realtime": is_realtime,
+        "deepl_key": not is_realtime,
+    }
+
+
+def _update_settings_visibility(trans_key: str) -> None:
+    """翻訳エンジン選択に応じて詳細設定グループの可視性を更新する。"""
+    v = _resolve_settings_visibility(trans_key)
+    if dpg.does_item_exist(TAG_WHISPER_SETTINGS_GROUP):
+        dpg.configure_item(TAG_WHISPER_SETTINGS_GROUP, show=v["whisper"])
+    if dpg.does_item_exist(TAG_REALTIME_SETTINGS_GROUP):
+        dpg.configure_item(TAG_REALTIME_SETTINGS_GROUP, show=v["realtime"])
+    if dpg.does_item_exist(TAG_DEEPL_KEY_GROUP):
+        dpg.configure_item(TAG_DEEPL_KEY_GROUP, show=v["deepl_key"])
 
 
 def _load_settings() -> dict:
@@ -431,6 +471,8 @@ def _on_zoom_preset_click():
         items = dpg.get_item_configuration(TAG_TRANS_COMBO).get("items", [])
         if realtime_label in items:
             dpg.set_value(TAG_TRANS_COMBO, realtime_label)
+            # コールバックは set_value では自動発火しないので、明示的に visibility を更新
+            _update_settings_visibility("openai-realtime")
 
     # 出力デバイスを CABLE Input に自動選択
     if dpg.does_item_exist(TAG_OUTPUT_DEVICE_COMBO):
@@ -1166,67 +1208,27 @@ def _build_gui():
 
         # --- 詳細設定（初期状態は折りたたみ） ---
         with dpg.collapsing_header(label="詳細設定", default_open=False):
+
+            # --- 翻訳エンジン選択（全モード共通） ---
             with dpg.group(horizontal=True):
-                dpg.add_text("認識モデル:")
-                dpg.add_combo(
-                    tag=TAG_MODEL_COMBO,
-                    items=["small", "medium"],
-                    default_value=default_model if default_model in ["small", "medium"] else "small",
-                    width=120,
-                    callback=lambda: threading.Thread(target=_trigger_preload, daemon=True).start(),
-                )
-                dpg.add_text("  翻訳エンジン:")
+                dpg.add_text("翻訳エンジン:")
                 dpg.add_combo(
                     tag=TAG_TRANS_COMBO,
                     items=trans_models if trans_models else ["(APIキー未設定)"],
                     default_value=default_trans if trans_models else "(APIキー未設定)",
-                    width=120,
+                    width=180,
                     enabled=len(trans_models) > 1,
+                    callback=lambda s, v, u: _update_settings_visibility(
+                        _trans_label_to_key(v)
+                    ),
                 )
-            with dpg.group(horizontal=True):
-                dpg.add_text("音声出力先:")
-                dpg.add_combo(
-                    tag=TAG_OUTPUT_DEVICE_COMBO,
-                    items=output_device_labels,
-                    default_value=default_output_device,
-                    width=280,
-                    callback=_save_settings,
-                )
-                dpg.add_text("  ")
-                dpg.add_button(
-                    tag=TAG_ZOOM_PRESET_BTN,
-                    label="Zoom 同時通訳プリセット",
-                    width=200,
-                    callback=_on_zoom_preset_click,
-                )
-            with dpg.group(horizontal=True):
-                dpg.add_text("発話検出感度:")
-                dpg.add_slider_float(
-                    tag=TAG_VAD_SENSITIVITY,
-                    default_value=default_sensitivity,
-                    min_value=0.0, max_value=1.0,
-                    width=160, format="%.2f",
-                    callback=_on_vad_sensitivity_change,
-                )
-                dpg.add_text("  無音待機(秒):")
-                dpg.add_slider_float(
-                    tag=TAG_VAD_SILENCE,
-                    default_value=default_silence,
-                    min_value=0.1, max_value=3.0,
-                    width=160, format="%.1f",
-                    callback=_on_vad_silence_change,
-                )
-                dpg.add_button(label="既定値に戻す", width=110,
-                               callback=lambda: (
-                                   dpg.set_value(TAG_VAD_SENSITIVITY, VAD_DEFAULT_SENSITIVITY),
-                                   dpg.set_value(TAG_VAD_SILENCE, VAD_DEFAULT_SILENCE),
-                               ))
 
-            # --- API キー設定 ---
             dpg.add_separator()
+
+            # --- API キー設定（全モード共通：OpenAI は常時表示） ---
             dpg.add_text("API キー設定（b64 難読化して config.yaml に保存）")
             with dpg.group(horizontal=True):
-                dpg.add_text("OpenAI:  ", )
+                dpg.add_text("OpenAI:  ")
                 dpg.add_input_text(
                     tag=TAG_OPENAI_KEY_INPUT,
                     default_value=_init_openai_key,
@@ -1241,22 +1243,26 @@ def _build_gui():
                     callback=_on_key_show_toggle,
                     user_data=TAG_OPENAI_KEY_INPUT,
                 )
-            with dpg.group(horizontal=True):
-                dpg.add_text("DeepL:   ")
-                dpg.add_input_text(
-                    tag=TAG_DEEPL_KEY_INPUT,
-                    default_value=_init_deepl_key,
-                    password=True,
-                    width=500,
-                    hint="xxxxxxxx-xxxx-... (空白のままなら変更しない)",
-                )
-                dpg.add_button(
-                    tag=TAG_KEY_SHOW_DEEPL,
-                    label="表示",
-                    width=70,
-                    callback=_on_key_show_toggle,
-                    user_data=TAG_DEEPL_KEY_INPUT,
-                )
+
+            # DeepL キーは openai-realtime モード時のみ非表示
+            with dpg.group(tag=TAG_DEEPL_KEY_GROUP, horizontal=False):
+                with dpg.group(horizontal=True):
+                    dpg.add_text("DeepL:   ")
+                    dpg.add_input_text(
+                        tag=TAG_DEEPL_KEY_INPUT,
+                        default_value=_init_deepl_key,
+                        password=True,
+                        width=500,
+                        hint="xxxxxxxx-xxxx-... (空白のままなら変更しない)",
+                    )
+                    dpg.add_button(
+                        tag=TAG_KEY_SHOW_DEEPL,
+                        label="表示",
+                        width=70,
+                        callback=_on_key_show_toggle,
+                        user_data=TAG_DEEPL_KEY_INPUT,
+                    )
+
             with dpg.group(horizontal=True):
                 dpg.add_button(
                     tag=TAG_KEY_SAVE_BTN,
@@ -1266,8 +1272,64 @@ def _build_gui():
                 )
                 dpg.add_text("", tag=TAG_KEY_STATUS)
 
-            # --- Host API フィルタ（詳細設定最下部） ---
             dpg.add_separator()
+
+            # --- Realtime 専用設定（openai-realtime モード時のみ表示） ---
+            with dpg.group(tag=TAG_REALTIME_SETTINGS_GROUP):
+                with dpg.group(horizontal=True):
+                    dpg.add_text("音声出力先:")
+                    dpg.add_combo(
+                        tag=TAG_OUTPUT_DEVICE_COMBO,
+                        items=output_device_labels,
+                        default_value=default_output_device,
+                        width=280,
+                        callback=_save_settings,
+                    )
+                    dpg.add_text("  ")
+                    dpg.add_button(
+                        tag=TAG_ZOOM_PRESET_BTN,
+                        label="Zoom 同時通訳プリセット",
+                        width=200,
+                        callback=_on_zoom_preset_click,
+                    )
+                dpg.add_separator()
+
+            # --- Whisper 専用設定（非 openai-realtime モード時のみ表示） ---
+            with dpg.group(tag=TAG_WHISPER_SETTINGS_GROUP):
+                with dpg.group(horizontal=True):
+                    dpg.add_text("認識モデル:")
+                    dpg.add_combo(
+                        tag=TAG_MODEL_COMBO,
+                        items=["small", "medium"],
+                        default_value=default_model if default_model in ["small", "medium"] else "small",
+                        width=120,
+                        callback=lambda: threading.Thread(target=_trigger_preload, daemon=True).start(),
+                    )
+                with dpg.group(horizontal=True):
+                    dpg.add_text("発話検出感度:")
+                    dpg.add_slider_float(
+                        tag=TAG_VAD_SENSITIVITY,
+                        default_value=default_sensitivity,
+                        min_value=0.0, max_value=1.0,
+                        width=160, format="%.2f",
+                        callback=_on_vad_sensitivity_change,
+                    )
+                    dpg.add_text("  無音待機(秒):")
+                    dpg.add_slider_float(
+                        tag=TAG_VAD_SILENCE,
+                        default_value=default_silence,
+                        min_value=0.1, max_value=3.0,
+                        width=160, format="%.1f",
+                        callback=_on_vad_silence_change,
+                    )
+                    dpg.add_button(label="既定値に戻す", width=110,
+                                   callback=lambda: (
+                                       dpg.set_value(TAG_VAD_SENSITIVITY, VAD_DEFAULT_SENSITIVITY),
+                                       dpg.set_value(TAG_VAD_SILENCE, VAD_DEFAULT_SILENCE),
+                                   ))
+                dpg.add_separator()
+
+            # --- Host API フィルタ（全モード共通） ---
             with dpg.group(horizontal=True):
                 dpg.add_text("デバイスフィルタ:")
                 _host_api_items = ["wasapi", "all", "mme", "directsound"]
@@ -1282,6 +1344,9 @@ def _build_gui():
                     callback=_on_host_api_change,
                 )
                 dpg.add_text("  ※ 同名デバイスが重複する場合は「all」に切り替え")
+
+        # 起動時の初期可視性を適用
+        _update_settings_visibility(_saved_trans_key)
 
         dpg.add_separator()
 
