@@ -338,6 +338,27 @@ def _on_gain_value_change(sender, value, user_data):
         _system.manual_gain = float(value)
 
 
+def _find_zoom_preset_output(devices: list[dict]) -> int | None:
+    """
+    デバイスリストから CABLE Input (VB-CABLE) のインデックスを返す純関数。
+
+    Parameters
+    ----------
+    devices:
+        各要素に "name" (str) と "index" (int) を持つ辞書のリスト。
+        例: [{"name": "Speakers", "index": 1}, {"name": "CABLE Input ...", "index": 5}]
+
+    Returns
+    -------
+    int | None
+        "cable input" を名前に含む最初のデバイスの index。見つからない場合は None。
+    """
+    for device in devices:
+        if "cable input" in device.get("name", "").lower():
+            return device["index"]
+    return None
+
+
 def _on_zoom_preset_click():
     """
     Zoom 同時通訳プリセットボタン押下。
@@ -355,6 +376,8 @@ def _on_zoom_preset_click():
     # 出力デバイスを CABLE Input に自動選択
     if dpg.does_item_exist(TAG_OUTPUT_DEVICE_COMBO):
         items = dpg.get_item_configuration(TAG_OUTPUT_DEVICE_COMBO).get("items", [])
+        # GUI のアイテムリストは "name (index)" 形式の文字列のため、
+        # 名前部分の大小文字無視マッチで CABLE Input を検索する。
         cable_item = next((it for it in items if "cable input" in it.lower()), None)
         if cable_item:
             dpg.set_value(TAG_OUTPUT_DEVICE_COMBO, cable_item)
