@@ -19,6 +19,8 @@ hiddenimports = [
     'openai',
     # GPT Realtime Translate
     'realtime_translator',
+    # Zoom Virtual Mic
+    'audio_output',
     'scipy.signal',
     'scipy.signal._upfirdn',
     'numpy',

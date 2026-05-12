@@ -183,6 +183,45 @@ For external tooling / automation, a small JSON API listens on `localhost:8767`.
 | POST | `/api/start` | `{"device_index": N, "model": "small"}` (both optional) |
 | POST | `/api/stop` | stop capture |
 
+### Zoom simultaneous interpretation via VB-CABLE
+
+Use **OpenAI Realtime** mode to have translated speech played back into Zoom's interpreter channel.
+
+#### Requirements
+
+- [VB-CABLE Virtual Audio Device](https://vb-audio.com/Cable/) (free)
+- OpenAI API key with `gpt-realtime-translate` access
+
+#### 1. Install VB-CABLE
+
+Download and run the VB-CABLE installer. After reboot, you should see:
+- **CABLE Input** — a virtual speaker (output device)
+- **CABLE Output** — a virtual microphone (input device)
+
+#### 2. Configure this app
+
+Open the GUI → 詳細設定 (Advanced), then:
+
+1. Click **「Zoom 同時通訳プリセット」** — this will:
+   - Switch the translation engine to `OpenAI Realtime`
+   - Set the audio output to `CABLE Input (VB-Audio Virtual Cable)`
+2. Click **開始** to start capture and translation.
+
+Or configure manually:
+- **翻訳エンジン** → `OpenAI Realtime`
+- **音声出力先** → `CABLE Input (VB-Audio Virtual Cable)`
+
+#### 3. Configure Zoom
+
+1. Go to **Settings → Audio** → Microphone: select **CABLE Output (VB-Audio Virtual Cable)**
+2. Join a meeting and go to **More → Language Interpretation → Add Language**
+3. Set yourself as an interpreter for your target language
+4. When interpretation is active, Zoom will broadcast audio from CABLE Output on the interpreter channel
+
+> **Note:** Interpreted audio reaches Zoom listeners with ~1-3 second delay (realtime API latency).
+
+---
+
 ### Cost protection (OpenAI Realtime mode)
 
 When `translation_model: "openai-realtime"` is active, the app monitors session cost
@@ -427,6 +466,47 @@ GUI で録音を開始した状態で OBS をプレビューすると字幕が�
 | GET | `/api/devices` | 入力デバイス一覧 |
 | POST | `/api/start` | `{"device_index": N, "model": "small"}`（両方省略可） |
 | POST | `/api/stop` | 録音停止 |
+
+### VB-CABLE を使った Zoom 同時通訳
+
+**OpenAI Realtime** モードを使うと、翻訳音声を Zoom のインタープリターチャンネルに直接送ることができます。
+
+#### 必要なもの
+
+- [VB-CABLE Virtual Audio Device](https://vb-audio.com/Cable/)（無料）
+- `gpt-realtime-translate` が使える OpenAI API キー
+
+#### 手順 1: VB-CABLE をインストール
+
+VB-CABLE のインストーラーを実行して再起動すると：
+- **CABLE Input** — 仮想スピーカー（出力デバイス）
+- **CABLE Output** — 仮想マイク（入力デバイス）
+
+の 2 つのデバイスが追加されます。
+
+#### 手順 2: このアプリの設定
+
+GUI を開いて「詳細設定」を展開し：
+
+1. **「Zoom 同時通訳プリセット」** ボタンをクリック。以下が自動設定されます：
+   - 翻訳エンジン → `OpenAI Realtime`
+   - 音声出力先 → `CABLE Input (VB-Audio Virtual Cable)`
+2. **「開始」** ボタンで録音・翻訳を開始。
+
+手動で設定する場合：
+- **翻訳エンジン** → `OpenAI Realtime`
+- **音声出力先** → `CABLE Input (VB-Audio Virtual Cable)`
+
+#### 手順 3: Zoom の設定
+
+1. Zoom の **設定 → オーディオ** → マイク を **「CABLE Output (VB-Audio Virtual Cable)」** に変更
+2. ミーティングに参加したら **「詳細」→「言語通訳」→「言語を追加」** を選択
+3. 自分を通訳者として設定し、ターゲット言語チャンネルを割り当てる
+4. 通訳が有効になると、CABLE Output の音声が Zoom のインタープリターチャンネルで配信されます
+
+> **注意:** 翻訳音声は Realtime API のレイテンシにより 1〜3 秒程度の遅延が生じます。
+
+---
 
 ### コスト保護機能（OpenAI Realtime モード）
 

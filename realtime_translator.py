@@ -60,6 +60,8 @@ class RealtimeTranslator:
         on_transcript: Callable[[str], None] | None = None,
         on_error: Callable[[str], None] | None = None,
         on_connected: Callable[[], None] | None = None,
+        request_audio_output: bool = False,
+        on_audio_delta: Callable[[bytes], None] | None = None,
     ):
         """
         Parameters
@@ -73,6 +75,8 @@ class RealtimeTranslator:
         on_transcript:            翻訳テキスト確定時コールバック (text: str) -> None
         on_error:                 エラー時コールバック (msg: str) -> None
         on_connected:             接続確立時コールバック () -> None
+        request_audio_output:     True のとき session.update に audio.output.format=pcm16 を追加する
+        on_audio_delta:           音声出力チャンクコールバック (pcm16_bytes: bytes) -> None
         """
         self._api_key = api_key
         self._target_language_code = target_language_code
@@ -83,6 +87,8 @@ class RealtimeTranslator:
         self._on_transcript = on_transcript
         self._on_error = on_error
         self._on_connected = on_connected
+        self._request_audio_output = request_audio_output
+        self._on_audio_delta = on_audio_delta
 
         # WebSocket エンドポイント（テスト時はこの属性を上書きする）
         self._ws_url = (
@@ -227,13 +233,14 @@ class RealtimeTranslator:
                 raise _AuthError("test_force_401 flag")
 
             # セッション設定を送信
+            audio_output_cfg: dict = {"language": self._target_language_code}
+            if self._request_audio_output:
+                audio_output_cfg["format"] = "pcm16"
             await ws.send(json.dumps({
                 "type": "session.update",
                 "session": {
                     "audio": {
-                        "output": {
-                            "language": self._target_language_code
-                        }
+                        "output": audio_output_cfg
                     }
                 }
             }))
@@ -317,6 +324,15 @@ class RealtimeTranslator:
                     self._log_verbose("RT_DONE", source="done_event", text=text)
                     if text and self._on_transcript:
                         self._on_transcript(text)
+
+                elif event_type == "session.output_audio.delta":
+                    delta_b64 = msg.get("delta", "")
+                    if delta_b64 and self._on_audio_delta:
+                        try:
+                            pcm_bytes = base64.b64decode(delta_b64)
+                            self._on_audio_delta(pcm_bytes)
+                        except Exception as e:
+                            self._log_verbose("RT_AUDIO_DELTA_ERROR", reason=str(e))
 
                 elif event_type == "error":
                     code = msg.get("error", {}).get("code", "")

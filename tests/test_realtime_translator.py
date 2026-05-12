@@ -384,3 +384,223 @@ class TestModuleImport:
         assert hasattr(RealtimeTranslator, "start"), "start メソッドが存在しない"
         assert hasattr(RealtimeTranslator, "feed_audio"), "feed_audio メソッドが存在しない"
         assert hasattr(RealtimeTranslator, "stop"), "stop メソッドが存在しない"
+
+    def test_constructor_has_audio_output_params(self):
+        """
+        コンストラクタに request_audio_output と on_audio_delta パラメータが
+        存在すること。
+        """
+        from realtime_translator import RealtimeTranslator
+        import inspect
+        sig = inspect.signature(RealtimeTranslator.__init__)
+        params = set(sig.parameters.keys())
+        assert "request_audio_output" in params, "request_audio_output パラメータが存在しない"
+        assert "on_audio_delta" in params, "on_audio_delta パラメータが存在しない"
+
+
+# ---------------------------------------------------------------------------
+# 音声出力テスト（Step 1: request_audio_output / on_audio_delta）
+# ---------------------------------------------------------------------------
+
+@pytest.mark.skipif(not _MODULE_AVAILABLE, reason="realtime_translator モジュール未実装")
+class TestRealtimeTranslatorAudioOutput:
+    """音声出力（VB-CABLE 連携）テスト。"""
+
+    def test_request_audio_output_false_does_not_include_format(self):
+        """
+        request_audio_output=False（デフォルト）のとき、
+        session.update に pcm16 フォーマット指定が含まれないこと。
+        """
+        sent_messages = []
+
+        async def mock_handler(websocket):
+            msg = await asyncio.wait_for(websocket.recv(), timeout=5)
+            sent_messages.append(json.loads(msg))
+            try:
+                await websocket.wait_closed()
+            except Exception:
+                pass
+
+        server_loop, stop_event, _ = _start_mock_server_in_thread(mock_handler, port=19770)
+
+        try:
+            translator = RealtimeTranslator(
+                api_key="sk-test-fake-audio-false",
+                target_language_code="ja",
+                request_audio_output=False,
+                reconnect_max_attempts=0,
+            )
+            translator._ws_url = "ws://localhost:19770"
+
+            client_loop = asyncio.new_event_loop()
+            translator.start(client_loop)
+
+            # session.update を待つ
+            deadline = time.time() + 5
+            while not sent_messages and time.time() < deadline:
+                time.sleep(0.1)
+
+            translator.stop()
+        finally:
+            _stop_mock_server(server_loop, stop_event)
+
+        assert len(sent_messages) >= 1, "session.update が送信されなかった"
+        update_msg = sent_messages[0]
+        assert update_msg.get("type") == "session.update"
+        # request_audio_output=False のときは audio.output.format が設定されないこと
+        audio_output = update_msg.get("session", {}).get("audio", {}).get("output", {})
+        assert "format" not in audio_output, \
+            f"request_audio_output=False のとき format が設定されてはいけない: {audio_output}"
+
+    def test_request_audio_output_true_includes_pcm16_format(self):
+        """
+        request_audio_output=True のとき、
+        session.update の audio.output に format: "pcm16" が含まれること。
+        """
+        sent_messages = []
+
+        async def mock_handler(websocket):
+            msg = await asyncio.wait_for(websocket.recv(), timeout=5)
+            sent_messages.append(json.loads(msg))
+            try:
+                await websocket.wait_closed()
+            except Exception:
+                pass
+
+        server_loop, stop_event, _ = _start_mock_server_in_thread(mock_handler, port=19771)
+
+        try:
+            translator = RealtimeTranslator(
+                api_key="sk-test-fake-audio-true",
+                target_language_code="ja",
+                request_audio_output=True,
+                reconnect_max_attempts=0,
+            )
+            translator._ws_url = "ws://localhost:19771"
+
+            client_loop = asyncio.new_event_loop()
+            translator.start(client_loop)
+
+            # session.update を待つ
+            deadline = time.time() + 5
+            while not sent_messages and time.time() < deadline:
+                time.sleep(0.1)
+
+            translator.stop()
+        finally:
+            _stop_mock_server(server_loop, stop_event)
+
+        assert len(sent_messages) >= 1, "session.update が送信されなかった"
+        update_msg = sent_messages[0]
+        assert update_msg.get("type") == "session.update"
+        audio_output = update_msg.get("session", {}).get("audio", {}).get("output", {})
+        assert audio_output.get("format") == "pcm16", \
+            f"request_audio_output=True のとき format=pcm16 が必要: {audio_output}"
+
+    def test_output_audio_delta_calls_on_audio_delta(self):
+        """
+        session.output_audio.delta イベントを受信したとき、
+        on_audio_delta コールバックに base64 デコードした bytes が渡されること。
+        """
+        received_audio = []
+        pcm_data = b"\x10\x20\x30\x40\x50\x60"
+        audio_b64 = base64.b64encode(pcm_data).decode("utf-8")
+
+        async def mock_handler(websocket):
+            # session.update を受信
+            await asyncio.wait_for(websocket.recv(), timeout=5)
+
+            # output_audio.delta を送信
+            await websocket.send(json.dumps({
+                "type": "session.output_audio.delta",
+                "delta": audio_b64,
+            }))
+            try:
+                await websocket.wait_closed()
+            except Exception:
+                pass
+
+        server_loop, stop_event, _ = _start_mock_server_in_thread(mock_handler, port=19772)
+
+        try:
+            translator = RealtimeTranslator(
+                api_key="sk-test-fake-audio-delta",
+                target_language_code="ja",
+                request_audio_output=True,
+                on_audio_delta=lambda data: received_audio.append(data),
+                reconnect_max_attempts=0,
+            )
+            translator._ws_url = "ws://localhost:19772"
+
+            client_loop = asyncio.new_event_loop()
+            translator.start(client_loop)
+
+            # コールバックを待つ
+            deadline = time.time() + 5
+            while not received_audio and time.time() < deadline:
+                time.sleep(0.1)
+
+            translator.stop()
+        finally:
+            _stop_mock_server(server_loop, stop_event)
+
+        assert len(received_audio) >= 1, "on_audio_delta が呼ばれなかった"
+        assert received_audio[0] == pcm_data, \
+            f"デコードされた bytes が不一致: {received_audio[0]!r}"
+
+    def test_output_audio_delta_not_called_when_no_callback(self):
+        """
+        on_audio_delta が None のとき、output_audio.delta を受信しても
+        エラーにならないこと（サイレント無視）。
+        """
+        errors = []
+        delta_processed = threading.Event()
+
+        pcm_data = b"\xAA\xBB"
+        audio_b64 = base64.b64encode(pcm_data).decode("utf-8")
+
+        async def mock_handler(websocket):
+            await asyncio.wait_for(websocket.recv(), timeout=5)
+
+            await websocket.send(json.dumps({
+                "type": "session.output_audio.delta",
+                "delta": audio_b64,
+            }))
+            # transcript も送信して処理完了を検出できるようにする
+            await asyncio.sleep(0.1)
+            await websocket.send(json.dumps({
+                "type": "session.output_transcript.delta",
+                "delta": "test.",
+            }))
+            await asyncio.sleep(0.1)
+            delta_processed.set()
+            try:
+                await websocket.wait_closed()
+            except Exception:
+                pass
+
+        server_loop, stop_event, _ = _start_mock_server_in_thread(mock_handler, port=19773)
+
+        try:
+            translator = RealtimeTranslator(
+                api_key="sk-test-fake-no-callback",
+                target_language_code="ja",
+                request_audio_output=True,
+                on_audio_delta=None,  # コールバックなし
+                on_error=lambda msg: errors.append(msg),
+                reconnect_max_attempts=0,
+            )
+            translator._ws_url = "ws://localhost:19773"
+
+            client_loop = asyncio.new_event_loop()
+            translator.start(client_loop)
+
+            # 処理完了を待つ
+            delta_processed.wait(timeout=5)
+            time.sleep(0.2)  # 処理の完了を確実に待つ
+
+            translator.stop()
+        finally:
+            _stop_mock_server(server_loop, stop_event)
+
+        assert errors == [], f"on_audio_delta=None のときエラーが発生してはいけない: {errors}"
