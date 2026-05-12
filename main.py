@@ -276,6 +276,7 @@ class CaptionSystem:
         if not self._realtime_mode:
             self._translator = TranslationService(config)
             self._realtime_translator = None
+            self._cost_monitor = None
         else:
             self._translator = None
             # API キー未設定チェック（早期失敗）
@@ -305,9 +306,6 @@ class CaptionSystem:
                 on_max_reached=self._on_cost_max_reached,
                 on_warning=self._on_cost_warning,
             )
-
-        if not self._realtime_mode:
-            self._cost_monitor = None
 
         self._broadcaster = SubtitleBroadcaster()
         self._loop: asyncio.AbstractEventLoop | None = None
