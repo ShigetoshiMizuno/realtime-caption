@@ -19,7 +19,6 @@ regexes = [
     '''sk-test-fake-[A-Za-z0-9]+''',
     '''sk-xxxxxxxxxxxxxxxxxxxx''',
     '''your-api-key-here''',
-    '''your-api-key''',
     '''xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx''',
 ]
 paths = [

@@ -32,6 +32,11 @@ class AudioOutputStream:
 
     スレッドセーフな write() を提供し、daemon スレッドがキューを消費して
     pyaudio ストリームに書き込む。
+
+    使用順序:
+        通常は ``start() → write() → ... → stop()`` の順序で使用してください。
+        ``start()`` 前に ``write()`` で渡したデータはキューに蓄積され、
+        ``start()`` 後にバースト再生されます。
     """
 
     def __init__(
