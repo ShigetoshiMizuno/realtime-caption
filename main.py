@@ -72,6 +72,7 @@ from openai import OpenAI
 from RealtimeSTT import AudioToTextRecorder
 from scipy.signal import resample_poly
 from math import gcd
+from config_utils import decode_api_key
 
 # Windows コンソールの文字化け対策
 if sys.stdout.encoding != "utf-8":
@@ -227,13 +228,13 @@ class TranslationService:
 
         if model == "deepl":
             import deepl as _deepl
-            self._deepl = _deepl.Translator(config["deepl"]["api_key"])
+            self._deepl = _deepl.Translator(decode_api_key(config["deepl"]["api_key"]))
             self._deepl_target = _DEEPL_LANG_MAP.get(
                 self._target_language.lower(), self._target_language.upper()
             )
             self._mode = "deepl"
         else:
-            self._client = OpenAI(api_key=config["openai"]["api_key"])
+            self._client = OpenAI(api_key=decode_api_key(config["openai"]["api_key"]))
             prompt_tmpl = trans_cfg.get("system_prompt",
                 "与えられたテキストを自然な{target_language}に翻訳してください。翻訳結果のみ返してください。")
             self._system_prompt = prompt_tmpl.format(target_language=self._target_language)
@@ -727,7 +728,7 @@ class CaptionSystem:
 def main():
     config = load_config("config.yaml")
 
-    api_key = config.get("openai", {}).get("api_key", "")
+    api_key = decode_api_key(config.get("openai", {}).get("api_key", ""))
     if not api_key or api_key == "your-api-key-here":
         print("[ERROR] config.yaml に OpenAI API キーを設定してください。")
         sys.exit(1)
