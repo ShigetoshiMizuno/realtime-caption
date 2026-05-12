@@ -5,12 +5,14 @@ gpt-realtime-translate モデルを使った WebSocket ベースのリアルタ�
 Whisper + 翻訳APIの2段パイプラインを1モデルに圧縮する。
 
 API ドキュメント確認情報:
-  - 確認日: 2026-05-11
-  - 参照元: SPECちゃん成果物（tranquil-stargazing-scott-agent-abc18dc2e2bbbcb06.md）
+  - 確認日: 2026-05-12 (Issue #23 対応で追記)
+  - 参照元: SPECちゃん成果物（tranquil-stargazing-scott-agent-abc18dc2e2bbbcb06.md）+ 公式ドキュメント
   - エンドポイント: wss://api.openai.com/v1/realtime/translations?model=gpt-realtime-translate
   - イベント名（受信）:
-      session.output_transcript.delta  - テキストチャンク受信
-      session.output_transcript.done   - テキスト確定
+      session.output_transcript.delta  - 翻訳テキストチャンク受信
+      session.output_transcript.done   - 翻訳テキスト確定
+      session.input_transcript.delta   - 原文テキストチャンク受信（Issue #23）
+      session.input_transcript.done    - 原文テキスト確定（Issue #23）
   - イベント名（送信）:
       session.update                   - セッション設定更新
       session.input_audio_buffer.append - 音声チャンク送信
@@ -58,6 +60,7 @@ class RealtimeTranslator:
         reconnect_max_attempts: int = 5,
         reconnect_backoff_base: float = 1.5,
         on_transcript: Callable[[str], None] | None = None,
+        on_source_transcript: Callable[[str], None] | None = None,
         on_error: Callable[[str], None] | None = None,
         on_connected: Callable[[], None] | None = None,
         request_audio_output: bool = False,
@@ -73,6 +76,7 @@ class RealtimeTranslator:
         reconnect_max_attempts:   最大再接続試行回数
         reconnect_backoff_base:   指数バックオフの底（n 回目は base^n 秒待機）
         on_transcript:            翻訳テキスト確定時コールバック (text: str) -> None
+        on_source_transcript:     原文テキスト確定時コールバック (text: str) -> None (optional)
         on_error:                 エラー時コールバック (msg: str) -> None
         on_connected:             接続確立時コールバック () -> None
         request_audio_output:     True のとき session.update に audio.output.format=pcm16 を追加する
@@ -85,6 +89,7 @@ class RealtimeTranslator:
         self._reconnect_max_attempts = reconnect_max_attempts
         self._reconnect_backoff_base = reconnect_backoff_base
         self._on_transcript = on_transcript
+        self._on_source_transcript = on_source_transcript
         self._on_error = on_error
         self._on_connected = on_connected
         self._request_audio_output = request_audio_output
@@ -265,8 +270,13 @@ class RealtimeTranslator:
         """受信ループ: transcript delta/done を処理する。"""
         from websockets.exceptions import ConnectionClosedError
 
+        # 翻訳テキスト（output）用バッファ・タイマー
         buf = ""
         fallback_timer: asyncio.Task | None = None
+
+        # 原文テキスト（input）用バッファ・タイマー（Issue #23）
+        source_buf = ""
+        source_fallback_timer: asyncio.Task | None = None
 
         async def _start_fallback_timer():
             nonlocal fallback_timer
@@ -275,7 +285,7 @@ class RealtimeTranslator:
             fallback_timer = asyncio.create_task(_fallback_flush())
 
         async def _fallback_flush():
-            """done が来なければ _FALLBACK_TIMEOUT_SEC 後に強制確定。"""
+            """done が来なければ _FALLBACK_TIMEOUT_SEC 後に強制確定（翻訳テキスト用）。"""
             nonlocal buf
             await asyncio.sleep(_FALLBACK_TIMEOUT_SEC)
             if buf:
@@ -284,6 +294,26 @@ class RealtimeTranslator:
                 self._log_verbose("RT_DONE", source="fallback_timer", text=text)
                 if self._on_transcript:
                     self._on_transcript(text)
+
+        async def _start_source_fallback_timer():
+            nonlocal source_fallback_timer
+            if source_fallback_timer is not None and not source_fallback_timer.done():
+                source_fallback_timer.cancel()
+            source_fallback_timer = asyncio.create_task(_source_fallback_flush())
+
+        async def _source_fallback_flush():
+            """done が来なければ _FALLBACK_TIMEOUT_SEC 後に強制確定（原文テキスト用）。"""
+            nonlocal source_buf
+            await asyncio.sleep(_FALLBACK_TIMEOUT_SEC)
+            if source_buf:
+                text = source_buf
+                source_buf = ""
+                self._log_verbose("RT_SOURCE_DONE", source="fallback_timer", text=text)
+                if self._on_source_transcript:
+                    try:
+                        self._on_source_transcript(text)
+                    except Exception as e:
+                        self._log_verbose("RT_SOURCE_CALLBACK_ERROR", error=str(e))
 
         try:
             async for raw in ws:
@@ -325,6 +355,43 @@ class RealtimeTranslator:
                     if text and self._on_transcript:
                         self._on_transcript(text)
 
+                elif event_type == "session.input_transcript.delta":
+                    # 原文テキスト（話者の入力言語）delta 受信（Issue #23）
+                    delta = msg.get("delta", "")
+                    if delta:
+                        source_buf += delta
+                        self._log_verbose("RT_SOURCE_DELTA", delta=delta, buf_len=len(source_buf))
+
+                    # フォールバックタイマーをリセット
+                    await _start_source_fallback_timer()
+
+                    # 句読点フォールバック確定
+                    if source_buf and source_buf[-1] in _SENTENCE_END_CHARS:
+                        if source_fallback_timer is not None and not source_fallback_timer.done():
+                            source_fallback_timer.cancel()
+                        text = source_buf
+                        source_buf = ""
+                        self._log_verbose("RT_SOURCE_DONE", source="punctuation", text=text)
+                        if self._on_source_transcript:
+                            try:
+                                self._on_source_transcript(text)
+                            except Exception as e:
+                                self._log_verbose("RT_SOURCE_CALLBACK_ERROR", error=str(e))
+
+                elif event_type == "session.input_transcript.done":
+                    # 原文テキスト確定（Issue #23）
+                    if source_fallback_timer is not None and not source_fallback_timer.done():
+                        source_fallback_timer.cancel()
+                    if source_buf:
+                        text = source_buf
+                        source_buf = ""
+                        self._log_verbose("RT_SOURCE_DONE", source="done_event", text=text)
+                        if self._on_source_transcript:
+                            try:
+                                self._on_source_transcript(text)
+                            except Exception as e:
+                                self._log_verbose("RT_SOURCE_CALLBACK_ERROR", error=str(e))
+
                 # NOTE: gpt-realtime-translate は 2026 年リリース直後のため、イベント名
                 #       (session.output_audio.delta/done) は公式ドキュメント未確認
                 #       (SPEC 文書類推)。仕様変動の可能性あり。
@@ -356,15 +423,26 @@ class RealtimeTranslator:
             self._log_verbose("RT_ERROR", reason="connection_closed", detail=str(e))
             if fallback_timer is not None and not fallback_timer.done():
                 fallback_timer.cancel()
+            if source_fallback_timer is not None and not source_fallback_timer.done():
+                source_fallback_timer.cancel()
             # buf に残りがあればフラッシュ
             if buf:
                 self._log_verbose("RT_DONE", source="connection_closed_flush", text=buf)
                 if self._on_transcript:
                     self._on_transcript(buf)
+            if source_buf:
+                self._log_verbose("RT_SOURCE_DONE", source="connection_closed_flush", text=source_buf)
+                if self._on_source_transcript:
+                    try:
+                        self._on_source_transcript(source_buf)
+                    except Exception as e2:
+                        self._log_verbose("RT_SOURCE_CALLBACK_ERROR", error=str(e2))
             raise
         finally:
             if fallback_timer is not None and not fallback_timer.done():
                 fallback_timer.cancel()
+            if source_fallback_timer is not None and not source_fallback_timer.done():
+                source_fallback_timer.cancel()
 
     async def _send_loop(self, ws):
         """送信ループ: キューから PCM bytes を取り出して base64 エンコードして送信。"""
