@@ -78,3 +78,43 @@ def test_visibility_deepl():
     assert v["whisper"] is True
     assert v["realtime"] is False
     assert v["deepl_key"] is True
+
+
+# ---------------------------------------------------------------------------
+# _on_zoom_preset_click の visibility 更新テスト
+# ---------------------------------------------------------------------------
+
+def test_zoom_preset_updates_visibility():
+    """
+    Zoom プリセット押下時に _update_settings_visibility("openai-realtime") が
+    呼ばれることを確認する。
+    dpg は GUI 環境なしでは動作しないため、_update_settings_visibility と dpg を
+    モックして検証する。
+    """
+    import importlib
+    import types
+    from unittest.mock import MagicMock, patch, call
+
+    # dpg モックを組み立てる
+    mock_dpg = MagicMock()
+    # TAG_TRANS_COMBO が存在し、items に "openai-realtime" のラベルが含まれる状態を模擬
+    # _trans_key_to_label("openai-realtime") は app モジュール内で呼ばれるため、
+    # does_item_exist → True、get_item_configuration → items あり を返す
+    mock_dpg.does_item_exist.return_value = True
+    mock_dpg.get_item_configuration.return_value = {
+        "items": ["OpenAI (Whisper)", "OpenAI Realtime", "DeepL"]
+    }
+    # set_value は副作用なし
+
+    import app  # noqa: PLC0415
+
+    # _trans_key_to_label が "OpenAI Realtime" を返すようにモック
+    with (
+        patch.object(app, "dpg", mock_dpg),
+        patch.object(app, "_trans_key_to_label", return_value="OpenAI Realtime"),
+        patch.object(app, "_save_settings"),
+        patch.object(app, "_update_settings_visibility") as mock_update_vis,
+    ):
+        app._on_zoom_preset_click()
+
+    mock_update_vis.assert_called_once_with("openai-realtime")
