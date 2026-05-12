@@ -81,6 +81,48 @@ def test_visibility_deepl():
 
 
 # ---------------------------------------------------------------------------
+# Issue #3 #2/#3: プリロードキャッシュ分類（_classify_preload_cache）
+# ---------------------------------------------------------------------------
+
+class _MockSystem:
+    """テスト用の軽量モック。CaptionSystem の _recorder 属性だけを持つ。"""
+    def __init__(self, recorder):
+        self._recorder = recorder
+
+
+class TestClassifyPreloadCache:
+    def test_miss_when_no_cached_system(self):
+        from app import _classify_preload_cache  # noqa: PLC0415
+        status, sys_obj = _classify_preload_cache(None, None, ("small", 0))
+        assert status == "miss"
+        assert sys_obj is None
+
+    def test_miss_when_key_mismatch(self):
+        from app import _classify_preload_cache  # noqa: PLC0415
+        cached = _MockSystem(recorder=object())
+        status, sys_obj = _classify_preload_cache(cached, ("small", 0), ("medium", 0))
+        assert status == "miss"
+        assert sys_obj is None
+
+    def test_ok_when_recorder_loaded(self):
+        from app import _classify_preload_cache  # noqa: PLC0415
+        cached = _MockSystem(recorder=object())  # _recorder が non-None
+        key = ("small", 0)
+        status, sys_obj = _classify_preload_cache(cached, key, key)
+        assert status == "ok"
+        assert sys_obj is cached
+
+    def test_stale_when_recorder_none(self):
+        """Issue #3 #3: prepare() 失敗で _recorder=None の参照は stale 扱い。"""
+        from app import _classify_preload_cache  # noqa: PLC0415
+        cached = _MockSystem(recorder=None)
+        key = ("small", 0)
+        status, sys_obj = _classify_preload_cache(cached, key, key)
+        assert status == "stale"
+        assert sys_obj is cached
+
+
+# ---------------------------------------------------------------------------
 # _on_zoom_preset_click の visibility 更新テスト
 # ---------------------------------------------------------------------------
 
