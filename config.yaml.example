@@ -1,7 +1,11 @@
 openai:
+  # 平文形式（後方互換）: "sk-xxxxxxxxxxxxxxxxxxxx"
+  # b64 難読化形式: "b64:<base64エンコード済み文字列>"  ← GUI の「保存」ボタンで自動生成
+  # 注意: b64 は暗号化ではなく難読化のみ。config.yaml をバージョン管理に含めないこと。
   api_key: "sk-xxxxxxxxxxxxxxxxxxxx"  # OpenAI を使う場合に入力
 
 deepl:
+  # 同上。GUI の「詳細設定」→「API キー設定」→「保存」で b64 形式に変換される。
   api_key: "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx:fx"  # DeepL を使う場合に入力
 
 translation:
