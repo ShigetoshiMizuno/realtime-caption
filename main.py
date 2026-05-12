@@ -277,6 +277,7 @@ class CaptionSystem:
         if not self._realtime_mode:
             self._translator = TranslationService(config)
             self._realtime_translator = None
+            self._cost_monitor = None
         else:
             self._translator = None
             # API キー未設定チェック（早期失敗）
@@ -297,6 +298,14 @@ class CaptionSystem:
                 on_transcript=self._on_realtime_transcript,
                 on_error=self._on_realtime_error,
                 on_connected=on_ready,
+            )
+            # コスト保護: 最大稼働時間監視
+            from cost_monitor import CostMonitor
+            max_min = rt_cfg.get("max_session_minutes", 60)
+            self._cost_monitor = CostMonitor(
+                max_session_minutes=max_min,
+                on_max_reached=self._on_cost_max_reached,
+                on_warning=self._on_cost_warning,
             )
 
         self._broadcaster = SubtitleBroadcaster()
@@ -343,6 +352,12 @@ class CaptionSystem:
         if getattr(self, "_realtime_translator", None) is not None:
             try:
                 self._realtime_translator.stop()
+            except Exception:
+                pass
+        # コストモニターを停止
+        if getattr(self, "_cost_monitor", None) is not None:
+            try:
+                self._cost_monitor.stop()
             except Exception:
                 pass
         # subst ドライブの解除はアプリ終了時のみ（app.py の main() / main.py の main() で実施）。
@@ -396,6 +411,24 @@ class CaptionSystem:
         """RealtimeTranslator からエラーを受け取るコールバック。"""
         print(f"[RT ERROR] {msg}")
         self._log_verbose("RT_ERROR", message=msg)
+
+    def _on_cost_max_reached(self) -> None:
+        """CostMonitor が最大稼働時間に達したときのコールバック。"""
+        max_min = self._config.get("openai_realtime", {}).get("max_session_minutes", 60)
+        print(f"\n[COST] 最大稼働時間 {max_min} 分に達したため停止します。", flush=True)
+        self._log_verbose("COST_MAX_REACHED", max_session_minutes=max_min)
+        # on_cost_warning コールバック経由で GUI にも通知（GUI 側でフラグを立てる）
+        if getattr(self, "_on_cost_status", None) is not None:
+            self._on_cost_status(f"最大稼働時間 {max_min} 分に達したため停止しました")
+        self.shutdown()
+
+    def _on_cost_warning(self, threshold: float) -> None:
+        """CostMonitor が警告閾値を超えたときのコールバック。"""
+        print(f"\n[COST WARN] 想定コストが ${threshold:.2f} を超えました。", flush=True)
+        self._log_verbose("COST_WARNING", threshold_usd=threshold)
+        # GUI 側でフラグを立てて警告モーダルを表示させる（dpg 直接呼び出しは安全でない）
+        if getattr(self, "_on_cost_warning_cb", None) is not None:
+            self._on_cost_warning_cb(threshold)
 
     async def _realtime_broadcast(self, translated_text: str):
         """Realtime 翻訳テキストを WebSocket とログに配信する。"""
@@ -709,6 +742,10 @@ class CaptionSystem:
             self._realtime_translator._verbose_callback = self._log_verbose
             self._realtime_translator.start(self._loop)
 
+        # コストモニターを起動（Realtime モードのみ）
+        if self._cost_monitor is not None:
+            self._cost_monitor.start()
+
         recorder_thread = threading.Thread(target=self._start_recorder, daemon=True)
         recorder_thread.start()
 
@@ -755,6 +792,30 @@ def main():
         model_name = select_whisper_model(config["whisper"]["model"])
 
     system = CaptionSystem(config, device_info, model_name)
+
+    # CLI モード: Realtime モードの場合は経過時間・コストを1秒ごとにコンソール表示
+    if trans_model == "openai-realtime" and system._cost_monitor is not None:
+        import time as _time
+
+        def _cli_cost_display():
+            while not system._stop_event.is_set():
+                elapsed_sec = int(system._cost_monitor.elapsed_minutes() * 60)
+                h = elapsed_sec // 3600
+                m = (elapsed_sec % 3600) // 60
+                s = elapsed_sec % 60
+                cost = system._cost_monitor.estimated_cost_usd()
+                print(
+                    f"\r経過: {h:02d}:{m:02d}:{s:02d} / 想定コスト: ${cost:.2f}  ",
+                    end="",
+                    flush=True,
+                )
+                system._stop_event.wait(timeout=1.0)
+
+        def _cli_warn_handler(threshold: float):
+            print(f"\n[WARN] 想定コストが ${threshold:.2f} を超えました", flush=True)
+
+        system._on_cost_warning_cb = _cli_warn_handler
+        threading.Thread(target=_cli_cost_display, daemon=True).start()
 
     try:
         asyncio.run(system.run())
