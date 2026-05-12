@@ -63,6 +63,8 @@ On first launch, setup runs automatically:
 
 Once setup finishes, the GUI window (`リアルタイム字幕・翻訳`) opens.
 
+> See [FAQ.md](FAQ.md) for cost and bandwidth estimates per translation mode.
+
 ---
 
 ### Using the GUI
@@ -287,6 +289,8 @@ GUI では **API キーが入っているエンジンのみ選択可能** にな
 > 初回ダウンロード総量は約 **2.5 GB**。回線状況により 10〜30 分。2回目以降は数秒で起動します。
 
 セットアップ完了後に GUI ウィンドウ「リアルタイム字幕・翻訳」が開きます。
+
+> 各翻訳モードのコスト・帯域目安は [FAQ.md](FAQ.md) を参照してください。
 
 ---
 
