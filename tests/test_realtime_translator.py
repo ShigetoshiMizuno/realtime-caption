@@ -14,6 +14,7 @@ NOTE: gpt-realtime-translate API は 2026 年リリース直後のため、
 import asyncio
 import base64
 import json
+import socket
 import threading
 import time
 import unittest
@@ -41,8 +42,26 @@ async def _run_mock_ws_server(host, port, handler, stop_event):
         await stop_event.wait()
 
 
-def _start_mock_server_in_thread(handler, port=19765):
-    """モックWSサーバーを別スレッドで起動し、(loop, stop_event, thread) を返す。"""
+def _get_free_port() -> int:
+    """OS から空きポートを動的に取得する。
+
+    ハードコードのポート番号を使うと、テスト間で TIME_WAIT 状態のポートが
+    残り、後続テストの bind や接続タイミングを乱して flaky の原因になる。
+    本関数で各テストごとに毎回新しいポートを払い出すことで競合を避ける。
+    """
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.bind(("localhost", 0))
+        return s.getsockname()[1]
+
+
+def _start_mock_server_in_thread(handler, port=None):
+    """モックWSサーバーを別スレッドで起動し、(loop, stop_event, thread, port) を返す。
+
+    port=None（推奨）のとき OS から空きポートを動的取得する。
+    既存テスト互換のため明示的な port 指定も受け付ける。
+    """
+    if port is None:
+        port = _get_free_port()
     loop = asyncio.new_event_loop()
     stop_event = asyncio.Event()
 
@@ -54,7 +73,7 @@ def _start_mock_server_in_thread(handler, port=19765):
     t.start()
     # サーバー起動待ち
     time.sleep(0.2)
-    return loop, stop_event, t
+    return loop, stop_event, t, port
 
 
 def _stop_mock_server(loop, stop_event):
@@ -105,7 +124,7 @@ class TestRealtimeTranslatorBasic:
             except Exception:
                 pass
 
-        server_loop, stop_event, _ = _start_mock_server_in_thread(mock_handler, port=19765)
+        server_loop, stop_event, _, port = _start_mock_server_in_thread(mock_handler)
 
         try:
             translator = RealtimeTranslator(
@@ -115,8 +134,7 @@ class TestRealtimeTranslatorBasic:
                 on_error=lambda msg: errors.append(msg),
                 reconnect_max_attempts=0,
             )
-            # 内部URLをlocalhost:19765に上書き
-            translator._ws_url = "ws://localhost:19765"
+            translator._ws_url = f"ws://localhost:{port}"
 
             client_loop = asyncio.new_event_loop()
             translator.start(client_loop)
@@ -159,7 +177,7 @@ class TestRealtimeTranslatorBasic:
             except Exception:
                 pass
 
-        server_loop, stop_event, _ = _start_mock_server_in_thread(mock_handler, port=19766)
+        server_loop, stop_event, _, port = _start_mock_server_in_thread(mock_handler)
 
         try:
             translator = RealtimeTranslator(
@@ -167,7 +185,7 @@ class TestRealtimeTranslatorBasic:
                 target_language_code="ja",
                 reconnect_max_attempts=0,
             )
-            translator._ws_url = "ws://localhost:19766"
+            translator._ws_url = f"ws://localhost:{port}"
 
             client_loop = asyncio.new_event_loop()
             translator.start(client_loop)
@@ -213,7 +231,7 @@ class TestRealtimeTranslatorError:
             # 即座に接続を閉じる（401 相当のシミュレーション）
             await websocket.close(1008, "Unauthorized")
 
-        server_loop, stop_event, _ = _start_mock_server_in_thread(mock_handler, port=19767)
+        server_loop, stop_event, _, port = _start_mock_server_in_thread(mock_handler)
 
         try:
             translator = RealtimeTranslator(
@@ -222,7 +240,7 @@ class TestRealtimeTranslatorError:
                 on_error=lambda msg: errors.append(msg),
                 reconnect_max_attempts=3,
             )
-            translator._ws_url = "ws://localhost:19767"
+            translator._ws_url = f"ws://localhost:{port}"
             # 401 シミュレーション: close code 1008 を 401 として扱うようにフラグ設定
             translator._test_force_401 = True
 
@@ -266,7 +284,7 @@ class TestRealtimeTranslatorError:
                 except Exception:
                     pass
 
-        server_loop, stop_event, _ = _start_mock_server_in_thread(mock_handler, port=19768)
+        server_loop, stop_event, _, port = _start_mock_server_in_thread(mock_handler)
 
         try:
             translator = RealtimeTranslator(
@@ -275,7 +293,7 @@ class TestRealtimeTranslatorError:
                 reconnect_max_attempts=3,
                 reconnect_backoff_base=0.01,  # テスト用に短縮（0.01^1 = 0.01秒待機）
             )
-            translator._ws_url = "ws://localhost:19768"
+            translator._ws_url = f"ws://localhost:{port}"
 
             client_loop = asyncio.new_event_loop()
             translator.start(client_loop)
@@ -315,7 +333,7 @@ class TestRealtimeTranslatorFallback:
             except Exception:
                 pass
 
-        server_loop, stop_event, _ = _start_mock_server_in_thread(mock_handler, port=19769)
+        server_loop, stop_event, _, port = _start_mock_server_in_thread(mock_handler)
 
         try:
             translator = RealtimeTranslator(
@@ -324,7 +342,7 @@ class TestRealtimeTranslatorFallback:
                 on_transcript=lambda text: received.append(text),
                 reconnect_max_attempts=0,
             )
-            translator._ws_url = "ws://localhost:19769"
+            translator._ws_url = f"ws://localhost:{port}"
 
             client_loop = asyncio.new_event_loop()
             translator.start(client_loop)
@@ -421,7 +439,7 @@ class TestRealtimeTranslatorAudioOutput:
             except Exception:
                 pass
 
-        server_loop, stop_event, _ = _start_mock_server_in_thread(mock_handler, port=19770)
+        server_loop, stop_event, _, port = _start_mock_server_in_thread(mock_handler)
 
         try:
             translator = RealtimeTranslator(
@@ -430,7 +448,7 @@ class TestRealtimeTranslatorAudioOutput:
                 request_audio_output=False,
                 reconnect_max_attempts=0,
             )
-            translator._ws_url = "ws://localhost:19770"
+            translator._ws_url = f"ws://localhost:{port}"
 
             client_loop = asyncio.new_event_loop()
             translator.start(client_loop)
@@ -468,7 +486,7 @@ class TestRealtimeTranslatorAudioOutput:
             except Exception:
                 pass
 
-        server_loop, stop_event, _ = _start_mock_server_in_thread(mock_handler, port=19771)
+        server_loop, stop_event, _, port = _start_mock_server_in_thread(mock_handler)
 
         try:
             translator = RealtimeTranslator(
@@ -477,7 +495,7 @@ class TestRealtimeTranslatorAudioOutput:
                 request_audio_output=True,
                 reconnect_max_attempts=0,
             )
-            translator._ws_url = "ws://localhost:19771"
+            translator._ws_url = f"ws://localhost:{port}"
 
             client_loop = asyncio.new_event_loop()
             translator.start(client_loop)
@@ -518,7 +536,7 @@ class TestRealtimeTranslatorAudioOutput:
             except Exception:
                 pass
 
-        server_loop, stop_event, _ = _start_mock_server_in_thread(mock_handler, port=19779)
+        server_loop, stop_event, _, port = _start_mock_server_in_thread(mock_handler)
 
         try:
             translator = RealtimeTranslator(
@@ -526,7 +544,7 @@ class TestRealtimeTranslatorAudioOutput:
                 target_language_code="ja",
                 reconnect_max_attempts=0,
             )
-            translator._ws_url = "ws://localhost:19779"
+            translator._ws_url = f"ws://localhost:{port}"
 
             client_loop = asyncio.new_event_loop()
             translator.start(client_loop)
@@ -570,7 +588,7 @@ class TestRealtimeTranslatorAudioOutput:
             except Exception:
                 pass
 
-        server_loop, stop_event, _ = _start_mock_server_in_thread(mock_handler, port=19772)
+        server_loop, stop_event, _, port = _start_mock_server_in_thread(mock_handler)
 
         try:
             translator = RealtimeTranslator(
@@ -580,7 +598,7 @@ class TestRealtimeTranslatorAudioOutput:
                 on_audio_delta=lambda data: received_audio.append(data),
                 reconnect_max_attempts=0,
             )
-            translator._ws_url = "ws://localhost:19772"
+            translator._ws_url = f"ws://localhost:{port}"
 
             client_loop = asyncio.new_event_loop()
             translator.start(client_loop)
@@ -629,7 +647,7 @@ class TestRealtimeTranslatorAudioOutput:
             except Exception:
                 pass
 
-        server_loop, stop_event, _ = _start_mock_server_in_thread(mock_handler, port=19773)
+        server_loop, stop_event, _, port = _start_mock_server_in_thread(mock_handler)
 
         try:
             translator = RealtimeTranslator(
@@ -640,7 +658,7 @@ class TestRealtimeTranslatorAudioOutput:
                 on_error=lambda msg: errors.append(msg),
                 reconnect_max_attempts=0,
             )
-            translator._ws_url = "ws://localhost:19773"
+            translator._ws_url = f"ws://localhost:{port}"
 
             client_loop = asyncio.new_event_loop()
             translator.start(client_loop)
@@ -712,7 +730,7 @@ class TestRealtimeTranslatorSourceTranscript:
             except Exception:
                 pass
 
-        server_loop, stop_event, _ = _start_mock_server_in_thread(mock_handler, port=19774)
+        server_loop, stop_event, _, port = _start_mock_server_in_thread(mock_handler)
 
         try:
             translator = RealtimeTranslator(
@@ -722,7 +740,7 @@ class TestRealtimeTranslatorSourceTranscript:
                 on_source_transcript=lambda t: received_source.append(t),
                 reconnect_max_attempts=0,
             )
-            translator._ws_url = "ws://localhost:19774"
+            translator._ws_url = f"ws://localhost:{port}"
 
             client_loop = asyncio.new_event_loop()
             translator.start(client_loop)
@@ -765,7 +783,7 @@ class TestRealtimeTranslatorSourceTranscript:
             except Exception:
                 pass
 
-        server_loop, stop_event, _ = _start_mock_server_in_thread(mock_handler, port=19775)
+        server_loop, stop_event, _, port = _start_mock_server_in_thread(mock_handler)
 
         try:
             translator = RealtimeTranslator(
@@ -774,7 +792,7 @@ class TestRealtimeTranslatorSourceTranscript:
                 on_source_transcript=lambda t: received_source.append(t),
                 reconnect_max_attempts=0,
             )
-            translator._ws_url = "ws://localhost:19775"
+            translator._ws_url = f"ws://localhost:{port}"
 
             client_loop = asyncio.new_event_loop()
             translator.start(client_loop)
@@ -810,7 +828,7 @@ class TestRealtimeTranslatorSourceTranscript:
             except Exception:
                 pass
 
-        server_loop, stop_event, _ = _start_mock_server_in_thread(mock_handler, port=19776)
+        server_loop, stop_event, _, port = _start_mock_server_in_thread(mock_handler)
 
         try:
             translator = RealtimeTranslator(
@@ -819,7 +837,7 @@ class TestRealtimeTranslatorSourceTranscript:
                 on_source_transcript=lambda t: received_source.append(t),
                 reconnect_max_attempts=0,
             )
-            translator._ws_url = "ws://localhost:19776"
+            translator._ws_url = f"ws://localhost:{port}"
 
             client_loop = asyncio.new_event_loop()
             translator.start(client_loop)
@@ -874,7 +892,7 @@ class TestRealtimeTranslatorSourceTranscript:
             except Exception:
                 pass
 
-        server_loop, stop_event, _ = _start_mock_server_in_thread(mock_handler, port=19777)
+        server_loop, stop_event, _, port = _start_mock_server_in_thread(mock_handler)
 
         try:
             translator = RealtimeTranslator(
@@ -884,7 +902,7 @@ class TestRealtimeTranslatorSourceTranscript:
                 on_source_transcript=lambda t: received_source.append(t),
                 reconnect_max_attempts=0,
             )
-            translator._ws_url = "ws://localhost:19777"
+            translator._ws_url = f"ws://localhost:{port}"
 
             client_loop = asyncio.new_event_loop()
             translator.start(client_loop)
@@ -934,7 +952,7 @@ class TestRealtimeTranslatorSourceTranscript:
             except Exception:
                 pass
 
-        server_loop, stop_event, _ = _start_mock_server_in_thread(mock_handler, port=19778)
+        server_loop, stop_event, _, port = _start_mock_server_in_thread(mock_handler)
 
         try:
             translator = RealtimeTranslator(
@@ -944,7 +962,7 @@ class TestRealtimeTranslatorSourceTranscript:
                 on_error=lambda msg: errors.append(msg),
                 reconnect_max_attempts=0,
             )
-            translator._ws_url = "ws://localhost:19778"
+            translator._ws_url = f"ws://localhost:{port}"
 
             client_loop = asyncio.new_event_loop()
             translator.start(client_loop)
