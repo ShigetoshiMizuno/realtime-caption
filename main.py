@@ -61,6 +61,7 @@ import io
 import json
 import sys
 import threading
+from dataclasses import dataclass, replace
 from datetime import datetime
 from pathlib import Path
 import numpy as np
@@ -348,6 +349,24 @@ class TranslationService:
             return response.choices[0].message.content.strip()
 
 
+@dataclass(frozen=True)
+class AudioStats:
+    """音声処理の共有状態のスナップショット（イミュータブル）。
+
+    capture スレッドが書き込み、GUI / RPC スレッドが読み込む。frozen=True で部分
+    更新を防ぎ、threading.Lock 内で参照書き換えするため、読み手は常に整合性の
+    取れたスナップショットを得る（古いか新しいかのいずれかで、混在しない）。
+
+    PEP 703（Python 3.13 free-threaded）下でも安全な設計。
+    """
+    peak: int = 0           # 直近 1 秒間のピーク値（0..32767, int16 範囲）
+    peak_now: int = 0       # チャンクごとのピーク値（減衰付き、リアルタイム表示用）
+    chunks_per_sec: int = 0  # 1 秒あたりのチャンク数
+    gain: float = 1.0       # 実際に適用された直近 gain
+    mode: str = "off"       # "off" | "manual" | "auto"
+    manual_gain: float = 1.0  # 手動 gain 設定値
+
+
 class CaptionSystem:
     """文字起こし・翻訳・WebSocket 配信を統合管理するクラス。"""
 
@@ -417,18 +436,13 @@ class CaptionSystem:
         self._stop_event_async: asyncio.Event | None = None
         log_dir = config.get("output", {}).get("log_dir", ".")
         self._log_path = self._make_log_path(Path(log_dir))
-        # 直近1秒の音量メーター（0〜32767 の int16 peak）
-        self.audio_peak: int = 0
-        self.audio_chunks_per_sec: int = 0
-        # リアルタイム表示用（チャンクごとに更新）
-        self.audio_peak_now: int = 0
-        # Gain 制御: "off" | "manual" | "auto"（実行中もスレッドセーフに変更可）
-        self.gain_mode: str = "off"
-        self.manual_gain: float = 1.0
-        # AGC の状態
+        # 音声処理の共有状態（capture スレッドと GUI / RPC スレッド間）
+        # frozen dataclass + Lock でスナップショット方式（PEP 703 free-threaded 対応）
+        self._audio_stats_lock = threading.Lock()
+        self._audio_stats = AudioStats()
+        # AGC の内部状態（capture スレッド内のみ使用、共有なし）
         self._agc_gain: float = 1.0
         self._agc_envelope: float = 0.0  # 直近の peak 追従値（減衰付き）
-        self.effective_gain: float = 1.0  # 実際に適用された直近 gain（RPC で参照）
         # Verbose ログ（STT 結果・翻訳リクエスト・成功失敗を時系列で別ファイルに残す）
         self.verbose: bool = False
         self._verbose_log_path: Path | None = None
@@ -436,6 +450,51 @@ class CaptionSystem:
         # Realtime モード: 原文・翻訳の最新バッファ（ペアリング配信用）
         self._latest_source: str = ""
         self._latest_translation: str = ""
+
+    # ---- スレッドセーフな共有状態アクセス --------------------------------
+    @property
+    def audio_stats(self) -> AudioStats:
+        """整合性の取れた共有状態スナップショットを返す（atomic）。"""
+        with self._audio_stats_lock:
+            return self._audio_stats
+
+    def _update_audio_stats(self, **kwargs) -> None:
+        """共有状態をスレッドセーフに更新する。"""
+        with self._audio_stats_lock:
+            self._audio_stats = replace(self._audio_stats, **kwargs)
+
+    # ---- 後方互換プロパティ（既存の外部呼び出し維持） -------------------
+    @property
+    def audio_peak(self) -> int:
+        return self.audio_stats.peak
+
+    @property
+    def audio_peak_now(self) -> int:
+        return self.audio_stats.peak_now
+
+    @property
+    def audio_chunks_per_sec(self) -> int:
+        return self.audio_stats.chunks_per_sec
+
+    @property
+    def effective_gain(self) -> float:
+        return self.audio_stats.gain
+
+    @property
+    def gain_mode(self) -> str:
+        return self.audio_stats.mode
+
+    @gain_mode.setter
+    def gain_mode(self, value: str) -> None:
+        self._update_audio_stats(mode=value)
+
+    @property
+    def manual_gain(self) -> float:
+        return self.audio_stats.manual_gain
+
+    @manual_gain.setter
+    def manual_gain(self, value: float) -> None:
+        self._update_audio_stats(manual_gain=value)
 
     def shutdown(self):
         # idempotent ガード: 二重 shutdown を防止（WinError 6 対策）
@@ -709,12 +768,14 @@ class CaptionSystem:
                     audio = audio.mean(axis=1)
 
                 # --- Gain 処理 ---
+                # 共有状態は冒頭で 1 回スナップショット取得（ロック回数を減らす）
+                stats_snapshot = self.audio_stats
                 audio_f = audio.astype(np.float32)
-                if self.gain_mode == "manual":
-                    g = max(1.0, min(float(self.manual_gain), 20.0))
-                    self.effective_gain = g
+                if stats_snapshot.mode == "manual":
+                    g = max(1.0, min(float(stats_snapshot.manual_gain), 20.0))
+                    new_gain = g
                     audio_f = audio_f * g
-                elif self.gain_mode == "auto":
+                elif stats_snapshot.mode == "auto":
                     # AGC: 直近 peak を指数減衰で追跡、target=20000 (60%) に調整
                     local_peak = float(np.abs(audio_f).max()) if audio_f.size else 0.0
                     # envelope は減衰定数 0.995（約200ms のリリース時定数相当）
@@ -726,25 +787,33 @@ class CaptionSystem:
                         # 急減は速く、増大は遅く（attack 0.3 / release 0.05）
                         alpha = 0.3 if desired < self._agc_gain else 0.05
                         self._agc_gain += (desired - self._agc_gain) * alpha
-                    self.effective_gain = self._agc_gain
+                    new_gain = self._agc_gain
                     audio_f = audio_f * self._agc_gain
                 else:
-                    self.effective_gain = 1.0
+                    new_gain = 1.0
                 audio = audio_f
                 # int16 範囲にクリップ（gain 適用後のオーバーフロー防止）
                 audio = np.clip(audio, -32768, 32767)
 
                 # 音量レベル監視（gain適用後の実効peak を採用）
                 chunk_max = int(np.abs(audio).max()) if audio.size else 0
-                # リアルタイム表示用: ピークホールド（減衰つき）
-                self.audio_peak_now = max(chunk_max, int(self.audio_peak_now * 0.85))
+                # リアルタイム表示用: ピークホールド（減衰つき、前回 snapshot から計算）
+                new_peak_now = max(chunk_max, int(stats_snapshot.peak_now * 0.85))
                 level_window_max = max(level_window_max, chunk_max)
                 level_window_chunks += 1
                 now = _time.time()
                 if now >= next_log:
-                    self.audio_peak = level_window_max
-                    self.audio_chunks_per_sec = level_window_chunks
+                    # 1 秒間隔の集計更新: gain / peak_now と一緒に 1 回の atomic 更新
+                    self._update_audio_stats(
+                        gain=new_gain,
+                        peak_now=new_peak_now,
+                        peak=level_window_max,
+                        chunks_per_sec=level_window_chunks,
+                    )
                     pct = level_window_max * 100 // 32767
+                else:
+                    # 毎チャンク: peak_now / gain を反映（GUI のリアルタイム表示用）
+                    self._update_audio_stats(peak_now=new_peak_now, gain=new_gain)
                     bar = "█" * (pct // 5)
                     print(f"[AUDIO] peak={level_window_max:>5d} ({pct:3d}%) {bar} chunks={level_window_chunks}", flush=True)
                     level_window_max = 0
