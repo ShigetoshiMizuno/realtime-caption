@@ -25,6 +25,8 @@ def _make_mock_pyaudio(devices: list[dict]):
     pyaudiowpatch のミニマルモックを返す。
     devices: list of {"name": str, "maxInputChannels": int, "maxOutputChannels": int,
                       "defaultSampleRate": float, "isLoopbackDevice": bool}
+
+    get_host_api_info_by_index は常に "Windows WASAPI" を返す（host_api デフォルト値との互換）。
     """
     mock_pa_instance = mock.MagicMock()
     mock_pa_instance.get_device_count.return_value = len(devices)
@@ -37,9 +39,14 @@ def _make_mock_pyaudio(devices: list[dict]):
             "maxOutputChannels": d.get("maxOutputChannels", 0),
             "defaultSampleRate": d.get("defaultSampleRate", 44100.0),
             "isLoopbackDevice": d.get("isLoopbackDevice", False),
+            "hostApi": 0,
         }
 
+    def _get_host_api_info(idx):
+        return {"name": "Windows WASAPI", "index": idx}
+
     mock_pa_instance.get_device_info_by_index.side_effect = _get_info
+    mock_pa_instance.get_host_api_info_by_index.side_effect = _get_host_api_info
     mock_pa_instance.terminate.return_value = None
 
     mock_pyaudio_module = mock.MagicMock()
