@@ -1066,16 +1066,45 @@ def _trans_label_to_key(label: str) -> str:
     return _TRANS_LABEL_TO_KEY.get(label, label)
 
 
+def _looks_like_openai_key(key: str) -> bool:
+    """OpenAI API キーらしい形式かを判定する。
+
+    プレースホルダー文字列が将来変わっても引っかからないよう、
+    プレフィックス（sk-）と最低長（20+）でチェックする。
+    """
+    if not key or len(key) < 20:
+        return False
+    lowered = key.lower()
+    # 既知のプレースホルダー文字列を除外（互換性のため）
+    if "xxx" in lowered or lowered.startswith("your-") or "placeholder" in lowered:
+        return False
+    return key.startswith("sk-")
+
+
+def _looks_like_deepl_key(key: str) -> bool:
+    """DeepL API キーらしい形式かを判定する（free/pro tier 両対応）。
+
+    DeepL の鍵は UUID 形式（8-4-4-4-12）+ オプションの :fx サフィックスだが、
+    厳格な正規表現は将来の形式変更で破綻するため最低長＋プレースホルダー除外で判定する。
+    """
+    if not key or len(key) < 30:
+        return False
+    lowered = key.lower()
+    if "xxx" in lowered or lowered.startswith("your-") or "placeholder" in lowered:
+        return False
+    return True
+
+
 def _available_trans_models(cfg: dict) -> list[str]:
     """有効な API キーが設定されている翻訳エンジンの表示ラベル一覧を返す。"""
     result = []
     # decode_api_key 経由で b64: 形式にも対応
     openai_key = decode_api_key(cfg.get("openai", {}).get("api_key", ""))
-    if openai_key and "xxx" not in openai_key and openai_key != "your-api-key-here":
+    if _looks_like_openai_key(openai_key):
         result.append(_trans_key_to_label("openai"))
         result.append(_trans_key_to_label("openai-realtime"))
     deepl_key = decode_api_key(cfg.get("deepl", {}).get("api_key", ""))
-    if deepl_key and "xxx" not in deepl_key and deepl_key != "your-deepl-key-here":
+    if _looks_like_deepl_key(deepl_key):
         result.append(_trans_key_to_label("deepl"))
     return result
 

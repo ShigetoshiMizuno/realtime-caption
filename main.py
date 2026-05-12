@@ -301,14 +301,36 @@ class SubtitleBroadcaster:
             )
 
 
+# DeepL ターゲット言語マップ。キーは config.yaml の translation.target_language の値。
+# 日本語表記と英語表記（lowercase）を両方受ける。lookup 時は _normalize_deepl_lang() で
+# ASCII の場合のみ .lower() に正規化し、日本語はそのまま引く（.lower() が無効なので）。
 _DEEPL_LANG_MAP = {
-    "日本語": "JA", "japanese": "JA",
-    "英語": "EN-US", "english": "EN-US",
-    "中国語": "ZH", "chinese": "ZH",
-    "韓国語": "KO", "korean": "KO",
-    "ドイツ語": "DE", "german": "DE",
-    "フランス語": "FR", "french": "FR",
+    "日本語": "JA",
+    "英語": "EN-US",
+    "中国語": "ZH",
+    "韓国語": "KO",
+    "ドイツ語": "DE",
+    "フランス語": "FR",
+    "japanese": "JA",
+    "english": "EN-US",
+    "chinese": "ZH",
+    "korean": "KO",
+    "german": "DE",
+    "french": "FR",
 }
+
+
+def _normalize_deepl_lang(target_language: str) -> str:
+    """target_language を DeepL のターゲット言語コードに正規化して返す。
+
+    ASCII 文字列は .lower() してから引く（"English" / "ENGLISH" / "english" を統一）。
+    非 ASCII（日本語表記）は .lower() が無効なのでそのまま引く。
+    マップになければ大文字化してそのまま返す（"EN-US" / "JA" 等の直接指定を許容）。
+    """
+    key = target_language.strip()
+    if key.isascii():
+        key = key.lower()
+    return _DEEPL_LANG_MAP.get(key, target_language.strip().upper())
 
 
 class TranslationService:
@@ -322,9 +344,7 @@ class TranslationService:
         if model == "deepl":
             import deepl as _deepl
             self._deepl = _deepl.Translator(decode_api_key(config["deepl"]["api_key"]))
-            self._deepl_target = _DEEPL_LANG_MAP.get(
-                self._target_language.lower(), self._target_language.upper()
-            )
+            self._deepl_target = _normalize_deepl_lang(self._target_language)
             self._mode = "deepl"
         else:
             self._client = OpenAI(api_key=decode_api_key(config["openai"]["api_key"]))
