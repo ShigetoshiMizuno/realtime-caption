@@ -325,6 +325,10 @@ class RealtimeTranslator:
                     if text and self._on_transcript:
                         self._on_transcript(text)
 
+                # NOTE: gpt-realtime-translate は 2026 年リリース直後のため、イベント名
+                #       (session.output_audio.delta/done) は公式ドキュメント未確認
+                #       (SPEC 文書類推)。仕様変動の可能性あり。
+                #       実際のイベント名は verbose ログ (RT_RAW_UNKNOWN) で確認可能。
                 elif event_type == "session.output_audio.delta":
                     delta_b64 = msg.get("delta", "")
                     if delta_b64 and self._on_audio_delta:
