@@ -10,7 +10,7 @@ deepl:
 
 translation:
   target_language: "日本語"
-  translation_model: "deepl"  # "openai" または "deepl"
+  translation_model: "deepl"  # "openai" または "deepl" または "openai-realtime"
   system_prompt: "与えられたテキストを自然な{target_language}に翻訳してください。翻訳結果のみ返してください。"
 
 whisper:
@@ -32,3 +32,10 @@ vad:
 
 rpc:
   port: 8767
+
+openai_realtime:                          # openai-realtime モード専用設定（他のモードでは無視）
+  model: "gpt-realtime-translate"         # 使用モデル名（config で変更可能）
+  target_language_code: "ja"             # 出力言語（BCP-47: "ja" "en" "es" 等）
+  connect_timeout: 10                    # 接続タイムアウト（秒）
+  reconnect_max_attempts: 5             # 最大再接続試行回数
+  reconnect_backoff_base: 1.5           # 指数バックオフの底（n回目は base^n 秒待機）

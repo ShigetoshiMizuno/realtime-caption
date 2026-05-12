@@ -165,10 +165,13 @@ def _load_settings() -> dict:
 
 def _save_settings():
     try:
+        # 翻訳エンジンは表示ラベルではなく内部キーで保存する
+        trans_label = dpg.get_value(TAG_TRANS_COMBO)
+        trans_key = _trans_label_to_key(trans_label)
         data = {
             "device": dpg.get_value(TAG_DEVICE_COMBO),
             "model": dpg.get_value(TAG_MODEL_COMBO),
-            "trans": dpg.get_value(TAG_TRANS_COMBO),
+            "trans": trans_key,
             "vad_sensitivity": dpg.get_value(TAG_VAD_SENSITIVITY),
             "vad_silence": dpg.get_value(TAG_VAD_SILENCE),
             "gain_mode": dpg.get_value(TAG_GAIN_MODE),
@@ -533,8 +536,105 @@ def _append_log_item(ts: str, original: str, translated: str):
 # CaptionSystem の起動・停止
 # ---------------------------------------------------------------------------
 
-def _do_start(device_index: int | None = None, model: str | None = None):
+def _proceed_start(device_info: dict, model_name: str, selected_trans: str):
+    """コスト確認後（またはコスト確認不要時）に実際に CaptionSystem を起動する。"""
     global _system, _system_thread, _is_running, _preloaded_system, _preload_key
+
+    def on_result(original: str, translated: str):
+        ts = datetime.now().strftime("%H:%M:%S")
+        _log_entries.append({"ts": ts, "original": original, "translated": translated})
+        if len(_log_entries) > 200:
+            _log_entries.pop(0)
+        _enqueue("append_log", ts=ts, original=original, translated=translated)
+        print(f"[{ts}] EN: {original}")
+        print(f"       JP: {translated}")
+
+    _config.setdefault("vad", {})["silero_sensitivity"] = dpg.get_value(TAG_VAD_SENSITIVITY)
+    _config.setdefault("vad", {})["post_speech_silence_duration"] = dpg.get_value(TAG_VAD_SILENCE)
+
+    gain_mode = dpg.get_value(TAG_GAIN_MODE)
+    gain_value = float(dpg.get_value(TAG_GAIN_SLIDER))
+
+    def on_ready():
+        _enqueue("set_running", value=True)
+
+    def on_whisper_busy(busy: bool):
+        _enqueue("set_stt", busy=busy)
+
+    def on_trans_busy(busy: bool):
+        _enqueue("set_trl", busy=busy)
+
+    # Realtime モードの場合はプリロードキャッシュを使わない（Whisper 不要なので不要）
+    if selected_trans == "openai-realtime":
+        _system = CaptionSystem(_config, device_info, model_name,
+                                on_result=on_result, on_ready=on_ready,
+                                on_whisper_busy=on_whisper_busy,
+                                on_trans_busy=on_trans_busy)
+        loading = False
+    else:
+        # プリロード済みのシステムがあれば再利用
+        key = (model_name, device_info["index"])
+        with _preload_lock:
+            cached = _preloaded_system if (_preload_key == key
+                                           and _preloaded_system is not None
+                                           and _preloaded_system._recorder is not None) else None
+            if cached is not None:
+                _preloaded_system = None
+                _preload_key = None
+
+        if cached is not None:
+            _system = cached
+            _system._on_result = on_result
+            _system._on_ready = on_ready
+            _system._on_whisper_busy = on_whisper_busy
+            _system._on_trans_busy = on_trans_busy
+            _system._stop_event.clear()
+            # 翻訳エンジンを GUI の選択に合わせて更新
+            from main import TranslationService
+            _system._config.setdefault("translation", {})["translation_model"] = selected_trans
+            _system._translator = TranslationService(_system._config)
+            # VAD を GUI の値に更新
+            _system._config.setdefault("vad", {})["silero_sensitivity"] = dpg.get_value(TAG_VAD_SENSITIVITY)
+            _system._config.setdefault("vad", {})["post_speech_silence_duration"] = dpg.get_value(TAG_VAD_SILENCE)
+            try:
+                _system._recorder.silero_sensitivity = dpg.get_value(TAG_VAD_SENSITIVITY)
+                _system._recorder.post_speech_silence_duration = dpg.get_value(TAG_VAD_SILENCE)
+            except Exception:
+                pass
+            loading = False
+        else:
+            _system = CaptionSystem(_config, device_info, model_name,
+                                    on_result=on_result, on_ready=on_ready,
+                                    on_whisper_busy=on_whisper_busy,
+                                    on_trans_busy=on_trans_busy)
+            loading = True
+
+    _system.gain_mode = gain_mode
+    _system.manual_gain = gain_value
+    _system.verbose = _verbose_state
+
+    dpg.configure_item(TAG_START_BTN, label="停止")
+    if loading:
+        if selected_trans == "openai-realtime":
+            _enqueue("set_status", text="▸ OpenAI Realtime 接続中...")
+        else:
+            _enqueue("set_status", text=f"▸ モデル読み込み中: {model_name} ...")
+            print(f"[INFO] Whisper {model_name} model loading, please wait...")
+            _start_loading(model_name)
+    else:
+        _enqueue("set_status", text="▸ 起動中...")
+
+    def run_in_thread():
+        asyncio.run(_system.run())
+        _enqueue("set_running", value=False)
+
+    _save_settings()
+    _system_thread = threading.Thread(target=run_in_thread, daemon=True)
+    _system_thread.start()
+
+
+def _do_start(device_index: int | None = None, model: str | None = None):
+    global _is_running
 
     if _is_running:
         return
@@ -555,90 +655,47 @@ def _do_start(device_index: int | None = None, model: str | None = None):
 
     model_name = dpg.get_value(TAG_MODEL_COMBO)
 
-    def on_result(original: str, translated: str):
-        ts = datetime.now().strftime("%H:%M:%S")
-        _log_entries.append({"ts": ts, "original": original, "translated": translated})
-        if len(_log_entries) > 200:
-            _log_entries.pop(0)
-        _enqueue("append_log", ts=ts, original=original, translated=translated)
-        print(f"[{ts}] EN: {original}")
-        print(f"       JP: {translated}")
-
-    # GUI の設定を config に反映
-    selected_trans = dpg.get_value(TAG_TRANS_COMBO)
-    if selected_trans in ("openai", "deepl"):
+    # GUI の設定を config に反映（ラベル -> 内部キーに変換して保存）
+    selected_trans_label = dpg.get_value(TAG_TRANS_COMBO)
+    selected_trans = _trans_label_to_key(selected_trans_label)
+    if selected_trans in ("openai", "deepl", "openai-realtime"):
         _config.setdefault("translation", {})["translation_model"] = selected_trans
-    _config.setdefault("vad", {})["silero_sensitivity"] = dpg.get_value(TAG_VAD_SENSITIVITY)
-    _config.setdefault("vad", {})["post_speech_silence_duration"] = dpg.get_value(TAG_VAD_SILENCE)
 
-    gain_mode = dpg.get_value(TAG_GAIN_MODE)
-    gain_value = float(dpg.get_value(TAG_GAIN_SLIDER))
+    # openai-realtime モードの場合はコスト警告ダイアログを表示
+    if selected_trans == "openai-realtime":
+        def _on_realtime_confirm(sender, app_data, user_data):
+            if dpg.does_item_exist("realtime_cost_modal"):
+                dpg.delete_item("realtime_cost_modal")
+            _proceed_start(device_info, model_name, selected_trans)
 
-    def on_ready():
-        _enqueue("set_running", value=True)
+        def _on_realtime_cancel(sender, app_data, user_data):
+            if dpg.does_item_exist("realtime_cost_modal"):
+                dpg.delete_item("realtime_cost_modal")
+            _enqueue("set_status", text="■ 待機中")
+            dpg.configure_item(TAG_START_BTN, label="開始")
 
-    def on_whisper_busy(busy: bool):
-        _enqueue("set_stt", busy=busy)
+        with dpg.window(
+            label="コスト確認",
+            tag="realtime_cost_modal",
+            modal=True,
+            width=420,
+            height=160,
+            no_resize=True,
+            no_move=True,
+            pos=(270, 250),
+        ):
+            dpg.add_text("OpenAI Realtime モードは従量課金制です。")
+            dpg.add_text("コスト: USD 0.034/分（約 USD 2.04/時間）")
+            dpg.add_text("Whisper local + gpt-4o-mini より大幅に高コストです。")
+            dpg.add_separator()
+            with dpg.group(horizontal=True):
+                dpg.add_button(label="はい（続ける）", width=180,
+                               callback=_on_realtime_confirm)
+                dpg.add_button(label="いいえ（キャンセル）", width=180,
+                               callback=_on_realtime_cancel)
+        return
 
-    def on_trans_busy(busy: bool):
-        _enqueue("set_trl", busy=busy)
-
-    # プリロード済みのシステムがあれば再利用
-    key = (model_name, device_info["index"])
-    with _preload_lock:
-        cached = _preloaded_system if (_preload_key == key
-                                       and _preloaded_system is not None
-                                       and _preloaded_system._recorder is not None) else None
-        if cached is not None:
-            _preloaded_system = None
-            _preload_key = None
-
-    if cached is not None:
-        _system = cached
-        _system._on_result = on_result
-        _system._on_ready = on_ready
-        _system._on_whisper_busy = on_whisper_busy
-        _system._on_trans_busy = on_trans_busy
-        _system._stop_event.clear()
-        # 翻訳エンジンを GUI の選択に合わせて更新
-        from main import TranslationService
-        _system._config.setdefault("translation", {})["translation_model"] = selected_trans
-        _system._translator = TranslationService(_system._config)
-        # VAD を GUI の値に更新
-        _system._config.setdefault("vad", {})["silero_sensitivity"] = dpg.get_value(TAG_VAD_SENSITIVITY)
-        _system._config.setdefault("vad", {})["post_speech_silence_duration"] = dpg.get_value(TAG_VAD_SILENCE)
-        try:
-            _system._recorder.silero_sensitivity = dpg.get_value(TAG_VAD_SENSITIVITY)
-            _system._recorder.post_speech_silence_duration = dpg.get_value(TAG_VAD_SILENCE)
-        except Exception:
-            pass
-        loading = False
-    else:
-        _system = CaptionSystem(_config, device_info, model_name,
-                                on_result=on_result, on_ready=on_ready,
-                                on_whisper_busy=on_whisper_busy,
-                                on_trans_busy=on_trans_busy)
-        loading = True
-
-    _system.gain_mode = gain_mode
-    _system.manual_gain = gain_value
-    _system.verbose = _verbose_state
-
-    dpg.configure_item(TAG_START_BTN, label="停止")
-    if loading:
-        _enqueue("set_status", text=f"▸ モデル読み込み中: {model_name} ...")
-        print(f"[INFO] Whisper {model_name} model loading, please wait...")
-        _start_loading(model_name)
-    else:
-        _enqueue("set_status", text="▸ 起動中...")
-
-    def run_in_thread():
-        asyncio.run(_system.run())
-        _enqueue("set_running", value=False)
-
-    _save_settings()
-    _system_thread = threading.Thread(target=run_in_thread, daemon=True)
-    _system_thread.start()
+    _proceed_start(device_info, model_name, selected_trans)
 
 
 def _do_stop():
@@ -756,16 +813,37 @@ def _start_rpc_server(port: int):
 # GUI 構築
 # ---------------------------------------------------------------------------
 
+# 翻訳エンジン: 内部キー -> 表示ラベル のマッピング
+_TRANS_MODEL_LABELS = {
+    "openai": "OpenAI (gpt-4o-mini)",
+    "deepl": "DeepL",
+    "openai-realtime": "OpenAI Realtime",
+}
+# 表示ラベル -> 内部キー の逆引き
+_TRANS_LABEL_TO_KEY = {v: k for k, v in _TRANS_MODEL_LABELS.items()}
+
+
+def _trans_key_to_label(key: str) -> str:
+    """内部キーを表示ラベルに変換する。未知のキーはそのまま返す。"""
+    return _TRANS_MODEL_LABELS.get(key, key)
+
+
+def _trans_label_to_key(label: str) -> str:
+    """表示ラベルを内部キーに変換する。未知のラベルはそのまま返す。"""
+    return _TRANS_LABEL_TO_KEY.get(label, label)
+
+
 def _available_trans_models(cfg: dict) -> list[str]:
-    """有効な API キーが設定されている翻訳エンジンだけリストで返す。"""
+    """有効な API キーが設定されている翻訳エンジンの表示ラベル一覧を返す。"""
     result = []
     # decode_api_key 経由で b64: 形式にも対応
     openai_key = decode_api_key(cfg.get("openai", {}).get("api_key", ""))
     if openai_key and "xxx" not in openai_key and openai_key != "your-api-key-here":
-        result.append("openai")
+        result.append(_trans_key_to_label("openai"))
+        result.append(_trans_key_to_label("openai-realtime"))
     deepl_key = decode_api_key(cfg.get("deepl", {}).get("api_key", ""))
     if deepl_key and "xxx" not in deepl_key and deepl_key != "your-deepl-key-here":
-        result.append("deepl")
+        result.append(_trans_key_to_label("deepl"))
     return result
 
 
@@ -825,9 +903,11 @@ def _build_gui():
 
     default_model = saved.get("model") or _config.get("whisper", {}).get("model", "small")
     trans_models = _available_trans_models(_config)
-    default_trans = saved.get("trans") or _config.get("translation", {}).get("translation_model", "openai").lower()
+    # settings.json には内部キーで保存されている。表示ラベルに変換してコンボボックスに設定する。
+    _saved_trans_key = saved.get("trans") or _config.get("translation", {}).get("translation_model", "openai").lower()
+    default_trans = _trans_key_to_label(_saved_trans_key)
     if default_trans not in trans_models:
-        default_trans = trans_models[0] if trans_models else "openai"
+        default_trans = trans_models[0] if trans_models else _trans_key_to_label("openai")
     vad_cfg = _config.get("vad", {})
     default_sensitivity = saved.get("vad_sensitivity", vad_cfg.get("silero_sensitivity", VAD_DEFAULT_SENSITIVITY))
     default_silence = saved.get("vad_silence", vad_cfg.get("post_speech_silence_duration", VAD_DEFAULT_SILENCE))

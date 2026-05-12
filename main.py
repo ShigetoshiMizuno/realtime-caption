@@ -118,6 +118,8 @@ except Exception as e:
 
 # RealtimeSTT が期待するサンプルレート
 REALTIMESTT_SAMPLE_RATE = 16000
+# gpt-realtime-translate が期待するサンプルレート
+REALTIME_TRANSLATE_SAMPLE_RATE = 24000
 
 
 def load_config(path: str = "config.yaml") -> dict:
@@ -268,7 +270,35 @@ class CaptionSystem:
         self._on_whisper_busy = on_whisper_busy  # callable(bool) | None
         self._on_trans_busy = on_trans_busy      # callable(bool) | None
 
-        self._translator = TranslationService(config)
+        # 翻訳モード判定
+        trans_model = config.get("translation", {}).get("translation_model", "openai").lower()
+        self._realtime_mode: bool = (trans_model == "openai-realtime")
+
+        if not self._realtime_mode:
+            self._translator = TranslationService(config)
+            self._realtime_translator = None
+        else:
+            self._translator = None
+            # API キー未設定チェック（早期失敗）
+            api_key = config.get("openai", {}).get("api_key", "")
+            if not api_key or api_key == "your-api-key-here" or "xxx" in api_key:
+                raise ValueError(
+                    "[ERROR] openai-realtime モードには config.yaml の openai.api_key が必要です。"
+                )
+            rt_cfg = config.get("openai_realtime", {})
+            from realtime_translator import RealtimeTranslator
+            self._realtime_translator = RealtimeTranslator(
+                api_key=api_key,
+                target_language_code=rt_cfg.get("target_language_code", "ja"),
+                model=rt_cfg.get("model", "gpt-realtime-translate"),
+                connect_timeout=rt_cfg.get("connect_timeout", 10),
+                reconnect_max_attempts=rt_cfg.get("reconnect_max_attempts", 5),
+                reconnect_backoff_base=rt_cfg.get("reconnect_backoff_base", 1.5),
+                on_transcript=self._on_realtime_transcript,
+                on_error=self._on_realtime_error,
+                on_connected=on_ready,
+            )
+
         self._broadcaster = SubtitleBroadcaster()
         self._loop: asyncio.AbstractEventLoop | None = None
         self._recorder: AudioToTextRecorder | None = None
@@ -309,6 +339,12 @@ class CaptionSystem:
                 pass
         if self._loop and self._stop_event_async:
             self._loop.call_soon_threadsafe(self._stop_event_async.set)
+        # Realtime モードの WebSocket 接続を停止
+        if getattr(self, "_realtime_translator", None) is not None:
+            try:
+                self._realtime_translator.stop()
+            except Exception:
+                pass
         # subst ドライブの解除はアプリ終了時のみ（app.py の main() / main.py の main() で実施）。
 
     def _ensure_verbose_log_path(self) -> Path:
@@ -346,6 +382,38 @@ class CaptionSystem:
             if not path.exists():
                 return path
             n += 1
+
+    def _on_realtime_transcript(self, text: str):
+        """RealtimeTranslator から翻訳テキストを受け取るコールバック。"""
+        if not text:
+            return
+        if self._loop and not self._loop.is_closed():
+            asyncio.run_coroutine_threadsafe(
+                self._realtime_broadcast(text), self._loop
+            )
+
+    def _on_realtime_error(self, msg: str):
+        """RealtimeTranslator からエラーを受け取るコールバック。"""
+        print(f"[RT ERROR] {msg}")
+        self._log_verbose("RT_ERROR", message=msg)
+
+    async def _realtime_broadcast(self, translated_text: str):
+        """Realtime 翻訳テキストを WebSocket とログに配信する。"""
+        self._log_verbose("RT_DONE", translated=translated_text)
+        print(f"\n[翻訳(RT)] {translated_text}")
+
+        ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        try:
+            with self._log_path.open("a", encoding="utf-8") as f:
+                f.write(f"[{ts}]\n翻訳(RT): {translated_text}\n\n")
+        except Exception:
+            pass
+
+        if self._on_result:
+            self._on_result("", translated_text)
+
+        payload = json.dumps({"original": "", "translated": translated_text}, ensure_ascii=False)
+        await self._broadcaster.broadcast(payload)
 
     def _on_transcription(self, text: str):
         """RealtimeSTT から文字起こし結果を受け取るコールバック。
@@ -414,9 +482,12 @@ class CaptionSystem:
         channels = max(1, int(self._device_info["maxInputChannels"]))
         chunk_size = 1024
 
+        # リサンプリング先レートをモードで切替
+        target_rate = REALTIME_TRANSLATE_SAMPLE_RATE if self._realtime_mode else REALTIMESTT_SAMPLE_RATE
+
         # リサンプリング比率を既約分数で求める
-        g = gcd(REALTIMESTT_SAMPLE_RATE, src_rate)
-        up = REALTIMESTT_SAMPLE_RATE // g
+        g = gcd(target_rate, src_rate)
+        up = target_rate // g
         down = src_rate // g
 
         pa = pyaudio.PyAudio()
@@ -434,7 +505,7 @@ class CaptionSystem:
             pa.terminate()
             return
 
-        print(f"[INFO] ループバックキャプチャ開始: {src_rate}Hz, {channels}ch -> {REALTIMESTT_SAMPLE_RATE}Hz mono", flush=True)
+        print(f"[INFO] ループバックキャプチャ開始: {src_rate}Hz, {channels}ch -> {target_rate}Hz mono", flush=True)
 
         # デバッグ用: 1秒ごとに音量レベルを出力
         import time as _time
@@ -506,8 +577,13 @@ class CaptionSystem:
                 resampled_int16 = np.clip(resampled, -32768, 32767).astype(np.int16)
                 pcm_bytes = resampled_int16.tobytes()
 
-                if self._recorder is not None:
-                    self._recorder.feed_audio(pcm_bytes)
+                # モードに応じて音声データの投入先を切替
+                if self._realtime_mode:
+                    if self._realtime_translator is not None:
+                        self._realtime_translator.feed_audio(pcm_bytes)
+                else:
+                    if self._recorder is not None:
+                        self._recorder.feed_audio(pcm_bytes)
 
         except Exception as e:
             print(f"[ERROR] ループバックキャプチャ中にエラーが発生しました: {e}")
@@ -525,6 +601,9 @@ class CaptionSystem:
     def prepare(self):
         """Whisper モデルをロードして recorder を初期化する。
         バックグラウンドスレッドから事前呼び出し可能。run() より前に呼ぶことで起動を高速化できる。"""
+        if self._realtime_mode:
+            # Realtime モードでは Whisper / Silero ロード不要
+            return
         if self._recorder is not None:
             return
 
@@ -571,6 +650,31 @@ class CaptionSystem:
 
     def _start_recorder(self):
         """別スレッドで録音ループを起動する。prepare() が未完了なら先に呼ぶ。"""
+        if self._realtime_mode:
+            # Realtime モード: ループバックキャプチャのみ起動（Whisper 録音ループは不要）
+            is_loopback = self._device_info.get("isLoopback", False)
+            if is_loopback:
+                self._capture_thread = threading.Thread(
+                    target=self._loopback_capture_thread, daemon=True
+                )
+                self._capture_thread.start()
+            else:
+                msg = (
+                    "Realtime モードはループバックデバイスのみ対応しています。"
+                    "ループバックデバイス（[Loopback] と表示されるもの）を選択してください。"
+                )
+                print(f"[ERROR] {msg}", flush=True)
+                if self._on_realtime_error:
+                    self._on_realtime_error(msg)
+                # 録音は開始しないが WS 接続は維持される。on_ready は呼ばない
+                return
+            print("\n[INFO] 録音を開始しました（Realtimeモード）。\n")
+            # on_ready は RealtimeTranslator の on_connected で呼ばれるため、ここでは呼ばない
+            # ループバックキャプチャスレッドの終了を待つ（stop_event が set されるまで）
+            while not self._stop_event.is_set():
+                self._stop_event.wait(timeout=0.5)
+            return
+
         if self._recorder is None:
             self.prepare()
         if self._recorder is None:
@@ -599,6 +703,12 @@ class CaptionSystem:
         ws_host = self._config["websocket"]["host"]
         ws_port = self._config["websocket"]["port"]
 
+        # Realtime モードでは RealtimeTranslator を起動
+        if self._realtime_mode and self._realtime_translator is not None:
+            # verbose コールバックを繋ぐ
+            self._realtime_translator._verbose_callback = self._log_verbose
+            self._realtime_translator.start(self._loop)
+
         recorder_thread = threading.Thread(target=self._start_recorder, daemon=True)
         recorder_thread.start()
 
@@ -623,8 +733,26 @@ def main():
         print("[ERROR] config.yaml に OpenAI API キーを設定してください。")
         sys.exit(1)
 
+    # openai-realtime モードの場合はコスト警告を表示
+    trans_model = config.get("translation", {}).get("translation_model", "").lower()
+    if trans_model == "openai-realtime":
+        print("[WARN] ========================================")
+        print("[WARN]  openai-realtime モードは従量課金制です")
+        print("[WARN]  コスト: USD 0.034/分（約 USD 2.04/時間）")
+        print("[WARN]  Whisper local + gpt-4o-mini より大幅に高コストです。")
+        print("[WARN] ========================================")
+        ans = input("続行しますか？ (y/N): ").strip().lower()
+        if ans != "y":
+            print("[INFO] 起動をキャンセルしました。")
+            sys.exit(0)
+
     device_info = select_audio_device()
-    model_name = select_whisper_model(config["whisper"]["model"])
+
+    # Realtime モードでは Whisper モデル選択は不要
+    if trans_model == "openai-realtime":
+        model_name = config.get("whisper", {}).get("model", "small")
+    else:
+        model_name = select_whisper_model(config["whisper"]["model"])
 
     system = CaptionSystem(config, device_info, model_name)
 
