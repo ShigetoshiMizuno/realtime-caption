@@ -8,6 +8,7 @@ import ctypes
 import os
 import subprocess
 import sys
+import tempfile
 from pathlib import Path as _Path
 
 # Embeddable Python の python311._pth は sys.path を完全上書きするため、
@@ -204,16 +205,34 @@ import logging as _app_logging
 _app_logger = _app_logging.getLogger(__name__)
 
 
-def _save_api_keys_to_config(openai_key_plain: str, deepl_key_plain: str) -> bool:
+def _save_api_keys_to_config(
+    openai_key_plain: str,
+    deepl_key_plain: str,
+    target_path: _Path | None = None,
+) -> bool:
     """
     config.yaml の openai.api_key / deepl.api_key を b64: 形式で上書きする。
 
     空文字のキーはそのセクションを変更しない。
     行単位スキャンでセクションヘッダーを検出して対象行だけ置換する方式を採用。
     正規表現による一括置換より安全で、既存コメント・空行・インデントを保持できる。
+
+    書き込みは atomic (tempfile → os.replace) で行うため、書き込み中の
+    プロセスクラッシュによる config 破損を防ぐ。
+
+    Parameters
+    ----------
+    openai_key_plain:
+        OpenAI API キー（平文）。空文字の場合は変更しない。
+    deepl_key_plain:
+        DeepL API キー（平文）。空文字の場合は変更しない。
+    target_path:
+        書き込み先ファイルパス。None の場合は CONFIG_PATH を使う。
+        テストで任意のパスを指定する用途に使用可。
     """
+    path = target_path if target_path is not None else CONFIG_PATH
     try:
-        text = CONFIG_PATH.read_text(encoding="utf-8")
+        text = path.read_text(encoding="utf-8")
         lines = text.splitlines(keepends=True)
         current_section = None
         out = []
@@ -245,7 +264,23 @@ def _save_api_keys_to_config(openai_key_plain: str, deepl_key_plain: str) -> boo
 
             out.append(line)
 
-        CONFIG_PATH.write_text("".join(out), encoding="utf-8")
+        # atomic write: truncate-then-write の途中 crash による破損を防ぐ
+        fd, tmp_path = tempfile.mkstemp(
+            dir=path.parent,
+            prefix=".config.yaml.",
+            suffix=".tmp",
+        )
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                f.write("".join(out))
+            os.replace(tmp_path, path)
+        except Exception:
+            try:
+                os.unlink(tmp_path)
+            except Exception:
+                pass
+            raise
+
         return True
     except Exception as e:
         _app_logger.error("config.yaml write failed: %s", e)
