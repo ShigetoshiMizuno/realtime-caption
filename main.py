@@ -515,24 +515,33 @@ class CaptionSystem:
             self._audio_stream.write(pcm16_bytes)
 
     def _on_realtime_transcript(self, text: str):
-        """RealtimeTranslator から翻訳テキストを受け取るコールバック。"""
+        """RealtimeTranslator から翻訳テキストを受け取るコールバック。
+
+        API は原文と翻訳を独立した単位でストリーミングするため（1:1 ペアではない）、
+        翻訳が確定したら原文側を空文字にしてブロードキャストする。
+        旧実装で _latest_source とペアリングしていたため、同じ翻訳が複数の原文に
+        重複表示される問題があった。
+        """
         if not text:
             return
         self._latest_translation = text
         if self._loop and not self._loop.is_closed():
             asyncio.run_coroutine_threadsafe(
-                self._realtime_broadcast(self._latest_source, text), self._loop
+                self._realtime_broadcast("", text), self._loop
             )
 
     def _on_realtime_source_transcript(self, text: str):
-        """RealtimeTranslator から原文テキストを受け取るコールバック（Issue #23）。"""
+        """RealtimeTranslator から原文テキストを受け取るコールバック（Issue #23）。
+
+        原文確定時は翻訳側を空文字にしてブロードキャストし、UI/ログ側で
+        EN ストリームとして独立表示する。
+        """
         if not text:
             return
         self._latest_source = text
-        # 翻訳がまだ届いていなければ原文だけ先行配信（翻訳は空文字）
         if self._loop and not self._loop.is_closed():
             asyncio.run_coroutine_threadsafe(
-                self._realtime_broadcast(text, self._latest_translation), self._loop
+                self._realtime_broadcast(text, ""), self._loop
             )
 
     def _on_realtime_error(self, msg: str):

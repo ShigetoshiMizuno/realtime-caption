@@ -729,9 +729,16 @@ def _append_log_item(ts: str, original: str, translated: str):
     scroll_max = dpg.get_y_scroll_max(TAG_LOG_SCROLL)
     was_at_bottom = scroll_max <= 0 or scroll_y >= scroll_max - 20
 
+    # 原文・翻訳の片方だけが来た場合（OpenAI Realtime の独立ストリーム）と
+    # 両方ペアで来た場合（Whisper モード等）で表示形式を切り替える
     with dpg.group(parent=TAG_LOG_GROUP):
-        dpg.add_text(f"[{ts}] EN: {original}", wrap=860)
-        dpg.add_text(f"             JP: {translated}", wrap=860)
+        if original and translated:
+            dpg.add_text(f"[{ts}] EN: {original}", wrap=860)
+            dpg.add_text(f"             JP: {translated}", wrap=860)
+        elif original:
+            dpg.add_text(f"[{ts}] EN: {original}", wrap=860)
+        elif translated:
+            dpg.add_text(f"[{ts}] JP: {translated}", wrap=860)
         dpg.add_separator()
 
     if was_at_bottom:
@@ -753,8 +760,11 @@ def _proceed_start(device_info: dict, model_name: str, selected_trans: str):
         if len(_log_entries) > 200:
             _log_entries.pop(0)
         _enqueue("append_log", ts=ts, original=original, translated=translated)
-        print(f"[{ts}] EN: {original}")
-        print(f"       JP: {translated}")
+        # Realtime モードは片側だけ来る独立ストリームなので、空文字行はコンソールにも出さない
+        if original:
+            print(f"[{ts}] EN: {original}")
+        if translated:
+            print(f"       JP: {translated}")
 
     _config.setdefault("vad", {})["silero_sensitivity"] = dpg.get_value(TAG_VAD_SENSITIVITY)
     _config.setdefault("vad", {})["post_speech_silence_duration"] = dpg.get_value(TAG_VAD_SILENCE)

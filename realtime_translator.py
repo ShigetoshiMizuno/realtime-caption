@@ -79,7 +79,9 @@ class RealtimeTranslator:
         on_source_transcript:     原文テキスト確定時コールバック (text: str) -> None (optional)
         on_error:                 エラー時コールバック (msg: str) -> None
         on_connected:             接続確立時コールバック () -> None
-        request_audio_output:     True のとき session.update に audio.output.format=pcm16 を追加する
+        request_audio_output:     音声出力を有効化する場合のフラグ（コールバック on_audio_delta を併用）。
+                                  注: 以前は session.update に audio.output.format=pcm16 を追加していたが、
+                                  サーバが Unknown parameter エラーで session.update 自体を拒否するため削除。
         on_audio_delta:           音声出力チャンクコールバック (pcm16_bytes: bytes) -> None
         """
         self._api_key = api_key
@@ -238,13 +240,19 @@ class RealtimeTranslator:
                 raise _AuthError("test_force_401 flag")
 
             # セッション設定を送信
+            # 注: audio.output.format は API 未対応（Unknown parameter エラーで session.update が
+            # 拒否され、language: ja 指定も無効化される）。format 指定は送らない。
+            # 注: 原文文字起こし（session.input_transcript.*）を受信するには
+            # audio.input.transcription.model を明示指定する必要がある。
+            # 参照: https://developers.openai.com/cookbook/examples/voice_solutions/realtime_translation_guide
             audio_output_cfg: dict = {"language": self._target_language_code}
-            if self._request_audio_output:
-                audio_output_cfg["format"] = "pcm16"
             await ws.send(json.dumps({
                 "type": "session.update",
                 "session": {
                     "audio": {
+                        "input": {
+                            "transcription": {"model": "gpt-realtime-whisper"}
+                        },
                         "output": audio_output_cfg
                     }
                 }
