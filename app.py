@@ -471,6 +471,8 @@ def _on_zoom_preset_click():
         items = dpg.get_item_configuration(TAG_TRANS_COMBO).get("items", [])
         if realtime_label in items:
             dpg.set_value(TAG_TRANS_COMBO, realtime_label)
+            # コールバックは set_value では自動発火しないので、明示的に visibility を更新
+            _update_settings_visibility("openai-realtime")
 
     # 出力デバイスを CABLE Input に自動選択
     if dpg.does_item_exist(TAG_OUTPUT_DEVICE_COMBO):
