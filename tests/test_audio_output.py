@@ -8,6 +8,7 @@ pyaudio は使わずモックバッファでデータフローを検証する。
 import queue
 import threading
 import time
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -226,3 +227,34 @@ class TestAudioOutputStreamInit:
         stream = AudioOutputStream(pyaudio_instance=mock_pa)
         assert hasattr(stream, "_queue"), "_queue 属性が存在しない"
         assert isinstance(stream._queue, queue.Queue), "_queue は queue.Queue であること"
+
+
+@pytest.mark.skipif(not _MODULE_AVAILABLE, reason="audio_output モジュール未実装")
+class TestAudioOutputStreamTerminate:
+    """stop() が PyAudio インスタンスの terminate() を呼ぶことを検証。"""
+
+    def test_stop_terminates_pyaudio_instance(self):
+        """stop() が PyAudio インスタンスの terminate() を呼ぶこと。"""
+        mock_pa = MagicMock()
+        mock_stream = MagicMock()
+        mock_pa.open.return_value = mock_stream
+        stream = AudioOutputStream(
+            pyaudio_instance=mock_pa,
+            device_index=0,
+        )
+        stream.start()
+        stream.stop()
+        mock_pa.terminate.assert_called_once()
+
+    def test_stop_terminates_only_once(self):
+        """stop() を 2 回呼んでも terminate は 1 回だけ。"""
+        mock_pa = MagicMock()
+        mock_pa.open.return_value = MagicMock()
+        stream = AudioOutputStream(
+            pyaudio_instance=mock_pa,
+            device_index=0,
+        )
+        stream.start()
+        stream.stop()
+        stream.stop()
+        mock_pa.terminate.assert_called_once()
