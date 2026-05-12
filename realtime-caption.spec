@@ -14,7 +14,11 @@ hiddenimports = [
     'websockets',
     'websockets.legacy',
     'websockets.legacy.server',
+    'websockets.asyncio',
+    'websockets.asyncio.client',
     'openai',
+    # GPT Realtime Translate
+    'realtime_translator',
     'scipy.signal',
     'scipy.signal._upfirdn',
     'numpy',
