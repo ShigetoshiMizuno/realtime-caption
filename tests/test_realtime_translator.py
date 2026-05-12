@@ -452,10 +452,11 @@ class TestRealtimeTranslatorAudioOutput:
         assert "format" not in audio_output, \
             f"request_audio_output=False のとき format が設定されてはいけない: {audio_output}"
 
-    def test_request_audio_output_true_includes_pcm16_format(self):
+    def test_request_audio_output_true_does_not_include_format(self):
         """
-        request_audio_output=True のとき、
-        session.update の audio.output に format: "pcm16" が含まれること。
+        request_audio_output=True であっても、audio.output.format パラメータは
+        API 側で Unknown parameter エラーとなり session.update 全体を拒否させてしまうため、
+        送信しないこと（言語設定が無効化されスペイン語化したバグの再発防止）。
         """
         sent_messages = []
 
@@ -494,8 +495,57 @@ class TestRealtimeTranslatorAudioOutput:
         update_msg = sent_messages[0]
         assert update_msg.get("type") == "session.update"
         audio_output = update_msg.get("session", {}).get("audio", {}).get("output", {})
-        assert audio_output.get("format") == "pcm16", \
-            f"request_audio_output=True のとき format=pcm16 が必要: {audio_output}"
+        assert "format" not in audio_output, \
+            f"audio.output.format は API 未対応のため送信してはいけない: {audio_output}"
+        # 言語設定は必ず含まれること（バグの根本原因）
+        assert audio_output.get("language") == "ja", \
+            f"audio.output.language は必ず送信されること: {audio_output}"
+
+    def test_session_update_includes_input_transcription(self):
+        """
+        session.update に audio.input.transcription.model が含まれること。
+        これが無いと session.input_transcript.delta/done イベントが送られず、
+        原文（source language transcript）が取得できない。
+        参照: https://developers.openai.com/cookbook/examples/voice_solutions/realtime_translation_guide
+        """
+        sent_messages = []
+
+        async def mock_handler(websocket):
+            msg = await asyncio.wait_for(websocket.recv(), timeout=5)
+            sent_messages.append(json.loads(msg))
+            try:
+                await websocket.wait_closed()
+            except Exception:
+                pass
+
+        server_loop, stop_event, _ = _start_mock_server_in_thread(mock_handler, port=19779)
+
+        try:
+            translator = RealtimeTranslator(
+                api_key="sk-test-fake-input-transcription",
+                target_language_code="ja",
+                reconnect_max_attempts=0,
+            )
+            translator._ws_url = "ws://localhost:19779"
+
+            client_loop = asyncio.new_event_loop()
+            translator.start(client_loop)
+
+            deadline = time.time() + 5
+            while not sent_messages and time.time() < deadline:
+                time.sleep(0.1)
+
+            translator.stop()
+        finally:
+            _stop_mock_server(server_loop, stop_event)
+
+        assert len(sent_messages) >= 1, "session.update が送信されなかった"
+        update_msg = sent_messages[0]
+        assert update_msg.get("type") == "session.update"
+        audio_input = update_msg.get("session", {}).get("audio", {}).get("input", {})
+        transcription = audio_input.get("transcription", {})
+        assert transcription.get("model") == "gpt-realtime-whisper", \
+            f"audio.input.transcription.model は gpt-realtime-whisper であること: {audio_input}"
 
     def test_output_audio_delta_calls_on_audio_delta(self):
         """

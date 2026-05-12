@@ -100,8 +100,20 @@
     let fadeOutTimer = null;
 
     function showSubtitle(original, translated) {
-      originalText.textContent = original;
-      translatedText.textContent = translated;
+      // OpenAI Realtime は原文と翻訳を独立したストリームで送るため、
+      // 片方だけが入った payload が来る。空文字側は前回値を維持する。
+      let updated = false;
+      if (original) {
+        originalText.textContent = original;
+        updated = true;
+      }
+      if (translated) {
+        translatedText.textContent = translated;
+        updated = true;
+      }
+      if (!updated) {
+        return;
+      }
 
       container.classList.add("visible");
 
