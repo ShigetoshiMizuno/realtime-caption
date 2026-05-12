@@ -148,6 +148,11 @@ GAIN_DEFAULT_VALUE = 1.0
 _SETTINGS_PATH = _SCRIPT_DIR / "settings.json"
 CONFIG_PATH = _SCRIPT_DIR / "config.yaml"
 
+# 動的可視性制御用グループタグ
+TAG_WHISPER_SETTINGS_GROUP = "whisper_settings_group"
+TAG_REALTIME_SETTINGS_GROUP = "realtime_settings_group"
+TAG_DEEPL_KEY_GROUP = "deepl_key_group"
+
 # API キー UI タグ
 TAG_OPENAI_KEY_INPUT = "openai_key_input"
 TAG_DEEPL_KEY_INPUT = "deepl_key_input"
@@ -162,6 +167,41 @@ _verbose_state: bool = False
 # コスト警告: スレッドセーフなフラグ（メインスレッドの描画ループで検査）
 _pending_cost_warnings: list[float] = []
 _cost_warning_lock = threading.Lock()
+
+
+def _resolve_settings_visibility(trans_key: str) -> dict[str, bool]:
+    """
+    翻訳エンジンキーに応じた設定グループの表示/非表示マップを返す純関数。
+
+    Parameters
+    ----------
+    trans_key:
+        翻訳エンジンの内部キー ("openai" / "deepl" / "openai-realtime")。
+
+    Returns
+    -------
+    dict[str, bool]
+        "whisper": Whisper/VAD 設定グループの表示フラグ
+        "realtime": Realtime 専用設定グループの表示フラグ
+        "deepl_key": DeepL API キーグループの表示フラグ
+    """
+    is_realtime = trans_key == "openai-realtime"
+    return {
+        "whisper": not is_realtime,
+        "realtime": is_realtime,
+        "deepl_key": not is_realtime,
+    }
+
+
+def _update_settings_visibility(trans_key: str) -> None:
+    """翻訳エンジン選択に応じて詳細設定グループの可視性を更新する。"""
+    v = _resolve_settings_visibility(trans_key)
+    if dpg.does_item_exist(TAG_WHISPER_SETTINGS_GROUP):
+        dpg.configure_item(TAG_WHISPER_SETTINGS_GROUP, show=v["whisper"])
+    if dpg.does_item_exist(TAG_REALTIME_SETTINGS_GROUP):
+        dpg.configure_item(TAG_REALTIME_SETTINGS_GROUP, show=v["realtime"])
+    if dpg.does_item_exist(TAG_DEEPL_KEY_GROUP):
+        dpg.configure_item(TAG_DEEPL_KEY_GROUP, show=v["deepl_key"])
 
 
 def _load_settings() -> dict:
