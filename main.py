@@ -395,6 +395,7 @@ class CaptionSystem:
                 reconnect_max_attempts=rt_cfg.get("reconnect_max_attempts", 5),
                 reconnect_backoff_base=rt_cfg.get("reconnect_backoff_base", 1.5),
                 on_transcript=self._on_realtime_transcript,
+                on_source_transcript=self._on_realtime_source_transcript,
                 on_error=self._on_realtime_error,
                 on_connected=on_ready,
                 request_audio_output=self._audio_output_mode,
@@ -432,6 +433,9 @@ class CaptionSystem:
         self.verbose: bool = False
         self._verbose_log_path: Path | None = None
         self._verbose_lock = threading.Lock()
+        # Realtime モード: 原文・翻訳の最新バッファ（ペアリング配信用）
+        self._latest_source: str = ""
+        self._latest_translation: str = ""
 
     def shutdown(self):
         # idempotent ガード: 二重 shutdown を防止（WinError 6 対策）
@@ -514,9 +518,21 @@ class CaptionSystem:
         """RealtimeTranslator から翻訳テキストを受け取るコールバック。"""
         if not text:
             return
+        self._latest_translation = text
         if self._loop and not self._loop.is_closed():
             asyncio.run_coroutine_threadsafe(
-                self._realtime_broadcast(text), self._loop
+                self._realtime_broadcast(self._latest_source, text), self._loop
+            )
+
+    def _on_realtime_source_transcript(self, text: str):
+        """RealtimeTranslator から原文テキストを受け取るコールバック（Issue #23）。"""
+        if not text:
+            return
+        self._latest_source = text
+        # 翻訳がまだ届いていなければ原文だけ先行配信（翻訳は空文字）
+        if self._loop and not self._loop.is_closed():
+            asyncio.run_coroutine_threadsafe(
+                self._realtime_broadcast(text, self._latest_translation), self._loop
             )
 
     def _on_realtime_error(self, msg: str):
@@ -542,22 +558,31 @@ class CaptionSystem:
         if getattr(self, "_on_cost_warning_cb", None) is not None:
             self._on_cost_warning_cb(threshold)
 
-    async def _realtime_broadcast(self, translated_text: str):
-        """Realtime 翻訳テキストを WebSocket とログに配信する。"""
-        self._log_verbose("RT_DONE", translated=translated_text)
-        print(f"\n[翻訳(RT)] {translated_text}")
+    async def _realtime_broadcast(self, original: str, translated: str):
+        """Realtime 原文・翻訳テキストを WebSocket とログに配信する。"""
+        self._log_verbose("RT_BROADCAST", original=original, translated=translated)
+        if original:
+            print(f"\n[原文(RT)] {original}")
+        if translated:
+            print(f"[翻訳(RT)] {translated}")
 
         ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         try:
             with self._log_path.open("a", encoding="utf-8") as f:
-                f.write(f"[{ts}]\n翻訳(RT): {translated_text}\n\n")
+                if original or translated:
+                    f.write(f"[{ts}]\n")
+                    if original:
+                        f.write(f"原文(RT): {original}\n")
+                    if translated:
+                        f.write(f"翻訳(RT): {translated}\n")
+                    f.write("\n")
         except Exception:
             pass
 
         if self._on_result:
-            self._on_result("", translated_text)
+            self._on_result(original, translated)
 
-        payload = json.dumps({"original": "", "translated": translated_text}, ensure_ascii=False)
+        payload = json.dumps({"original": original, "translated": translated}, ensure_ascii=False)
         await self._broadcaster.broadcast(payload)
 
     def _on_transcription(self, text: str):

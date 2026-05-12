@@ -604,3 +604,307 @@ class TestRealtimeTranslatorAudioOutput:
             _stop_mock_server(server_loop, stop_event)
 
         assert errors == [], f"on_audio_delta=None のときエラーが発生してはいけない: {errors}"
+
+
+# ---------------------------------------------------------------------------
+# session.input_transcript.delta / .done テスト（Issue #23）
+# ---------------------------------------------------------------------------
+
+@pytest.mark.skipif(not _MODULE_AVAILABLE, reason="realtime_translator モジュール未実装")
+class TestRealtimeTranslatorSourceTranscript:
+    """
+    gpt-realtime-translate が返す原文（入力側トランスクリプト）の受信テスト。
+
+    API ドキュメント（確認日 2026-05-12）に基づくイベント名:
+      session.input_transcript.delta  — 原文 delta チャンク
+      session.input_transcript.done   — 原文確定
+    """
+
+    def test_constructor_has_on_source_transcript_param(self):
+        """
+        RealtimeTranslator のコンストラクタに on_source_transcript パラメータが
+        存在すること。
+        """
+        import inspect
+        sig = inspect.signature(RealtimeTranslator.__init__)
+        params = set(sig.parameters.keys())
+        assert "on_source_transcript" in params, \
+            "on_source_transcript パラメータがコンストラクタに存在しない"
+
+    def test_input_transcript_delta_accumulates_buffer(self):
+        """
+        session.input_transcript.delta が複数届いたとき、
+        done イベントまでコールバックを呼ばず、
+        done で結合テキストとして on_source_transcript が呼ばれること。
+        """
+        received_source = []
+        received_translation = []
+
+        async def mock_handler(websocket):
+            await asyncio.wait_for(websocket.recv(), timeout=5)
+
+            # 原文 delta × 2
+            await websocket.send(json.dumps({
+                "type": "session.input_transcript.delta",
+                "delta": "Hello, ",
+            }))
+            await asyncio.sleep(0.05)
+            await websocket.send(json.dumps({
+                "type": "session.input_transcript.delta",
+                "delta": "world!",
+            }))
+            await asyncio.sleep(0.05)
+            await websocket.send(json.dumps({
+                "type": "session.input_transcript.done",
+            }))
+            try:
+                await websocket.wait_closed()
+            except Exception:
+                pass
+
+        server_loop, stop_event, _ = _start_mock_server_in_thread(mock_handler, port=19774)
+
+        try:
+            translator = RealtimeTranslator(
+                api_key="sk-test-fake-source-delta",
+                target_language_code="ja",
+                on_transcript=lambda t: received_translation.append(t),
+                on_source_transcript=lambda t: received_source.append(t),
+                reconnect_max_attempts=0,
+            )
+            translator._ws_url = "ws://localhost:19774"
+
+            client_loop = asyncio.new_event_loop()
+            translator.start(client_loop)
+
+            deadline = time.time() + 5
+            while not received_source and time.time() < deadline:
+                time.sleep(0.1)
+
+            translator.stop()
+        finally:
+            _stop_mock_server(server_loop, stop_event)
+
+        assert len(received_source) == 1, \
+            f"on_source_transcript は done で 1 回だけ呼ばれるべき: {received_source}"
+        assert received_source[0] == "Hello, world!", \
+            f"原文テキストが不一致: {received_source[0]!r}"
+        # 翻訳コールバックは呼ばれていないこと（原文と翻訳は独立）
+        assert received_translation == [], \
+            f"翻訳コールバックが誤って呼ばれた: {received_translation}"
+
+    def test_input_transcript_done_calls_callback(self):
+        """
+        session.input_transcript.done イベントで on_source_transcript が呼ばれること。
+        """
+        received_source = []
+
+        async def mock_handler(websocket):
+            await asyncio.wait_for(websocket.recv(), timeout=5)
+
+            await websocket.send(json.dumps({
+                "type": "session.input_transcript.delta",
+                "delta": "おはようございます",
+            }))
+            await asyncio.sleep(0.05)
+            await websocket.send(json.dumps({
+                "type": "session.input_transcript.done",
+            }))
+            try:
+                await websocket.wait_closed()
+            except Exception:
+                pass
+
+        server_loop, stop_event, _ = _start_mock_server_in_thread(mock_handler, port=19775)
+
+        try:
+            translator = RealtimeTranslator(
+                api_key="sk-test-fake-source-done",
+                target_language_code="en",
+                on_source_transcript=lambda t: received_source.append(t),
+                reconnect_max_attempts=0,
+            )
+            translator._ws_url = "ws://localhost:19775"
+
+            client_loop = asyncio.new_event_loop()
+            translator.start(client_loop)
+
+            deadline = time.time() + 5
+            while not received_source and time.time() < deadline:
+                time.sleep(0.1)
+
+            translator.stop()
+        finally:
+            _stop_mock_server(server_loop, stop_event)
+
+        assert len(received_source) >= 1, "on_source_transcript が呼ばれなかった"
+        assert received_source[0] == "おはようございます", \
+            f"原文テキストが不一致: {received_source[0]!r}"
+
+    def test_input_transcript_punctuation_fallback(self):
+        """
+        session.input_transcript.done が来なくても、
+        句読点（。）で終わる delta でフォールバック確定すること。
+        """
+        received_source = []
+
+        async def mock_handler(websocket):
+            await asyncio.wait_for(websocket.recv(), timeout=5)
+
+            await websocket.send(json.dumps({
+                "type": "session.input_transcript.delta",
+                "delta": "こんにちは。",
+            }))
+            try:
+                await websocket.wait_closed()
+            except Exception:
+                pass
+
+        server_loop, stop_event, _ = _start_mock_server_in_thread(mock_handler, port=19776)
+
+        try:
+            translator = RealtimeTranslator(
+                api_key="sk-test-fake-source-punctuation",
+                target_language_code="en",
+                on_source_transcript=lambda t: received_source.append(t),
+                reconnect_max_attempts=0,
+            )
+            translator._ws_url = "ws://localhost:19776"
+
+            client_loop = asyncio.new_event_loop()
+            translator.start(client_loop)
+
+            deadline = time.time() + 5
+            while not received_source and time.time() < deadline:
+                time.sleep(0.1)
+
+            translator.stop()
+        finally:
+            _stop_mock_server(server_loop, stop_event)
+
+        assert len(received_source) >= 1, \
+            "句読点フォールバックで on_source_transcript が呼ばれなかった"
+        assert "こんにちは。" in received_source[0], \
+            f"テキストが不一致: {received_source[0]!r}"
+
+    def test_on_transcript_and_on_source_transcript_independent(self):
+        """
+        on_transcript（翻訳）と on_source_transcript（原文）が独立して動作すること:
+        - output_transcript.done → on_transcript が呼ばれる
+        - input_transcript.done → on_source_transcript が呼ばれる
+        - それぞれ相手のコールバックは呼ばれない
+        """
+        received_source = []
+        received_translation = []
+
+        async def mock_handler(websocket):
+            await asyncio.wait_for(websocket.recv(), timeout=5)
+
+            # 翻訳テキスト
+            await websocket.send(json.dumps({
+                "type": "session.output_transcript.delta",
+                "delta": "Good morning.",
+            }))
+            await asyncio.sleep(0.05)
+            await websocket.send(json.dumps({
+                "type": "session.output_transcript.done",
+            }))
+            await asyncio.sleep(0.05)
+            # 原文テキスト
+            await websocket.send(json.dumps({
+                "type": "session.input_transcript.delta",
+                "delta": "おはよう。",
+            }))
+            await asyncio.sleep(0.05)
+            await websocket.send(json.dumps({
+                "type": "session.input_transcript.done",
+            }))
+            try:
+                await websocket.wait_closed()
+            except Exception:
+                pass
+
+        server_loop, stop_event, _ = _start_mock_server_in_thread(mock_handler, port=19777)
+
+        try:
+            translator = RealtimeTranslator(
+                api_key="sk-test-fake-independent",
+                target_language_code="en",
+                on_transcript=lambda t: received_translation.append(t),
+                on_source_transcript=lambda t: received_source.append(t),
+                reconnect_max_attempts=0,
+            )
+            translator._ws_url = "ws://localhost:19777"
+
+            client_loop = asyncio.new_event_loop()
+            translator.start(client_loop)
+
+            # 両方のコールバックを待つ
+            deadline = time.time() + 5
+            while (not received_source or not received_translation) and time.time() < deadline:
+                time.sleep(0.1)
+
+            translator.stop()
+        finally:
+            _stop_mock_server(server_loop, stop_event)
+
+        assert len(received_translation) >= 1, \
+            f"on_transcript が呼ばれなかった: {received_translation}"
+        assert received_translation[0] == "Good morning.", \
+            f"翻訳テキストが不一致: {received_translation[0]!r}"
+
+        assert len(received_source) >= 1, \
+            f"on_source_transcript が呼ばれなかった: {received_source}"
+        assert received_source[0] == "おはよう。", \
+            f"原文テキストが不一致: {received_source[0]!r}"
+
+    def test_on_source_transcript_none_does_not_raise(self):
+        """
+        on_source_transcript=None のとき、input_transcript イベントを受信しても
+        エラーにならないこと（サイレント無視）。
+        """
+        errors = []
+        processed = threading.Event()
+
+        async def mock_handler(websocket):
+            await asyncio.wait_for(websocket.recv(), timeout=5)
+
+            await websocket.send(json.dumps({
+                "type": "session.input_transcript.delta",
+                "delta": "テスト",
+            }))
+            await asyncio.sleep(0.1)
+            await websocket.send(json.dumps({
+                "type": "session.input_transcript.done",
+            }))
+            await asyncio.sleep(0.1)
+            processed.set()
+            try:
+                await websocket.wait_closed()
+            except Exception:
+                pass
+
+        server_loop, stop_event, _ = _start_mock_server_in_thread(mock_handler, port=19778)
+
+        try:
+            translator = RealtimeTranslator(
+                api_key="sk-test-fake-source-none",
+                target_language_code="en",
+                on_source_transcript=None,
+                on_error=lambda msg: errors.append(msg),
+                reconnect_max_attempts=0,
+            )
+            translator._ws_url = "ws://localhost:19778"
+
+            client_loop = asyncio.new_event_loop()
+            translator.start(client_loop)
+
+            processed.wait(timeout=5)
+            time.sleep(0.2)
+
+            translator.stop()
+        finally:
+            _stop_mock_server(server_loop, stop_event)
+
+        assert errors == [], \
+            f"on_source_transcript=None のときエラーが発生してはいけない: {errors}"
