@@ -190,6 +190,14 @@ start.bat --cli
 
 ---
 
+### Contributing
+
+Before opening a pull request, read [CONTRIBUTING.md](./CONTRIBUTING.md).
+In particular, use only the approved fake-key formats in test fixtures and docs
+(`pre-commit install` will let gitleaks block real-looking keys locally).
+
+---
+
 ### Notes for Japanese / non-ASCII project paths
 
 If the project folder contains non-ASCII characters, models are cached under
@@ -434,3 +442,11 @@ start.bat --cli
 
 **停止時に `WinError 6` がログに出る**
 - RealtimeSTT 側の既知レース（[#4](../../issues/4)）。機能には影響ありません。
+
+---
+
+### コントリビューション
+
+Pull request を出す前に [CONTRIBUTING.md](./CONTRIBUTING.md) を確認してください。
+特にテスト fixture・ドキュメント例の API キー類は許可フォーマットのみ使用してください
+（`pre-commit install` 後、gitleaks がローカルでブロックします）。
