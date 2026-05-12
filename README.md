@@ -96,6 +96,20 @@ Once setup finishes, the GUI window (`リアルタイム字幕・翻訳`) opens.
 | 発話検出感度 (VAD sensitivity) | Lower = more permissive (picks up quieter speech). |
 | 無音待機 (Post-speech silence, sec) | Silence duration to decide a sentence has ended. |
 | 既定値に戻す (Reset) | Restores VAD defaults. |
+| API キー設定 (API Key settings) | Enter keys and press 保存 (Save) to write them to `config.yaml`. |
+
+**Setting API keys from the GUI:**
+
+1. Open 詳細設定 (Advanced)
+2. Enter your OpenAI and/or DeepL key in the respective field
+3. Click 保存 (Save)
+
+The key is saved to `config.yaml` in **Base64-obfuscated form** (`b64:...`).
+This prevents casual plaintext exposure in screenshots or config file shares.
+
+> **Important:** Base64 is **not encryption**. It is obfuscation only.
+> Never commit `config.yaml` to version control, and avoid sharing it.
+> The app reads both plain and `b64:` prefixed keys transparently.
 
 ### Selecting the right loopback device
 
@@ -297,6 +311,20 @@ GUI では **API キーが入っているエンジンのみ選択可能** にな
 | 発話検出感度 | 値が小さいほど敏感（小音量でも検知） |
 | 無音待機（秒） | この秒数の無音で「発話終了」と判定 |
 | 既定値に戻す | VAD をデフォルトへ |
+| API キー設定 | キーを入力して「保存」を押すと `config.yaml` に書き込まれます |
+
+**GUI から API キーを設定する手順:**
+
+1. 詳細設定を開く
+2. OpenAI または DeepL のキーを入力（「表示」ボタンで確認可）
+3. 「保存」をクリック
+
+キーは `config.yaml` に **Base64 難読化形式**（`b64:...`）で保存されます。
+これにより画面共有やファイル共有時のうっかり漏洩を防ぎます。
+
+> **注意:** Base64 は**暗号化ではなく難読化**です。
+> `config.yaml` をバージョン管理に含めないでください（`.gitignore` で除外済み）。
+> 平文キーと `b64:` 形式のキーは自動判定されるため、どちらでも動作します。
 
 ### ループバックデバイスの選び方
 
