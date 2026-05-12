@@ -146,6 +146,7 @@ The level meter should light up while audio is playing. If it stays at 0%, the a
 | `websocket.host` / `websocket.port` | Caption broadcast endpoint for OBS | `localhost:8765` |
 | `rpc.port` | Local HTTP RPC port (status / remote start-stop) | `8767` |
 | `output.log_dir` | Directory for per-session translation logs | `.` |
+| `openai_realtime.max_session_minutes` | Auto-stop after N minutes of Realtime usage (0 = unlimited) | `60` |
 
 GUI-side overrides (device / model / engine / gain / VAD sliders) are persisted to `settings.json` and override the `config.yaml` values at runtime.
 
@@ -220,6 +221,25 @@ Or configure manually:
 > **Note:** Interpreted audio reaches Zoom listeners with ~1-3 second delay (realtime API latency).
 
 ---
+
+### Cost protection (OpenAI Realtime mode)
+
+When `translation_model: "openai-realtime"` is active, the app monitors session cost
+and provides safeguards:
+
+- **Auto-stop** — The session ends automatically after `openai_realtime.max_session_minutes`
+  minutes (default 60). Set to `0` to disable the limit. A message is shown in the GUI
+  status bar and printed to the console: `最大稼働時間 60 分に達したため停止しました`.
+
+- **Cost display** — The status bar shows elapsed time and estimated cost in real-time:
+  `経過: 00:12:34 / 想定コスト: $0.43`. In CLI mode this appears as a `\r`-updated line
+  in the terminal.
+
+- **Warning thresholds** — Modal alerts appear (GUI) or warnings are printed (CLI) when
+  the estimated cost first exceeds **$5**, **$10**, and **$20**. Each threshold fires only
+  once per session.
+
+Rate used for estimation: **$0.034 / minute** (≈ $2.04 / hour).
 
 ### CLI mode
 
@@ -410,6 +430,7 @@ GUI では **API キーが入っているエンジンのみ選択可能** にな
 | `websocket.host` / `port` | OBS 向け字幕配信エンドポイント | `localhost:8765` |
 | `rpc.port` | ローカル HTTP RPC のポート（状態取得・遠隔制御） | `8767` |
 | `output.log_dir` | 翻訳ログ保存先 | `.` |
+| `openai_realtime.max_session_minutes` | Realtime モードの自動停止時間（分）。0 で無制限 | `60` |
 
 GUI 側で変更した設定（デバイス / モデル / 翻訳エンジン / ゲイン / VAD）は `settings.json` に保存され、次回起動時に復元されます（`config.yaml` の値より優先）。
 
@@ -486,6 +507,22 @@ GUI を開いて「詳細設定」を展開し：
 > **注意:** 翻訳音声は Realtime API のレイテンシにより 1〜3 秒程度の遅延が生じます。
 
 ---
+
+### コスト保護機能（OpenAI Realtime モード）
+
+`translation_model: "openai-realtime"` 使用時、以下の保護機能が有効になります：
+
+- **自動停止** — `openai_realtime.max_session_minutes`（デフォルト 60 分）に達すると
+  セッションを自動停止します。0 を設定すると無制限になります。
+  停止時に GUI ステータスバーと CLI に「最大稼働時間 60 分に達したため停止しました」と表示されます。
+
+- **コスト表示** — ステータスバーに経過時間と想定コストをリアルタイム表示：
+  `経過: 00:12:34 / 想定コスト: $0.43`。CLI モードではターミナルに 1 秒ごとに更新表示されます。
+
+- **警告閾値** — 想定コストが **$5 / $10 / $20** を初めて超えたとき、
+  GUI ではモーダルアラート、CLI では警告メッセージを表示します（各閾値は 1 回のみ）。
+
+コスト計算レート: **$0.034 / 分**（約 $2.04 / 時間）。
 
 ### CLI モード（上級者向け）
 

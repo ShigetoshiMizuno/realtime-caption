@@ -134,6 +134,7 @@ TAG_STATUS_STT = "status_stt"
 TAG_STATUS_TRL = "status_trl"
 TAG_OUTPUT_DEVICE_COMBO = "output_device_combo"
 TAG_ZOOM_PRESET_BTN = "zoom_preset_btn"
+TAG_STATUS_COST = "status_cost"
 
 VAD_DEFAULT_SENSITIVITY = 0.4
 # 0.6 秒: 自然な息継ぎ程度の沈黙では文を切らず、文末の本格的な無音で確定する。
@@ -155,6 +156,10 @@ TAG_KEY_STATUS = "key_status"
 
 # Verbose ロギング状態（settings.json で永続化）
 _verbose_state: bool = False
+
+# コスト警告: スレッドセーフなフラグ（メインスレッドの描画ループで検査）
+_pending_cost_warnings: list[float] = []
+_cost_warning_lock = threading.Lock()
 
 
 def _load_settings() -> dict:
@@ -441,6 +446,52 @@ def _update_loading_progress():
 
 
 # ---------------------------------------------------------------------------
+# コスト警告モーダル
+# ---------------------------------------------------------------------------
+
+def _show_cost_warning_modal(threshold: float) -> None:
+    """コスト警告モーダルを表示する（dpg メインスレッド内から呼ぶこと）。"""
+    tag = f"cost_warn_modal_{int(threshold * 1000)}"
+    if dpg.does_item_exist(tag):
+        return  # 既に表示中
+
+    def _close(sender, app_data, user_data):
+        if dpg.does_item_exist(tag):
+            dpg.delete_item(tag)
+
+    with dpg.window(
+        label="コスト警告",
+        tag=tag,
+        modal=True,
+        width=380,
+        height=120,
+        no_resize=True,
+        no_move=True,
+        pos=(290, 280),
+    ):
+        dpg.add_text(f"想定コストが ${threshold:.2f} を超えました。")
+        dpg.add_text("使い過ぎにご注意ください。")
+        dpg.add_separator()
+        dpg.add_button(label="OK", width=340, callback=_close)
+
+
+def _check_pending_cost_warnings() -> None:
+    """メインループから毎フレーム呼ぶ。保留中の警告モーダルを描画する。"""
+    global _pending_cost_warnings
+    with _cost_warning_lock:
+        warnings = list(_pending_cost_warnings)
+        _pending_cost_warnings.clear()
+    for threshold in warnings:
+        _show_cost_warning_modal(threshold)
+
+
+def _enqueue_cost_warning(threshold: float) -> None:
+    """スレッドセーフに警告フラグをキューに積む（コールバックから呼ぶ）。"""
+    with _cost_warning_lock:
+        _pending_cost_warnings.append(threshold)
+
+
+# ---------------------------------------------------------------------------
 # GUI キューコマンド処理
 # ---------------------------------------------------------------------------
 
@@ -613,6 +664,10 @@ def _proceed_start(device_info: dict, model_name: str, selected_trans: str):
                                 on_whisper_busy=on_whisper_busy,
                                 on_trans_busy=on_trans_busy,
                                 output_device_index=output_device_index)
+        # コスト警告コールバックを設定（スレッドセーフにフラグを立てる）
+        _system._on_cost_warning_cb = _enqueue_cost_warning
+        # コスト上限到達時の GUI 通知（ステータス表示）
+        _system._on_cost_status = lambda msg: _enqueue("set_status", text=f"■ {msg}")
         loading = False
     else:
         # プリロード済みのシステムがあれば再利用
@@ -1152,6 +1207,7 @@ def _build_gui():
             dpg.add_text("0", tag=TAG_STATUS_WS)
             dpg.add_text("  |  RPC:")
             dpg.add_text(f"http://localhost:{rpc_port}", tag=TAG_STATUS_RPC)
+            dpg.add_text("", tag=TAG_STATUS_COST)
 
     dpg.set_primary_window("main_window", True)
     # ステータスバーの文字は Meiryo（グローバル）で統一する。
@@ -1172,6 +1228,25 @@ def _update_ws_status():
     if count != _last_ws_count:
         _last_ws_count = count
         dpg.set_value(TAG_STATUS_WS, str(count))
+
+
+def _update_cost_status():
+    """コストモニターの経過時間・想定コストをステータスバーに反映する。"""
+    if _system is None or not getattr(_system, "_realtime_mode", False):
+        if dpg.does_item_exist(TAG_STATUS_COST):
+            dpg.set_value(TAG_STATUS_COST, "")
+        return
+    monitor = getattr(_system, "_cost_monitor", None)
+    if monitor is None:
+        return
+    elapsed_sec = int(monitor.elapsed_minutes() * 60)
+    h = elapsed_sec // 3600
+    m = (elapsed_sec % 3600) // 60
+    s = elapsed_sec % 60
+    cost = monitor.estimated_cost_usd()
+    text = f"  |  経過: {h:02d}:{m:02d}:{s:02d} / 想定コスト: ${cost:.2f}"
+    if dpg.does_item_exist(TAG_STATUS_COST):
+        dpg.set_value(TAG_STATUS_COST, text)
 
 
 def _update_level_meter():
@@ -1233,11 +1308,15 @@ def main():
         if frame_count % 2 == 0:
             _update_level_meter()
 
-        # 1秒ごと（約60fps想定で60フレームごと）に WS クライアント数を更新
+        # 1秒ごと（約60fps想定で60フレームごと）に WS クライアント数・コストを更新
         frame_count += 1
         if frame_count >= 60:
             frame_count = 0
             _update_ws_status()
+            _update_cost_status()
+
+        # 保留中のコスト警告モーダルを処理（毎フレーム）
+        _check_pending_cost_warnings()
 
         # ロード中は毎 10 フレーム（~6Hz）進捗更新
         if _loading_active and frame_count % 10 == 0:
