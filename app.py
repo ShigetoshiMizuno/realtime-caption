@@ -623,6 +623,22 @@ def _enqueue(cmd: str, **kwargs):
     _gui_queue.put({"cmd": cmd, **kwargs})
 
 
+def _classify_preload_cache(cached_system, cached_key, requested_key) -> tuple[str, object | None]:
+    """プリロードキャッシュを分類する純関数（テスト可能性のために切り出し）。
+
+    Returns
+    -------
+    ("ok", system)    : 再利用可能なキャッシュあり（呼び出し側で キャッシュ消費 + 起動）
+    ("stale", system) : prepare() 失敗で _recorder=None の状態（呼び出し側で shutdown 必要）
+    ("miss", None)    : キャッシュなし、キー不一致、または cached_system が None
+    """
+    if cached_system is None or cached_key != requested_key:
+        return "miss", None
+    if getattr(cached_system, "_recorder", None) is not None:
+        return "ok", cached_system
+    return "stale", cached_system
+
+
 def _trigger_preload():
     """選択中のモデル・デバイスでバックグラウンドプリロードを開始する。
     既に同じキーでプリロード済み/進行中なら何もしない。"""
@@ -659,18 +675,38 @@ def _trigger_preload():
 
     def _do_prepare():
         global _preloaded_system, _preload_key
-        print(f"[INFO] Preloading Whisper {model_name} ...")
-        system.prepare()
+        # Issue #3 #2: 早期キャンセルチェック（thread 起動から prepare 開始までの間に
+        # ユーザーがコンボを変更してキーが変わった場合は重い prepare() を呼ばずに撤退）
         with _preload_lock:
-            # キャンセルされていなければキャッシュに格納
-            if _preload_key == key and not system._stop_event.is_set():
+            if _preload_key != key:
+                return
+        print(f"[INFO] Preloading Whisper {model_name} ...")
+        prepare_failed = False
+        try:
+            system.prepare()
+        except Exception as e:
+            prepare_failed = True
+            print(f"[ERROR] Preload 失敗 {model_name}: {e}", flush=True)
+        # Issue #3 #3: prepare 失敗時に _preloaded_system に格納せず、確実に shutdown する
+        store_to_cache = False
+        with _preload_lock:
+            if (not prepare_failed
+                    and _preload_key == key
+                    and not system._stop_event.is_set()
+                    and system._recorder is not None):
                 _preloaded_system = system
+                store_to_cache = True
                 print(f"[INFO] Preload done: {model_name}")
             else:
-                try:
-                    system.shutdown()
-                except Exception:
-                    pass
+                # 失敗・キャンセル時はキーをリセット（次のプリロード/起動で stale 判定されないよう）
+                if _preload_key == key:
+                    _preload_key = None
+        if not store_to_cache:
+            # ロック外で shutdown（重い操作のため、ロック保持時間を最小化）
+            try:
+                system.shutdown()
+            except Exception:
+                pass
 
     threading.Thread(target=_do_prepare, daemon=True).start()
 
@@ -806,14 +842,27 @@ def _proceed_start(device_info: dict, model_name: str, selected_trans: str):
         loading = False
     else:
         # プリロード済みのシステムがあれば再利用
+        # Issue #3 #3: プリロード失敗（_recorder=None）の参照は明示的に shutdown して廃棄する
         key = (model_name, device_info["index"])
+        cached = None
+        stale_preload = None
         with _preload_lock:
-            cached = _preloaded_system if (_preload_key == key
-                                           and _preloaded_system is not None
-                                           and _preloaded_system._recorder is not None) else None
-            if cached is not None:
+            status, candidate = _classify_preload_cache(_preloaded_system, _preload_key, key)
+            if status == "ok":
+                cached = candidate
                 _preloaded_system = None
                 _preload_key = None
+            elif status == "stale":
+                stale_preload = candidate
+                _preloaded_system = None
+                _preload_key = None
+
+        # ロック外で stale を廃棄（shutdown は重いのでロック保持時間を最小化）
+        if stale_preload is not None:
+            try:
+                stale_preload.shutdown()
+            except Exception:
+                pass
 
         if cached is not None:
             _system = cached
