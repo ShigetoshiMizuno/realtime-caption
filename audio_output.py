@@ -139,6 +139,12 @@ class AudioOutputStream:
                 pass
             self._stream = None
 
+        if self._pa is not None:
+            try:
+                self._pa.terminate()
+            except Exception:
+                pass
+
         self._started = False
         logger.info("[AudioOutputStream] 停止")
 
