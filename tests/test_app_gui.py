@@ -44,3 +44,37 @@ def test_zoom_preset_empty_devices():
     from app import _find_zoom_preset_output  # noqa: PLC0415
 
     assert _find_zoom_preset_output([]) is None
+
+
+# ---------------------------------------------------------------------------
+# _resolve_settings_visibility のテスト
+# ---------------------------------------------------------------------------
+
+def test_visibility_openai_realtime():
+    """openai-realtime モード時: Whisper設定非表示、Realtime設定表示、DeepLキー非表示。"""
+    from app import _resolve_settings_visibility  # noqa: PLC0415
+
+    v = _resolve_settings_visibility("openai-realtime")
+    assert v["whisper"] is False
+    assert v["realtime"] is True
+    assert v["deepl_key"] is False
+
+
+def test_visibility_openai():
+    """openai モード時: Whisper設定表示、Realtime設定非表示、DeepLキー表示。"""
+    from app import _resolve_settings_visibility  # noqa: PLC0415
+
+    v = _resolve_settings_visibility("openai")
+    assert v["whisper"] is True
+    assert v["realtime"] is False
+    assert v["deepl_key"] is True
+
+
+def test_visibility_deepl():
+    """deepl モード時: Whisper設定表示、Realtime設定非表示、DeepLキー表示。"""
+    from app import _resolve_settings_visibility  # noqa: PLC0415
+
+    v = _resolve_settings_visibility("deepl")
+    assert v["whisper"] is True
+    assert v["realtime"] is False
+    assert v["deepl_key"] is True
