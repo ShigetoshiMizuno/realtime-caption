@@ -273,19 +273,25 @@ def select_whisper_model(default: str) -> str:
 
 
 class SubtitleBroadcaster:
-    """WebSocket サーバーで接続中の全クライアントに字幕を配信する。"""
+    """WebSocket サーバーで接続中の全クライアントに字幕を配信する。
+
+    threading.Lock を使用することで、複数の asyncio.run() スレッド（MultiCaptionSystem の
+    route_a / route_b）から同時に broadcast() を呼び出しても安全に動作する。
+    asyncio.Lock は _LoopBoundMixin を継承し初回 acquire 時にイベントループに束縛されるため、
+    異なるループから呼び出すと RuntimeError が発生する（Issue #38 Critical 1 修正）。
+    """
 
     def __init__(self):
         self._clients: set = set()
-        self._lock = asyncio.Lock()
+        self._lock = threading.Lock()
 
     async def register(self, websocket):
-        async with self._lock:
+        with self._lock:
             self._clients.add(websocket)
         try:
             await websocket.wait_closed()
         finally:
-            async with self._lock:
+            with self._lock:
                 self._clients.discard(websocket)
 
     @property
@@ -293,7 +299,7 @@ class SubtitleBroadcaster:
         return len(self._clients)
 
     async def broadcast(self, message: str):
-        async with self._lock:
+        with self._lock:
             targets = set(self._clients)
         if targets:
             await asyncio.gather(
