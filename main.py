@@ -831,14 +831,14 @@ class CaptionSystem:
                         chunks_per_sec=level_window_chunks,
                     )
                     pct = level_window_max * 100 // 32767
-                else:
-                    # 毎チャンク: peak_now / gain を反映（GUI のリアルタイム表示用）
-                    self._update_audio_stats(peak_now=new_peak_now, gain=new_gain)
                     bar = "█" * (pct // 5)
                     print(f"[AUDIO] peak={level_window_max:>5d} ({pct:3d}%) {bar} chunks={level_window_chunks}", flush=True)
                     level_window_max = 0
                     level_window_chunks = 0
                     next_log = now + 1.0
+                else:
+                    # 毎チャンク: peak_now / gain を反映（GUI のリアルタイム表示用）
+                    self._update_audio_stats(peak_now=new_peak_now, gain=new_gain)
 
                 # float32 に変換してリサンプリング
                 audio_f = audio.astype(np.float32)
