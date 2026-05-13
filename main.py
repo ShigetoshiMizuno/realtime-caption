@@ -401,6 +401,7 @@ class CaptionSystem:
                  on_result=None, on_ready=None,
                  on_whisper_busy=None, on_trans_busy=None,
                  output_device_index: int | None = None,
+                 output_volume: float = 1.0,
                  route_id: str = "a",
                  shared_broadcaster: "SubtitleBroadcaster | None" = None):
         self._config = config
@@ -418,6 +419,7 @@ class CaptionSystem:
         # 音声出力モード: 出力デバイスが指定されていれば有効
         self._audio_output_mode: bool = output_device_index is not None
         self._output_device_index: int | None = output_device_index
+        self._output_volume: float = output_volume
         self._audio_stream = None  # AudioOutputStream インスタンス（起動時に生成）
 
         if not self._realtime_mode:
@@ -998,6 +1000,7 @@ class CaptionSystem:
                 pyaudio_instance=pyaudio.PyAudio(),
                 device_index=self._output_device_index,
                 sample_rate=sample_rate,
+                volume=self._output_volume,
             )
             self._audio_stream.start()
             print(f"[INFO] 音声出力ストリーム開始: device_index={self._output_device_index}", flush=True)
@@ -1150,6 +1153,7 @@ class MultiCaptionSystem:
             on_result=on_result_a,
             on_ready=on_ready,
             output_device_index=route_a.output_device_index if route_a.audio_output_enabled else None,
+            output_volume=route_a.output_volume,
             route_id=route_a.route_id,
             shared_broadcaster=None,  # route_a が broadcaster を所有
         )
@@ -1163,6 +1167,7 @@ class MultiCaptionSystem:
             on_result=on_result_b,
             on_ready=on_ready,
             output_device_index=route_b.output_device_index if route_b.audio_output_enabled else None,
+            output_volume=route_b.output_volume,
             route_id=route_b.route_id,
             shared_broadcaster=self._route_a._broadcaster,  # route_a の broadcaster を共有
         )

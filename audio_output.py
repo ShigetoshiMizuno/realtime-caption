@@ -18,6 +18,8 @@ import queue
 import threading
 import logging
 
+import numpy as np
+
 logger = logging.getLogger(__name__)
 
 # デフォルトサンプルレート: gpt-realtime-translate の出力は 24kHz PCM16
@@ -46,6 +48,7 @@ class AudioOutputStream:
         sample_rate: int = _DEFAULT_SAMPLE_RATE,
         channels: int = _DEFAULT_CHANNELS,
         chunk_size: int = _DEFAULT_CHUNK,
+        volume: float = 1.0,
     ):
         """
         Parameters
@@ -55,18 +58,23 @@ class AudioOutputStream:
         sample_rate:       サンプルレート（Hz）。gpt-realtime-translate は 24000
         channels:          チャンネル数
         chunk_size:        1回の write サイズ（bytes）
+        volume:            出力音量倍率（0.0〜2.0）。1.0 のときはバイパス（変換なし）
         """
         self._pa = pyaudio_instance
         self._device_index = device_index
         self._sample_rate = sample_rate
         self._channels = channels
         self._chunk_size = chunk_size
+        self._volume = volume
 
         self._queue: queue.Queue = queue.Queue()
         self._stream = None
         self._thread: threading.Thread | None = None
         self._stop_event = threading.Event()
         self._started = False
+        # 直近に write された PCM の peak 値（絶対値最大）を保持（GUIレベルメーター用）
+        self._audio_peak_now: int = 0
+        self._peak_lock = threading.Lock()
 
     def start(self) -> None:
         """
@@ -106,13 +114,40 @@ class AudioOutputStream:
             self._sample_rate,
         )
 
+    @property
+    def audio_peak_now(self) -> int:
+        """直近に write された PCM データの最大絶対値（peak）を返す。
+
+        GUI のレベルメーター更新に使用する。値は 0〜32767 の範囲。
+        """
+        with self._peak_lock:
+            return self._audio_peak_now
+
     def write(self, pcm16_bytes: bytes) -> None:
         """
         PCM16 bytes をキューに積む（スレッドセーフ）。
         stop() 後に呼ばれた場合は黙殺する。
+
+        volume != 1.0 のとき PCM16 に音量倍率を乗算してからキューに積む。
+        volume == 1.0 のときはオーバーヘッド回避のためバイパスする。
+        write と同時に audio_peak_now を更新する。
         """
         if self._stop_event.is_set():
             return
+
+        if self._volume != 1.0:
+            # PCM16 を int32 に拡張して乗算し、int16 範囲にクリップして戻す
+            samples = np.frombuffer(pcm16_bytes, dtype=np.int16).astype(np.int32)
+            samples = np.clip((samples * self._volume).astype(np.int32), -32768, 32767)
+            pcm16_bytes = samples.astype(np.int16).tobytes()
+
+        # peak 追跡: volume 適用後のデータで peak を更新
+        if pcm16_bytes:
+            samples_for_peak = np.frombuffer(pcm16_bytes, dtype=np.int16)
+            peak = int(np.abs(samples_for_peak).max()) if samples_for_peak.size else 0
+            with self._peak_lock:
+                self._audio_peak_now = peak
+
         self._queue.put(pcm16_bytes)
 
     def stop(self) -> None:
