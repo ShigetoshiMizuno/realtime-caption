@@ -230,6 +230,87 @@ class TestAudioOutputStreamInit:
 
 
 @pytest.mark.skipif(not _MODULE_AVAILABLE, reason="audio_output モジュール未実装")
+class TestAudioOutputStreamVolume:
+    """AudioOutputStream の volume 機能テスト。"""
+
+    def test_audio_output_stream_applies_volume(self):
+        """AudioOutputStream に volume を渡すと write 時に音量が乗算されること。"""
+        mock_stream = _MockPyAudioStream()
+        mock_pa = _MockPyAudio(mock_stream)
+
+        stream = AudioOutputStream(pyaudio_instance=mock_pa, device_index=0, volume=0.5)
+        stream.start()
+
+        import numpy as np
+        # PCM16: 振幅 10000 の正弦波 1 サイクル
+        samples = (np.ones(4, dtype=np.int16) * 10000).tobytes()
+        stream.write(samples)
+
+        deadline = time.time() + 3
+        while not mock_stream.written and time.time() < deadline:
+            time.sleep(0.05)
+
+        stream.stop()
+
+        assert mock_stream.written, "データがストリームに届いていない"
+        written_samples = np.frombuffer(mock_stream.written[0], dtype=np.int16)
+        # volume=0.5 なので、各サンプルは約 5000 になるはず（誤差 ±1）
+        assert all(abs(int(s) - 5000) <= 1 for s in written_samples), (
+            f"volume=0.5 適用後の値が期待と違う: {written_samples.tolist()}"
+        )
+
+    def test_audio_output_stream_volume_default_bypass(self):
+        """volume=1.0 のとき write の audio_bytes が変更されないこと（パフォーマンス保護）。"""
+        mock_stream = _MockPyAudioStream()
+        mock_pa = _MockPyAudio(mock_stream)
+
+        stream = AudioOutputStream(pyaudio_instance=mock_pa, device_index=0)
+        stream.start()
+
+        import numpy as np
+        original = (np.array([10000, 20000, -5000, 0], dtype=np.int16)).tobytes()
+        stream.write(original)
+
+        deadline = time.time() + 3
+        while not mock_stream.written and time.time() < deadline:
+            time.sleep(0.05)
+
+        stream.stop()
+
+        assert mock_stream.written, "データがストリームに届いていない"
+        assert mock_stream.written[0] == original, (
+            "volume=1.0 のとき write データは変更されないはず"
+        )
+
+    def test_audio_output_stream_tracks_peak(self):
+        """AudioOutputStream.audio_peak_now が write された PCM の peak を返すこと。"""
+        mock_stream = _MockPyAudioStream()
+        mock_pa = _MockPyAudio(mock_stream)
+
+        stream = AudioOutputStream(pyaudio_instance=mock_pa, device_index=0)
+        stream.start()
+
+        import numpy as np
+        samples = np.array([100, 5000, -8000, 3000], dtype=np.int16)
+        stream.write(samples.tobytes())
+
+        deadline = time.time() + 3
+        while not mock_stream.written and time.time() < deadline:
+            time.sleep(0.05)
+
+        stream.stop()
+
+        # audio_peak_now プロパティが存在し、書き込まれたデータの最大絶対値を返すこと
+        assert hasattr(stream, "audio_peak_now"), (
+            "AudioOutputStream に audio_peak_now プロパティが存在しない"
+        )
+        # 最大絶対値は 8000
+        assert stream.audio_peak_now == 8000, (
+            f"audio_peak_now が期待値 8000 と違う: {stream.audio_peak_now}"
+        )
+
+
+@pytest.mark.skipif(not _MODULE_AVAILABLE, reason="audio_output モジュール未実装")
 class TestAudioOutputStreamTerminate:
     """stop() が PyAudio インスタンスの terminate() を呼ぶことを検証。"""
 

@@ -238,6 +238,16 @@ class TestMultiCaptionSystemPhase4:
             "route_a と route_b が異なる SubtitleBroadcaster を持っている"
         )
 
+    def test_broadcaster_lock_safe_across_event_loops(self):
+        """SubtitleBroadcaster が threading.Lock を使い、複数の asyncio.run() スレッドから
+        安全に broadcast できること（type(self._lock) が threading.Lock であること）。"""
+        from main import SubtitleBroadcaster
+        import threading
+        broadcaster = SubtitleBroadcaster()
+        assert isinstance(broadcaster._lock, type(threading.Lock())), (
+            f"SubtitleBroadcaster._lock は threading.Lock であるべき、実際: {type(broadcaster._lock)}"
+        )
+
     def test_multi_caption_system_start_creates_event_loop(self):
         """start() が asyncio イベントループを開始し、shutdown() で終了すること。
 

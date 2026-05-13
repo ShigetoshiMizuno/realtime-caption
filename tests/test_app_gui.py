@@ -201,3 +201,52 @@ def test_route_a_and_b_sections_have_level_meters():
         assert isinstance(getattr(app, tag_name), str), (
             f"{tag_name} が文字列でない"
         )
+
+
+# ---------------------------------------------------------------------------
+# Warning 2: _update_konnyaku_level_meters のテスト (Issue #38 QA修正)
+# ---------------------------------------------------------------------------
+
+def test_update_konnyaku_level_meters_function_exists():
+    """_update_konnyaku_level_meters 関数が app に存在すること。"""
+    import app  # noqa: PLC0415
+    assert hasattr(app, "_update_konnyaku_level_meters"), (
+        "_update_konnyaku_level_meters 関数が app に定義されていない"
+    )
+    assert callable(app._update_konnyaku_level_meters), (
+        "_update_konnyaku_level_meters が callable でない"
+    )
+
+
+def test_update_konnyaku_level_meters_does_nothing_when_none():
+    """_konnyaku_system が None のとき _update_konnyaku_level_meters は例外を出さないこと。"""
+    import app  # noqa: PLC0415
+    from unittest.mock import patch
+
+    with patch.object(app, "_konnyaku_system", None):
+        # 例外なく終了すること
+        app._update_konnyaku_level_meters()
+
+
+# ---------------------------------------------------------------------------
+# Suggestion 3: ポート競合チェック (Issue #38 QA修正)
+# ---------------------------------------------------------------------------
+
+def test_konnyaku_start_blocked_when_system_running():
+    """_system が稼働中のとき _on_konnyaku_start_stop_click が起動を拒否すること。"""
+    import app  # noqa: PLC0415
+    from unittest.mock import MagicMock, patch
+
+    mock_dpg = MagicMock()
+    mock_system = MagicMock()  # _system が稼働中
+
+    with (
+        patch.object(app, "dpg", mock_dpg),
+        patch.object(app, "_system", mock_system),
+        patch.object(app, "_konnyaku_running", False),
+        patch.object(app, "_konnyaku_system", None),
+    ):
+        app._on_konnyaku_start_stop_click()
+
+    # dpg.set_value が TAG_STATUS_LABEL に警告メッセージを設定していること
+    mock_dpg.set_value.assert_called()
