@@ -32,30 +32,29 @@ def _make_mock_cost_monitor(elapsed_minutes: float) -> CostMonitor:
     return monitor
 
 
+def _make_minimal_caption_system_with_monitor(monitor) -> CaptionSystem:
+    """object.__new__ でバイパスして最小限の CaptionSystem を作るヘルパー。"""
+    cs = object.__new__(CaptionSystem)
+    cs._audio_stats_lock = threading.Lock()
+    cs._audio_stats = AudioStats()
+    cs._stop_event = threading.Event()
+    cs._realtime_translator = None
+    cs._cost_monitor = monitor
+    cs._recorder = None
+    cs._loop = None
+    cs._stop_event_async = None
+    cs._audio_stream = None
+    return cs
+
+
 def _make_multi_caption_system_with_monitors(
     elapsed_a: float,
     elapsed_b: float,
 ) -> MultiCaptionSystem:
     """指定した経過時間のモック CostMonitor を持つ MultiCaptionSystem を作る。"""
     obj = object.__new__(MultiCaptionSystem)
-
-    route_a = object.__new__(CaptionSystem)
-    route_a._audio_stats_lock = threading.Lock()
-    route_a._audio_stats = AudioStats()
-    route_a._stop_event = threading.Event()
-    route_a._realtime_translator = None
-    route_a._cost_monitor = _make_mock_cost_monitor(elapsed_a)
-
-    route_b = object.__new__(CaptionSystem)
-    route_b._audio_stats_lock = threading.Lock()
-    route_b._audio_stats = AudioStats()
-    route_b._stop_event = threading.Event()
-    route_b._realtime_translator = None
-    route_b._cost_monitor = _make_mock_cost_monitor(elapsed_b)
-
-    obj._route_a = route_a
-    obj._route_b = route_b
-
+    obj._route_a = _make_minimal_caption_system_with_monitor(_make_mock_cost_monitor(elapsed_a))
+    obj._route_b = _make_minimal_caption_system_with_monitor(_make_mock_cost_monitor(elapsed_b))
     return obj
 
 
@@ -80,23 +79,8 @@ class TestDualCostMonitor:
     def test_total_cost_is_zero_when_both_monitors_are_none(self):
         """両系統の _cost_monitor が None のとき合算コストは 0.0 であること。"""
         obj = object.__new__(MultiCaptionSystem)
-
-        route_a = object.__new__(CaptionSystem)
-        route_a._audio_stats_lock = threading.Lock()
-        route_a._audio_stats = AudioStats()
-        route_a._stop_event = threading.Event()
-        route_a._realtime_translator = None
-        route_a._cost_monitor = None
-
-        route_b = object.__new__(CaptionSystem)
-        route_b._audio_stats_lock = threading.Lock()
-        route_b._audio_stats = AudioStats()
-        route_b._stop_event = threading.Event()
-        route_b._realtime_translator = None
-        route_b._cost_monitor = None
-
-        obj._route_a = route_a
-        obj._route_b = route_b
+        obj._route_a = _make_minimal_caption_system_with_monitor(None)
+        obj._route_b = _make_minimal_caption_system_with_monitor(None)
 
         assert obj.total_estimated_cost_usd == 0.0
 

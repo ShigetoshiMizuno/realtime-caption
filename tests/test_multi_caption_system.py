@@ -59,6 +59,22 @@ def _make_fake_config() -> dict:
     }
 
 
+def _make_minimal_caption_system() -> CaptionSystem:
+    """object.__new__ でバイパスして最小限の CaptionSystem を作るヘルパー。"""
+    cs = object.__new__(CaptionSystem)
+    cs._audio_stats_lock = threading.Lock()
+    cs._audio_stats = AudioStats()
+    cs._stop_event = threading.Event()
+    cs._realtime_translator = None
+    cs._cost_monitor = None
+    # shutdown() が参照するフィールドをすべて初期化
+    cs._recorder = None
+    cs._loop = None
+    cs._stop_event_async = None
+    cs._audio_stream = None
+    return cs
+
+
 def _make_multi_caption_system_minimal() -> MultiCaptionSystem:
     """object.__new__ でバイパスして最小限 MultiCaptionSystem インスタンスを作る。
 
@@ -67,26 +83,8 @@ def _make_multi_caption_system_minimal() -> MultiCaptionSystem:
     スレッド安全性テスト等では object.__new__ で生成し必要属性だけ設定する。
     """
     obj = object.__new__(MultiCaptionSystem)
-
-    # route_a: AudioStats のみ持つ最小 CaptionSystem
-    route_a = object.__new__(CaptionSystem)
-    route_a._audio_stats_lock = threading.Lock()
-    route_a._audio_stats = AudioStats()
-    route_a._stop_event = threading.Event()
-    route_a._realtime_translator = None
-    route_a._cost_monitor = None
-
-    # route_b: AudioStats のみ持つ最小 CaptionSystem
-    route_b = object.__new__(CaptionSystem)
-    route_b._audio_stats_lock = threading.Lock()
-    route_b._audio_stats = AudioStats()
-    route_b._stop_event = threading.Event()
-    route_b._realtime_translator = None
-    route_b._cost_monitor = None
-
-    obj._route_a = route_a
-    obj._route_b = route_b
-
+    obj._route_a = _make_minimal_caption_system()
+    obj._route_b = _make_minimal_caption_system()
     return obj
 
 

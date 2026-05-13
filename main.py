@@ -61,6 +61,7 @@ import io
 import json
 import sys
 import threading
+from collections.abc import Callable
 from dataclasses import dataclass, replace
 from datetime import datetime
 from pathlib import Path
@@ -393,7 +394,9 @@ class CaptionSystem:
     def __init__(self, config: dict, device_info: dict, model_name: str,
                  on_result=None, on_ready=None,
                  on_whisper_busy=None, on_trans_busy=None,
-                 output_device_index: int | None = None):
+                 output_device_index: int | None = None,
+                 route_id: str = "a",
+                 shared_broadcaster: "SubtitleBroadcaster | None" = None):
         self._config = config
         self._device_info = device_info
         self._model_name = model_name
@@ -449,7 +452,8 @@ class CaptionSystem:
                 on_warning=self._on_cost_warning,
             )
 
-        self._broadcaster = SubtitleBroadcaster()
+        self._route_id: str = route_id
+        self._broadcaster = shared_broadcaster if shared_broadcaster is not None else SubtitleBroadcaster()
         self._loop: asyncio.AbstractEventLoop | None = None
         self._recorder: AudioToTextRecorder | None = None
         self._stop_event = threading.Event()
@@ -606,7 +610,7 @@ class CaptionSystem:
         self._latest_translation = text
         if self._loop and not self._loop.is_closed():
             asyncio.run_coroutine_threadsafe(
-                self._realtime_broadcast("", text), self._loop
+                self._realtime_broadcast("", text, self._route_id), self._loop
             )
 
     def _on_realtime_source_transcript(self, text: str):
@@ -620,7 +624,7 @@ class CaptionSystem:
         self._latest_source = text
         if self._loop and not self._loop.is_closed():
             asyncio.run_coroutine_threadsafe(
-                self._realtime_broadcast(text, ""), self._loop
+                self._realtime_broadcast(text, "", self._route_id), self._loop
             )
 
     def _on_realtime_error(self, msg: str):
@@ -646,8 +650,14 @@ class CaptionSystem:
         if getattr(self, "_on_cost_warning_cb", None) is not None:
             self._on_cost_warning_cb(threshold)
 
-    async def _realtime_broadcast(self, original: str, translated: str):
-        """Realtime 原文・翻訳テキストを WebSocket とログに配信する。"""
+    async def _realtime_broadcast(self, original: str, translated: str, route: str = "a"):
+        """Realtime 原文・翻訳テキストを WebSocket とログに配信する。
+
+        Args:
+            original: 原文テキスト
+            translated: 翻訳テキスト
+            route: 経路識別子 ("a" | "b")。既存片方向モードはデフォルト "a"。
+        """
         self._log_verbose("RT_BROADCAST", original=original, translated=translated)
         if original:
             print(f"\n[原文(RT)] {original}")
@@ -670,7 +680,10 @@ class CaptionSystem:
         if self._on_result:
             self._on_result(original, translated)
 
-        payload = json.dumps({"original": original, "translated": translated}, ensure_ascii=False)
+        payload = json.dumps(
+            {"original": original, "translated": translated, "route": route},
+            ensure_ascii=False,
+        )
         await self._broadcaster.broadcast(payload)
 
     def _on_transcription(self, text: str):
@@ -1064,6 +1077,119 @@ def main():
         pass
     finally:
         _release_subst(_subst_letter)
+
+
+# ---------------------------------------------------------------------------
+# 翻訳こんにゃくモード: MultiCaptionSystem / RouteConfig (Issue #38 Phase 2)
+# ---------------------------------------------------------------------------
+
+@dataclass
+class RouteConfig:
+    """MultiCaptionSystem の1経路分の設定。"""
+
+    route_id: str                       # "a" | "b"
+    input_device_info: dict
+    target_language_code: str           # "ja" | "en"（constants.SUPPORTED_LANGUAGES から選択）
+    audio_output_enabled: bool
+    output_device_index: int | None
+    output_volume: float                # 0.0〜2.0
+
+
+class MultiCaptionSystem:
+    """2 系統の CaptionSystem を並列管理するオーケストレーター。
+
+    経路A・Bそれぞれが独立した CaptionSystem インスタンスを持ち、
+    1 本の SubtitleBroadcaster を共有して overlay.html へ配信する。
+
+    仕様: Issue #38 §1 (翻訳こんにゃくモード Phase 2)
+    """
+
+    def __init__(
+        self,
+        config: dict,
+        route_a: RouteConfig,
+        route_b: RouteConfig,
+        on_result_a: Callable[[str, str], None] | None = None,
+        on_result_b: Callable[[str, str], None] | None = None,
+        on_ready: Callable[[], None] | None = None,
+    ) -> None:
+        # 2系統で共有するブロードキャスター（overlay.html への WebSocket は1本）
+        shared_broadcaster = SubtitleBroadcaster()
+
+        # route_a: config の openai_realtime.target_language_code を RouteConfig で上書き
+        config_a = self._build_route_config_dict(config, route_a)
+        self._route_a = CaptionSystem(
+            config=config_a,
+            device_info=route_a.input_device_info,
+            model_name=config_a.get("stt", {}).get("model", "tiny"),
+            on_result=on_result_a,
+            on_ready=on_ready,
+            output_device_index=route_a.output_device_index if route_a.audio_output_enabled else None,
+            route_id=route_a.route_id,
+            shared_broadcaster=shared_broadcaster,
+        )
+
+        # route_b: 別インスタンス（独立した CostMonitor / RealtimeTranslator を持つ）
+        config_b = self._build_route_config_dict(config, route_b)
+        self._route_b = CaptionSystem(
+            config=config_b,
+            device_info=route_b.input_device_info,
+            model_name=config_b.get("stt", {}).get("model", "tiny"),
+            on_result=on_result_b,
+            on_ready=on_ready,
+            output_device_index=route_b.output_device_index if route_b.audio_output_enabled else None,
+            route_id=route_b.route_id,
+            shared_broadcaster=shared_broadcaster,
+        )
+
+    @staticmethod
+    def _build_route_config_dict(base_config: dict, route: RouteConfig) -> dict:
+        """base_config を浅くコピーし、RouteConfig の言語設定で上書きした dict を返す。"""
+        import copy
+        cfg = copy.deepcopy(base_config)
+        # openai_realtime.target_language_code を RouteConfig の値で上書き
+        if "openai_realtime" not in cfg:
+            cfg["openai_realtime"] = {}
+        cfg["openai_realtime"]["target_language_code"] = route.target_language_code
+        return cfg
+
+    def start(self) -> None:
+        """両系統を順次起動する。"""
+        self._route_a.start()
+        self._route_b.start()
+
+    def shutdown(self) -> None:
+        """両系統を停止する。"""
+        self._route_a.shutdown()
+        self._route_b.shutdown()
+
+    @property
+    def route_a_system(self) -> CaptionSystem:
+        """経路Aの CaptionSystem インスタンス。"""
+        return self._route_a
+
+    @property
+    def route_b_system(self) -> CaptionSystem:
+        """経路Bの CaptionSystem インスタンス。"""
+        return self._route_b
+
+    @property
+    def total_estimated_cost_usd(self) -> float:
+        """両系統の CostMonitor の合算コスト（USD）を返す。
+
+        仕様書 §4: CostMonitor 自体は変更せず、呼び出し側で2インスタンス管理。
+        """
+        cost_a = (
+            self._route_a._cost_monitor.estimated_cost_usd()
+            if self._route_a._cost_monitor is not None
+            else 0.0
+        )
+        cost_b = (
+            self._route_b._cost_monitor.estimated_cost_usd()
+            if self._route_b._cost_monitor is not None
+            else 0.0
+        )
+        return cost_a + cost_b
 
 
 if __name__ == "__main__":
