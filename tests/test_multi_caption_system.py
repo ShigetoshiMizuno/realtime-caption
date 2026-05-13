@@ -209,3 +209,84 @@ class TestRouteIndependence:
         assert mcs.route_b_system._output_device_index is None
         # 各系統のインスタンスが異なること（同一オブジェクトでないこと）
         assert mcs.route_a_system is not mcs.route_b_system
+
+
+# ---------------------------------------------------------------------------
+# Phase 4: shared broadcaster + asyncio event loop テスト (Issue #38)
+# ---------------------------------------------------------------------------
+
+class TestMultiCaptionSystemPhase4:
+    """Phase 4 で追加する start() 本実装のテスト。"""
+
+    def test_multi_caption_system_uses_shared_broadcaster(self):
+        """両 route の CaptionSystem が同一 SubtitleBroadcaster インスタンスを参照すること。"""
+        config = _make_fake_config()
+        route_a = _make_route_config("a")
+        route_b = _make_route_config("b")
+
+        with patch("realtime_translator.RealtimeTranslator"):
+            mcs = MultiCaptionSystem(
+                config=config,
+                route_a=route_a,
+                route_b=route_b,
+            )
+
+        broadcaster_a = mcs.route_a_system._broadcaster
+        broadcaster_b = mcs.route_b_system._broadcaster
+
+        assert broadcaster_a is broadcaster_b, (
+            "route_a と route_b が異なる SubtitleBroadcaster を持っている"
+        )
+
+    def test_multi_caption_system_start_creates_event_loop(self):
+        """start() が asyncio イベントループを開始し、shutdown() で終了すること。
+
+        実音声デバイス不要のモックで検証。
+        start() はバックグラウンドスレッドでループを起動し、
+        shutdown() 後にそのスレッドが終了することを確認する。
+        """
+        import asyncio
+        import time
+        config = _make_fake_config()
+        route_a = _make_route_config("a")
+        route_b = _make_route_config("b")
+
+        with patch("realtime_translator.RealtimeTranslator"):
+            mcs = MultiCaptionSystem(
+                config=config,
+                route_a=route_a,
+                route_b=route_b,
+            )
+
+        # start() が内部スレッドを立てて asyncio ループを回すことを確認する。
+        # CaptionSystem.run() の WebSocket 起動・音声デバイスオープンをモックする。
+        async def _fake_run_a():
+            mcs.route_a_system._loop = asyncio.get_running_loop()
+            mcs.route_a_system._stop_event_async = asyncio.Event()
+            # shutdown() で stop_event が set されるまで待機
+            while not mcs.route_a_system._stop_event.is_set():
+                await asyncio.sleep(0.05)
+
+        async def _fake_run_b():
+            mcs.route_b_system._loop = asyncio.get_running_loop()
+            mcs.route_b_system._stop_event_async = asyncio.Event()
+            while not mcs.route_b_system._stop_event.is_set():
+                await asyncio.sleep(0.05)
+
+        with (
+            patch.object(mcs.route_a_system.__class__, "run", _fake_run_a),
+            patch.object(mcs.route_b_system.__class__, "run", _fake_run_b),
+        ):
+            mcs.start()
+            # スレッドが起動していることを確認
+            assert mcs._thread_a is not None and mcs._thread_a.is_alive(), \
+                "route_a のスレッドが起動していない"
+            assert mcs._thread_b is not None and mcs._thread_b.is_alive(), \
+                "route_b のスレッドが起動していない"
+
+            # shutdown して両スレッドが終了するか確認
+            mcs.shutdown()
+            mcs._thread_a.join(timeout=3.0)
+            mcs._thread_b.join(timeout=3.0)
+            assert not mcs._thread_a.is_alive(), "route_a スレッドが終了していない"
+            assert not mcs._thread_b.is_alive(), "route_b スレッドが終了していない"

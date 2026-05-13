@@ -160,3 +160,44 @@ def test_zoom_preset_updates_visibility():
         app._on_zoom_preset_click()
 
     mock_update_vis.assert_called_once_with("openai-realtime")
+
+
+# ---------------------------------------------------------------------------
+# Phase 4: 翻訳こんにゃくモード GUI テスト (Issue #38)
+# ---------------------------------------------------------------------------
+
+def test_konnyaku_preset_button_exists():
+    """翻訳こんにゃくモードプリセットボタンの TAG 定数が app に存在すること。
+
+    Dear PyGui の実起動は不要。TAG 定数の存在を構造レベルで確認する。
+    """
+    import app  # noqa: PLC0415
+
+    assert hasattr(app, "TAG_KONNYAKU_PRESET_BTN"), (
+        "TAG_KONNYAKU_PRESET_BTN が app に定義されていない"
+    )
+    assert isinstance(app.TAG_KONNYAKU_PRESET_BTN, str), (
+        "TAG_KONNYAKU_PRESET_BTN が文字列でない"
+    )
+
+
+def test_route_a_and_b_sections_have_level_meters():
+    """経路A・B セクションそれぞれに入力・出力レベルメータータグが存在すること。
+
+    TAG 定数の存在を構造レベルで確認する（Dear PyGui 実起動不要）。
+    """
+    import app  # noqa: PLC0415
+
+    required_tags = [
+        "TAG_LEVEL_METER_A_IN",
+        "TAG_LEVEL_METER_A_OUT",
+        "TAG_LEVEL_METER_B_IN",
+        "TAG_LEVEL_METER_B_OUT",
+    ]
+    for tag_name in required_tags:
+        assert hasattr(app, tag_name), (
+            f"{tag_name} が app に定義されていない"
+        )
+        assert isinstance(getattr(app, tag_name), str), (
+            f"{tag_name} が文字列でない"
+        )
