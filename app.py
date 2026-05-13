@@ -73,8 +73,12 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 
 import dearpygui.dearpygui as dpg
 
-from main import CaptionSystem, list_audio_devices, find_device_by_name, load_config
+from main import (
+    CaptionSystem, MultiCaptionSystem, RouteConfig,
+    list_audio_devices, find_device_by_name, load_config,
+)
 from config_utils import decode_api_key, encode_api_key
+from constants import get_language_display_names, get_language_codes
 
 # Windows コンソールの文字化け対策
 if sys.stdout.encoding != "utf-8":
@@ -94,6 +98,10 @@ _system: CaptionSystem | None = None
 _system_thread: threading.Thread | None = None
 _is_running = False
 _rpc_server: HTTPServer | None = None
+
+# 翻訳こんにゃくモード用
+_konnyaku_system: MultiCaptionSystem | None = None
+_konnyaku_running: bool = False
 
 # プリロードキャッシュ
 _preloaded_system: CaptionSystem | None = None
@@ -137,6 +145,43 @@ TAG_OUTPUT_DEVICE_COMBO = "output_device_combo"
 TAG_ZOOM_PRESET_BTN = "zoom_preset_btn"
 TAG_STATUS_COST = "status_cost"
 TAG_HOST_API_COMBO = "host_api_combo"
+
+# ---------------------------------------------------------------------------
+# 翻訳こんにゃくモード GUI タグ (Issue #38 Phase 4)
+# ---------------------------------------------------------------------------
+
+# こんにゃくモードプリセットボタン
+TAG_KONNYAKU_PRESET_BTN = "konnyaku_preset_btn"
+
+# 経路A レベルメーター（入力・出力）
+TAG_LEVEL_METER_A_IN = "level_meter_a_in"
+TAG_LEVEL_METER_A_OUT = "level_meter_a_out"
+
+# 経路B レベルメーター（入力・出力）
+TAG_LEVEL_METER_B_IN = "level_meter_b_in"
+TAG_LEVEL_METER_B_OUT = "level_meter_b_out"
+
+# 経路A 設定タグ
+TAG_ROUTE_A_DEVICE_COMBO = "route_a_device_combo"
+TAG_ROUTE_A_GAIN_MODE = "route_a_gain_mode"
+TAG_ROUTE_A_GAIN_SLIDER = "route_a_gain_slider"
+TAG_ROUTE_A_LANG_COMBO = "route_a_lang_combo"
+TAG_ROUTE_A_OUTPUT_ENABLE = "route_a_output_enable"
+TAG_ROUTE_A_OUTPUT_DEVICE_COMBO = "route_a_output_device_combo"
+TAG_ROUTE_A_OUTPUT_VOLUME = "route_a_output_volume"
+
+# 経路B 設定タグ
+TAG_ROUTE_B_DEVICE_COMBO = "route_b_device_combo"
+TAG_ROUTE_B_GAIN_MODE = "route_b_gain_mode"
+TAG_ROUTE_B_GAIN_SLIDER = "route_b_gain_slider"
+TAG_ROUTE_B_LANG_COMBO = "route_b_lang_combo"
+TAG_ROUTE_B_OUTPUT_ENABLE = "route_b_output_enable"
+TAG_ROUTE_B_OUTPUT_DEVICE_COMBO = "route_b_output_device_combo"
+TAG_ROUTE_B_OUTPUT_VOLUME = "route_b_output_volume"
+
+# こんにゃくモード コンテナ
+TAG_KONNYAKU_SECTION = "konnyaku_section"
+TAG_KONNYAKU_START_BTN = "konnyaku_start_btn"
 
 VAD_DEFAULT_SENSITIVITY = 0.4
 # 0.6 秒: 自然な息継ぎ程度の沈黙では文を切らず、文末の本格的な無音で確定する。
@@ -486,6 +531,188 @@ def _on_zoom_preset_click():
             print("[INFO] CABLE Input デバイスが見つかりませんでした。VB-CABLE をインストールしてください。")
 
     _save_settings()
+
+
+def _on_konnyaku_preset_click():
+    """翻訳こんにゃくモードプリセットボタン押下。
+
+    デフォルト設定を一括適用する:
+      経路A: 入力 = WASAPI loopback / 出力 = OFF / 翻訳先 = ja
+      経路B: 入力 = マイク / 出力 = CABLE Input / 翻訳先 = en
+    設定を適用するのみ。起動はしない。
+    """
+    # 経路A: 最初の Loopback デバイスを選択
+    if dpg.does_item_exist(TAG_ROUTE_A_DEVICE_COMBO):
+        items_a = dpg.get_item_configuration(TAG_ROUTE_A_DEVICE_COMBO).get("items", [])
+        loopback_a = next((it for it in items_a if "[Loopback]" in it), None)
+        if loopback_a:
+            dpg.set_value(TAG_ROUTE_A_DEVICE_COMBO, loopback_a)
+
+    # 経路A: 翻訳先 = ja
+    if dpg.does_item_exist(TAG_ROUTE_A_LANG_COMBO):
+        lang_names = get_language_display_names()
+        lang_codes = get_language_codes()
+        if "ja" in lang_codes:
+            ja_name = lang_names[lang_codes.index("ja")]
+            dpg.set_value(TAG_ROUTE_A_LANG_COMBO, ja_name)
+
+    # 経路A: 音声出力 = OFF
+    if dpg.does_item_exist(TAG_ROUTE_A_OUTPUT_ENABLE):
+        dpg.set_value(TAG_ROUTE_A_OUTPUT_ENABLE, False)
+
+    # 経路B: 最初のマイク（非 Loopback）デバイスを選択
+    if dpg.does_item_exist(TAG_ROUTE_B_DEVICE_COMBO):
+        items_b = dpg.get_item_configuration(TAG_ROUTE_B_DEVICE_COMBO).get("items", [])
+        mic_b = next((it for it in items_b if "[Loopback]" not in it), None)
+        if mic_b:
+            dpg.set_value(TAG_ROUTE_B_DEVICE_COMBO, mic_b)
+
+    # 経路B: 翻訳先 = en
+    if dpg.does_item_exist(TAG_ROUTE_B_LANG_COMBO):
+        lang_names = get_language_display_names()
+        lang_codes = get_language_codes()
+        if "en" in lang_codes:
+            en_name = lang_names[lang_codes.index("en")]
+            dpg.set_value(TAG_ROUTE_B_LANG_COMBO, en_name)
+
+    # 経路B: 音声出力 = ON、出力先 = CABLE Input
+    if dpg.does_item_exist(TAG_ROUTE_B_OUTPUT_ENABLE):
+        dpg.set_value(TAG_ROUTE_B_OUTPUT_ENABLE, True)
+    if dpg.does_item_exist(TAG_ROUTE_B_OUTPUT_DEVICE_COMBO):
+        items_out = dpg.get_item_configuration(TAG_ROUTE_B_OUTPUT_DEVICE_COMBO).get("items", [])
+        cable_item = next((it for it in items_out if "cable input" in it.lower()), None)
+        if cable_item:
+            dpg.set_value(TAG_ROUTE_B_OUTPUT_DEVICE_COMBO, cable_item)
+
+
+def _on_konnyaku_start_stop_click():
+    """翻訳こんにゃくモードの開始/停止ボタン。"""
+    global _konnyaku_system, _konnyaku_running
+
+    if _konnyaku_running:
+        # 停止
+        if _konnyaku_system is not None:
+            _konnyaku_system.shutdown()
+            _konnyaku_system = None
+        _konnyaku_running = False
+        if dpg.does_item_exist(TAG_KONNYAKU_START_BTN):
+            dpg.configure_item(TAG_KONNYAKU_START_BTN, label="こんにゃく開始")
+        return
+
+    # 開始: GUI から設定を読み取って MultiCaptionSystem を起動
+    # 経路A デバイス
+    route_a_device_label = (
+        dpg.get_value(TAG_ROUTE_A_DEVICE_COMBO)
+        if dpg.does_item_exist(TAG_ROUTE_A_DEVICE_COMBO) else ""
+    )
+    route_a_device = next(
+        (d for d in _devices if _device_label(d) == route_a_device_label), None
+    )
+    if route_a_device is None:
+        return
+
+    # 経路B デバイス
+    route_b_device_label = (
+        dpg.get_value(TAG_ROUTE_B_DEVICE_COMBO)
+        if dpg.does_item_exist(TAG_ROUTE_B_DEVICE_COMBO) else ""
+    )
+    route_b_device = next(
+        (d for d in _devices if _device_label(d) == route_b_device_label), None
+    )
+    if route_b_device is None:
+        return
+
+    # 経路A 言語コード
+    lang_names = get_language_display_names()
+    lang_codes = get_language_codes()
+    route_a_lang_name = (
+        dpg.get_value(TAG_ROUTE_A_LANG_COMBO)
+        if dpg.does_item_exist(TAG_ROUTE_A_LANG_COMBO) else lang_names[0]
+    )
+    route_a_lang_code = (
+        lang_codes[lang_names.index(route_a_lang_name)]
+        if route_a_lang_name in lang_names else lang_codes[0]
+    )
+
+    # 経路B 言語コード
+    route_b_lang_name = (
+        dpg.get_value(TAG_ROUTE_B_LANG_COMBO)
+        if dpg.does_item_exist(TAG_ROUTE_B_LANG_COMBO) else lang_names[-1]
+    )
+    route_b_lang_code = (
+        lang_codes[lang_names.index(route_b_lang_name)]
+        if route_b_lang_name in lang_names else lang_codes[-1]
+    )
+
+    # 経路A 音声出力
+    route_a_output_enabled = (
+        bool(dpg.get_value(TAG_ROUTE_A_OUTPUT_ENABLE))
+        if dpg.does_item_exist(TAG_ROUTE_A_OUTPUT_ENABLE) else False
+    )
+    route_a_output_index: int | None = None
+    if route_a_output_enabled and dpg.does_item_exist(TAG_ROUTE_A_OUTPUT_DEVICE_COMBO):
+        a_out_label = dpg.get_value(TAG_ROUTE_A_OUTPUT_DEVICE_COMBO)
+        if a_out_label and a_out_label != "(なし)":
+            a_out_devices = list_audio_devices(device_type="output")
+            a_out_matched = find_device_by_name(a_out_label, a_out_devices)
+            if a_out_matched:
+                route_a_output_index = a_out_matched["index"]
+
+    # 経路B 音声出力
+    route_b_output_enabled = (
+        bool(dpg.get_value(TAG_ROUTE_B_OUTPUT_ENABLE))
+        if dpg.does_item_exist(TAG_ROUTE_B_OUTPUT_ENABLE) else False
+    )
+    route_b_output_index: int | None = None
+    if route_b_output_enabled and dpg.does_item_exist(TAG_ROUTE_B_OUTPUT_DEVICE_COMBO):
+        b_out_label = dpg.get_value(TAG_ROUTE_B_OUTPUT_DEVICE_COMBO)
+        if b_out_label and b_out_label != "(なし)":
+            b_out_devices = list_audio_devices(device_type="output")
+            b_out_matched = find_device_by_name(b_out_label, b_out_devices)
+            if b_out_matched:
+                route_b_output_index = b_out_matched["index"]
+
+    # 経路A 出力音量
+    route_a_volume = float(
+        dpg.get_value(TAG_ROUTE_A_OUTPUT_VOLUME)
+        if dpg.does_item_exist(TAG_ROUTE_A_OUTPUT_VOLUME) else 1.0
+    )
+    # 経路B 出力音量
+    route_b_volume = float(
+        dpg.get_value(TAG_ROUTE_B_OUTPUT_VOLUME)
+        if dpg.does_item_exist(TAG_ROUTE_B_OUTPUT_VOLUME) else 1.0
+    )
+
+    cfg = {**_config}
+    cfg.setdefault("translation", {})["translation_model"] = "openai-realtime"
+
+    route_a_cfg = RouteConfig(
+        route_id="a",
+        input_device_info=route_a_device,
+        target_language_code=route_a_lang_code,
+        audio_output_enabled=route_a_output_enabled,
+        output_device_index=route_a_output_index,
+        output_volume=route_a_volume,
+    )
+    route_b_cfg = RouteConfig(
+        route_id="b",
+        input_device_info=route_b_device,
+        target_language_code=route_b_lang_code,
+        audio_output_enabled=route_b_output_enabled,
+        output_device_index=route_b_output_index,
+        output_volume=route_b_volume,
+    )
+
+    _konnyaku_system = MultiCaptionSystem(
+        config=cfg,
+        route_a=route_a_cfg,
+        route_b=route_b_cfg,
+    )
+    _konnyaku_system.start()
+    _konnyaku_running = True
+
+    if dpg.does_item_exist(TAG_KONNYAKU_START_BTN):
+        dpg.configure_item(TAG_KONNYAKU_START_BTN, label="こんにゃく停止")
 
 
 def _on_verbose_toggle():
@@ -1438,6 +1665,187 @@ def _build_gui():
 
         dpg.add_separator()
 
+        # --- 翻訳こんにゃくモード (Issue #38 Phase 4) ---
+        with dpg.collapsing_header(
+            label="翻訳こんにゃくモード（双方向同時翻訳）",
+            tag=TAG_KONNYAKU_SECTION,
+            default_open=False,
+        ):
+            # プリセットボタン + 開始ボタン
+            with dpg.group(horizontal=True):
+                dpg.add_button(
+                    tag=TAG_KONNYAKU_PRESET_BTN,
+                    label="こんにゃくプリセット適用",
+                    width=200,
+                    callback=_on_konnyaku_preset_click,
+                )
+                dpg.add_button(
+                    tag=TAG_KONNYAKU_START_BTN,
+                    label="こんにゃく開始",
+                    width=160,
+                    callback=_on_konnyaku_start_stop_click,
+                    enabled=bool(trans_models),
+                )
+
+            dpg.add_separator()
+
+            _lang_display_names = get_language_display_names()
+
+            # --- 経路A ---
+            dpg.add_text("【経路A】 話者の声 → 字幕翻訳")
+            with dpg.group(horizontal=True):
+                dpg.add_text("入力デバイス:")
+                dpg.add_combo(
+                    tag=TAG_ROUTE_A_DEVICE_COMBO,
+                    items=device_labels,
+                    default_value=next(
+                        (lbl for lbl in device_labels if "[Loopback]" in lbl),
+                        device_labels[0] if device_labels else "",
+                    ),
+                    width=360,
+                )
+            with dpg.group(horizontal=True):
+                dpg.add_text("入力ゲイン:")
+                dpg.add_combo(
+                    tag=TAG_ROUTE_A_GAIN_MODE,
+                    items=["off", "manual", "auto"],
+                    default_value="off",
+                    width=90,
+                )
+                dpg.add_text("  倍率:")
+                dpg.add_slider_float(
+                    tag=TAG_ROUTE_A_GAIN_SLIDER,
+                    default_value=1.0,
+                    min_value=1.0, max_value=20.0,
+                    width=160, format="%.2f",
+                )
+            with dpg.group(horizontal=True):
+                dpg.add_text("入力レベル:")
+                dpg.add_progress_bar(
+                    tag=TAG_LEVEL_METER_A_IN,
+                    default_value=0.0,
+                    width=200, overlay="0%",
+                )
+            with dpg.group(horizontal=True):
+                dpg.add_text("翻訳先言語:")
+                dpg.add_combo(
+                    tag=TAG_ROUTE_A_LANG_COMBO,
+                    items=_lang_display_names,
+                    default_value=_lang_display_names[0] if _lang_display_names else "",
+                    width=120,
+                )
+            with dpg.group(horizontal=True):
+                dpg.add_text("音声出力:")
+                dpg.add_checkbox(
+                    tag=TAG_ROUTE_A_OUTPUT_ENABLE,
+                    label="有効",
+                    default_value=False,
+                )
+            with dpg.group(horizontal=True):
+                dpg.add_text("出力デバイス:")
+                dpg.add_combo(
+                    tag=TAG_ROUTE_A_OUTPUT_DEVICE_COMBO,
+                    items=output_device_labels,
+                    default_value="(なし)",
+                    width=300,
+                )
+            with dpg.group(horizontal=True):
+                dpg.add_text("出力音量:")
+                dpg.add_slider_float(
+                    tag=TAG_ROUTE_A_OUTPUT_VOLUME,
+                    default_value=1.0,
+                    min_value=0.0, max_value=2.0,
+                    width=200, format="%.2f",
+                )
+            with dpg.group(horizontal=True):
+                dpg.add_text("出力レベル:")
+                dpg.add_progress_bar(
+                    tag=TAG_LEVEL_METER_A_OUT,
+                    default_value=0.0,
+                    width=200, overlay="0%",
+                )
+
+            dpg.add_separator()
+
+            # --- 経路B ---
+            dpg.add_text("【経路B】 相手の声 → 字幕翻訳")
+            with dpg.group(horizontal=True):
+                dpg.add_text("入力デバイス:")
+                dpg.add_combo(
+                    tag=TAG_ROUTE_B_DEVICE_COMBO,
+                    items=device_labels,
+                    default_value=next(
+                        (lbl for lbl in device_labels if "[Loopback]" not in lbl),
+                        device_labels[0] if device_labels else "",
+                    ),
+                    width=360,
+                )
+            with dpg.group(horizontal=True):
+                dpg.add_text("入力ゲイン:")
+                dpg.add_combo(
+                    tag=TAG_ROUTE_B_GAIN_MODE,
+                    items=["off", "manual", "auto"],
+                    default_value="off",
+                    width=90,
+                )
+                dpg.add_text("  倍率:")
+                dpg.add_slider_float(
+                    tag=TAG_ROUTE_B_GAIN_SLIDER,
+                    default_value=1.0,
+                    min_value=1.0, max_value=20.0,
+                    width=160, format="%.2f",
+                )
+            with dpg.group(horizontal=True):
+                dpg.add_text("入力レベル:")
+                dpg.add_progress_bar(
+                    tag=TAG_LEVEL_METER_B_IN,
+                    default_value=0.0,
+                    width=200, overlay="0%",
+                )
+            with dpg.group(horizontal=True):
+                dpg.add_text("翻訳先言語:")
+                dpg.add_combo(
+                    tag=TAG_ROUTE_B_LANG_COMBO,
+                    items=_lang_display_names,
+                    default_value=_lang_display_names[-1] if _lang_display_names else "",
+                    width=120,
+                )
+            with dpg.group(horizontal=True):
+                dpg.add_text("音声出力:")
+                dpg.add_checkbox(
+                    tag=TAG_ROUTE_B_OUTPUT_ENABLE,
+                    label="有効",
+                    default_value=True,
+                )
+            with dpg.group(horizontal=True):
+                dpg.add_text("出力デバイス:")
+                dpg.add_combo(
+                    tag=TAG_ROUTE_B_OUTPUT_DEVICE_COMBO,
+                    items=output_device_labels,
+                    default_value=next(
+                        (lbl for lbl in output_device_labels if "cable input" in lbl.lower()),
+                        "(なし)",
+                    ),
+                    width=300,
+                )
+            with dpg.group(horizontal=True):
+                dpg.add_text("出力音量:")
+                dpg.add_slider_float(
+                    tag=TAG_ROUTE_B_OUTPUT_VOLUME,
+                    default_value=1.0,
+                    min_value=0.0, max_value=2.0,
+                    width=200, format="%.2f",
+                )
+            with dpg.group(horizontal=True):
+                dpg.add_text("出力レベル:")
+                dpg.add_progress_bar(
+                    tag=TAG_LEVEL_METER_B_OUT,
+                    default_value=0.0,
+                    width=200, overlay="0%",
+                )
+
+        dpg.add_separator()
+
         # --- ログエリア（ウィンドウ高さに追従） ---
         # height=-60 はステータスバー + プログレスバー + separator 分の余白
         with dpg.child_window(tag=TAG_LOG_SCROLL, height=-60, border=True,
@@ -1583,6 +1991,8 @@ def main():
     _save_settings()
     if _system is not None:
         _system.shutdown()
+    if _konnyaku_system is not None:
+        _konnyaku_system.shutdown()
 
     _release_subst(_subst_letter)
     dpg.destroy_context()
