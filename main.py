@@ -1140,6 +1140,7 @@ class MultiCaptionSystem:
         on_result_a: Callable[[str, str], None] | None = None,
         on_result_b: Callable[[str, str], None] | None = None,
         on_ready: Callable[[], None] | None = None,
+        on_thread_error: Callable[[str, Exception, str], None] | None = None,
     ) -> None:
         # route_a: shared_broadcaster=None → _owns_broadcaster=True（WS サーバーを自前で起動）
         # route_b: shared_broadcaster=route_a._broadcaster → _owns_broadcaster=False（WS サーバースキップ）
@@ -1175,6 +1176,8 @@ class MultiCaptionSystem:
         # start() で生成するスレッドへの参照（shutdown/join で利用）
         self._thread_a: threading.Thread | None = None
         self._thread_b: threading.Thread | None = None
+        # スレッド例外通知コールバック（route_id, exc, traceback_str）
+        self._on_thread_error = on_thread_error
 
     @staticmethod
     def _build_route_config_dict(base_config: dict, route: RouteConfig) -> dict:
@@ -1195,7 +1198,18 @@ class MultiCaptionSystem:
         route_b: WebSocket サーバーをスキップ（shared_broadcaster を注入済み）
         """
         def _run_route(system: CaptionSystem):
-            asyncio.run(system.run())
+            try:
+                asyncio.run(system.run())
+            except Exception as e:
+                import traceback
+                tb = traceback.format_exc()
+                print(f"[ERROR] route {system._route_id} thread crashed: {e}", flush=True)
+                print(tb, flush=True)
+                if self._on_thread_error is not None:
+                    try:
+                        self._on_thread_error(system._route_id, e, tb)
+                    except Exception:
+                        pass
 
         self._thread_a = threading.Thread(
             target=_run_route, args=(self._route_a,), daemon=True, name="MultiCapSys-route-a"
