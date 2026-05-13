@@ -453,7 +453,13 @@ class CaptionSystem:
             )
 
         self._route_id: str = route_id
-        self._broadcaster = shared_broadcaster if shared_broadcaster is not None else SubtitleBroadcaster()
+        # shared_broadcaster が注入された場合は WebSocket サーバーを自前で起動しない
+        if shared_broadcaster is not None:
+            self._broadcaster = shared_broadcaster
+            self._owns_broadcaster = False
+        else:
+            self._broadcaster = SubtitleBroadcaster()
+            self._owns_broadcaster = True
         self._loop: asyncio.AbstractEventLoop | None = None
         self._recorder: AudioToTextRecorder | None = None
         self._stop_event = threading.Event()
@@ -1003,11 +1009,17 @@ class CaptionSystem:
         recorder_thread = threading.Thread(target=self._start_recorder, daemon=True)
         recorder_thread.start()
 
-        print(f"[INFO] WebSocket サーバーを起動中: ws://{ws_host}:{ws_port}")
         print(f"[INFO] ログファイル: {self._log_path}")
 
         try:
-            async with websockets.serve(self._broadcaster.register, ws_host, ws_port):
+            if self._owns_broadcaster:
+                # WebSocket サーバーを自前で起動（単体起動 / MultiCaptionSystem の route_a）
+                print(f"[INFO] WebSocket サーバーを起動中: ws://{ws_host}:{ws_port}")
+                async with websockets.serve(self._broadcaster.register, ws_host, ws_port):
+                    await self._stop_event_async.wait()
+            else:
+                # shared_broadcaster を持つ系統はサーバー起動をスキップし、stop_event を待つだけ
+                # WebSocket サーバーは broadcaster owner（route_a）が管理する
                 await self._stop_event_async.wait()
         except asyncio.CancelledError:
             # asyncio 中断時のみ shutdown 必要（Stop ボタン経由の正常終了は呼び出し側が責務）
@@ -1102,6 +1114,13 @@ class MultiCaptionSystem:
     1 本の SubtitleBroadcaster を共有して overlay.html へ配信する。
 
     仕様: Issue #38 §1 (翻訳こんにゃくモード Phase 2)
+
+    スレッド設計:
+      - route_a: _thread_a がスレッドを立て asyncio.run(route_a.run()) を実行
+        → route_a._owns_broadcaster=True なので WebSocket サーバーも起動
+      - route_b: _thread_b がスレッドを立て asyncio.run(route_b.run()) を実行
+        → route_b._owns_broadcaster=False なので WS サーバー起動をスキップ
+      - 2スレッドは独立した asyncio イベントループを持つ（ループ競合なし）
     """
 
     def __init__(
@@ -1113,10 +1132,10 @@ class MultiCaptionSystem:
         on_result_b: Callable[[str, str], None] | None = None,
         on_ready: Callable[[], None] | None = None,
     ) -> None:
-        # 2系統で共有するブロードキャスター（overlay.html への WebSocket は1本）
-        shared_broadcaster = SubtitleBroadcaster()
-
-        # route_a: config の openai_realtime.target_language_code を RouteConfig で上書き
+        # route_a: shared_broadcaster=None → _owns_broadcaster=True（WS サーバーを自前で起動）
+        # route_b: shared_broadcaster=route_a._broadcaster → _owns_broadcaster=False（WS サーバースキップ）
+        # これにより overlay.html への WebSocket は1本（route_a が管理）で、
+        # 両系統が同一 SubtitleBroadcaster インスタンスを共有する。
         config_a = self._build_route_config_dict(config, route_a)
         self._route_a = CaptionSystem(
             config=config_a,
@@ -1126,10 +1145,10 @@ class MultiCaptionSystem:
             on_ready=on_ready,
             output_device_index=route_a.output_device_index if route_a.audio_output_enabled else None,
             route_id=route_a.route_id,
-            shared_broadcaster=shared_broadcaster,
+            shared_broadcaster=None,  # route_a が broadcaster を所有
         )
 
-        # route_b: 別インスタンス（独立した CostMonitor / RealtimeTranslator を持つ）
+        # route_b: route_a の broadcaster を共有（WS サーバー起動をスキップ）
         config_b = self._build_route_config_dict(config, route_b)
         self._route_b = CaptionSystem(
             config=config_b,
@@ -1139,8 +1158,12 @@ class MultiCaptionSystem:
             on_ready=on_ready,
             output_device_index=route_b.output_device_index if route_b.audio_output_enabled else None,
             route_id=route_b.route_id,
-            shared_broadcaster=shared_broadcaster,
+            shared_broadcaster=self._route_a._broadcaster,  # route_a の broadcaster を共有
         )
+
+        # start() で生成するスレッドへの参照（shutdown/join で利用）
+        self._thread_a: threading.Thread | None = None
+        self._thread_b: threading.Thread | None = None
 
     @staticmethod
     def _build_route_config_dict(base_config: dict, route: RouteConfig) -> dict:
@@ -1154,9 +1177,23 @@ class MultiCaptionSystem:
         return cfg
 
     def start(self) -> None:
-        """両系統を順次起動する。"""
-        self._route_a.start()
-        self._route_b.start()
+        """両系統をバックグラウンドスレッドで並列起動する。
+
+        各スレッドは独立した asyncio イベントループを持つ（R1 asyncio ループ競合を回避）。
+        route_a: WebSocket サーバーを起動（_owns_broadcaster=True）
+        route_b: WebSocket サーバーをスキップ（shared_broadcaster を注入済み）
+        """
+        def _run_route(system: CaptionSystem):
+            asyncio.run(system.run())
+
+        self._thread_a = threading.Thread(
+            target=_run_route, args=(self._route_a,), daemon=True, name="MultiCapSys-route-a"
+        )
+        self._thread_b = threading.Thread(
+            target=_run_route, args=(self._route_b,), daemon=True, name="MultiCapSys-route-b"
+        )
+        self._thread_a.start()
+        self._thread_b.start()
 
     def shutdown(self) -> None:
         """両系統を停止する。"""

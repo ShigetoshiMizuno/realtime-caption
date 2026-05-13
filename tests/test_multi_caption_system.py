@@ -260,14 +260,15 @@ class TestMultiCaptionSystemPhase4:
 
         # start() が内部スレッドを立てて asyncio ループを回すことを確認する。
         # CaptionSystem.run() の WebSocket 起動・音声デバイスオープンをモックする。
-        async def _fake_run_a():
+        # patch.object でクラスメソッドを置換する際は self を受け取る必要がある。
+        async def _fake_run_a(self_ignored):
             mcs.route_a_system._loop = asyncio.get_running_loop()
             mcs.route_a_system._stop_event_async = asyncio.Event()
             # shutdown() で stop_event が set されるまで待機
             while not mcs.route_a_system._stop_event.is_set():
                 await asyncio.sleep(0.05)
 
-        async def _fake_run_b():
+        async def _fake_run_b(self_ignored):
             mcs.route_b_system._loop = asyncio.get_running_loop()
             mcs.route_b_system._stop_event_async = asyncio.Event()
             while not mcs.route_b_system._stop_event.is_set():
