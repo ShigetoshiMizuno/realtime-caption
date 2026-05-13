@@ -599,6 +599,11 @@ def _on_konnyaku_start_stop_click():
             dpg.configure_item(TAG_KONNYAKU_START_BTN, label="こんにゃく開始")
         return
 
+    # ポート競合チェック: 既存の単独モードが稼働中なら起動を拒否
+    if _system is not None:
+        dpg.set_value(TAG_STATUS_STATE, "既存モード停止後に翻訳こんにゃくモードを開始してください")
+        return
+
     # 開始: GUI から設定を読み取って MultiCaptionSystem を起動
     # 経路A デバイス
     route_a_device_label = (
@@ -1934,6 +1939,50 @@ def _update_level_meter():
         dpg.bind_item_theme(TAG_LEVEL_METER, theme)
 
 
+def _update_konnyaku_level_meters():
+    """翻訳こんにゃくモードの入力・出力レベルメーターを更新する。
+
+    _konnyaku_system が None のときは何もしない（単独モード稼働中 / 未起動 時に安全）。
+    入力レベル: CaptionSystem.audio_peak_now（capture スレッドが毎チャンク更新）
+    出力レベル: AudioOutputStream.audio_peak_now（write 時に更新）
+    """
+    if _konnyaku_system is None:
+        return
+
+    route_a = _konnyaku_system.route_a_system
+    route_b = _konnyaku_system.route_b_system
+
+    # 経路A 入力レベル
+    peak_a_in = route_a.audio_peak_now
+    level_a_in = min(1.0, peak_a_in / 32767.0)
+    if dpg.does_item_exist(TAG_LEVEL_METER_A_IN):
+        dpg.set_value(TAG_LEVEL_METER_A_IN, level_a_in)
+        dpg.configure_item(TAG_LEVEL_METER_A_IN, overlay=f"{int(level_a_in * 100)}%")
+
+    # 経路B 入力レベル
+    peak_b_in = route_b.audio_peak_now
+    level_b_in = min(1.0, peak_b_in / 32767.0)
+    if dpg.does_item_exist(TAG_LEVEL_METER_B_IN):
+        dpg.set_value(TAG_LEVEL_METER_B_IN, level_b_in)
+        dpg.configure_item(TAG_LEVEL_METER_B_IN, overlay=f"{int(level_b_in * 100)}%")
+
+    # 経路A 出力レベル（AudioOutputStream が起動していれば peak 取得）
+    stream_a = getattr(route_a, "_audio_stream", None)
+    peak_a_out = stream_a.audio_peak_now if stream_a is not None else 0
+    level_a_out = min(1.0, peak_a_out / 32767.0)
+    if dpg.does_item_exist(TAG_LEVEL_METER_A_OUT):
+        dpg.set_value(TAG_LEVEL_METER_A_OUT, level_a_out)
+        dpg.configure_item(TAG_LEVEL_METER_A_OUT, overlay=f"{int(level_a_out * 100)}%")
+
+    # 経路B 出力レベル
+    stream_b = getattr(route_b, "_audio_stream", None)
+    peak_b_out = stream_b.audio_peak_now if stream_b is not None else 0
+    level_b_out = min(1.0, peak_b_out / 32767.0)
+    if dpg.does_item_exist(TAG_LEVEL_METER_B_OUT):
+        dpg.set_value(TAG_LEVEL_METER_B_OUT, level_b_out)
+        dpg.configure_item(TAG_LEVEL_METER_B_OUT, overlay=f"{int(level_b_out * 100)}%")
+
+
 # ---------------------------------------------------------------------------
 # メインループ
 # ---------------------------------------------------------------------------
@@ -1970,6 +2019,7 @@ def main():
         # レベルメーター: 毎 2 フレーム（~30Hz）で更新
         if frame_count % 2 == 0:
             _update_level_meter()
+            _update_konnyaku_level_meters()
 
         # 1秒ごと（約60fps想定で60フレームごと）に WS クライアント数・コストを更新
         frame_count += 1
