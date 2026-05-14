@@ -485,6 +485,8 @@ class CaptionSystem:
         # AGC の内部状態（capture スレッド内のみ使用、共有なし）
         self._agc_gain: float = 1.0
         self._agc_envelope: float = 0.0  # 直近の peak 追従値（減衰付き）
+        # _capture_thread_body が開いた PyAudio ストリーム（shutdown から stop_stream() で解除）
+        self._capture_stream = None
         # Verbose ログ（STT 結果・翻訳リクエスト・成功失敗を時系列で別ファイルに残す）
         self.verbose: bool = False
         self._verbose_log_path: Path | None = None
@@ -543,6 +545,15 @@ class CaptionSystem:
         if self._stop_event.is_set():
             return
         self._stop_event.set()
+        # capture stream を即座に停止して read() のブロックを解除する。
+        # pyaudio.Stream.read() はブロッキング呼び出しのため stop_event だけでは抜けられない。
+        # stop_stream() が呼ばれると read() が OSError を投げ、capture loop が脱出できる。
+        cs = getattr(self, "_capture_stream", None)
+        if cs is not None:
+            try:
+                cs.stop_stream()
+            except Exception as e:
+                print(f"[WARN] capture stream stop_stream failed: {e}", flush=True)
         # capture スレッドを先に停止させて、feed_audio が止まってから recorder.stop() を呼ぶ
         cap = getattr(self, "_capture_thread", None)
         if cap is not None and cap.is_alive():
@@ -810,6 +821,9 @@ class CaptionSystem:
                 pa.terminate()
             return
 
+        # shutdown() から stop_stream() を呼べるようにインスタンス変数に保存する
+        self._capture_stream = stream
+
         print(f"[INFO] ループバックキャプチャ開始: {src_rate}Hz, {channels}ch -> {target_rate}Hz mono", flush=True)
 
         # デバッグ用: 1秒ごとに音量レベルを出力
@@ -909,6 +923,8 @@ class CaptionSystem:
         except Exception as e:
             print(f"[ERROR] ループバックキャプチャ中にエラーが発生しました: {e}")
         finally:
+            # インスタンス変数を先に None に戻す（shutdown の二重 stop_stream を防ぐ）
+            self._capture_stream = None
             try:
                 stream.stop_stream()
             except Exception:
