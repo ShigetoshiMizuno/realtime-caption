@@ -762,3 +762,53 @@ class TestOptionalRouteInstantiation:
                     route_b=None,
                 )
         assert mock_pa_cls.call_count == 1
+
+
+# ---------------------------------------------------------------------------
+# Issue #46: CaptionSystem.output_volume setter テスト
+# ---------------------------------------------------------------------------
+
+class TestCaptionSystemOutputVolumeSetter:
+    """CaptionSystem.output_volume setter が動的に AudioOutputStream に反映されること。"""
+
+    def test_output_volume_property_exists(self):
+        """CaptionSystem に output_volume プロパティが存在すること。"""
+        cs = _make_minimal_caption_system()
+        cs._output_volume = 1.0
+        cs._audio_stream = None
+        assert hasattr(cs, "output_volume"), (
+            "CaptionSystem に output_volume プロパティが存在しない"
+        )
+
+    def test_output_volume_setter_updates_internal_value(self):
+        """output_volume setter が _output_volume を更新すること。"""
+        cs = _make_minimal_caption_system()
+        cs._output_volume = 1.0
+        cs._audio_stream = None
+        cs.output_volume = 0.7
+        assert cs._output_volume == 0.7, (
+            f"output_volume setter 後 _output_volume が 0.7 のはず、実際: {cs._output_volume}"
+        )
+
+    def test_output_volume_setter_updates_audio_stream(self):
+        """output_volume setter が動作中の _audio_stream.set_volume() を呼ぶこと。"""
+        cs = _make_minimal_caption_system()
+        cs._output_volume = 1.0
+        mock_stream = MagicMock()
+        cs._audio_stream = mock_stream
+
+        cs.output_volume = 0.5
+
+        mock_stream.set_volume.assert_called_once_with(0.5), (
+            "output_volume setter が _audio_stream.set_volume() を呼んでいない"
+        )
+
+    def test_output_volume_setter_ignores_none_audio_stream(self):
+        """_audio_stream が None のとき output_volume setter が例外を出さないこと。"""
+        cs = _make_minimal_caption_system()
+        cs._output_volume = 1.0
+        cs._audio_stream = None
+
+        # 例外が出なければ OK
+        cs.output_volume = 0.3
+        assert cs._output_volume == 0.3
