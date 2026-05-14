@@ -625,6 +625,113 @@ class TestSliderCallbacks:
         )
 
 
+# ---------------------------------------------------------------------------
+# Issue #48: _on_realtime_error_handler が TAG_STATUS_STATE を更新すること
+# ---------------------------------------------------------------------------
+
+class TestOnRealtimeErrorHandler:
+    """_on_realtime_error_handler が GUI ステータスバーを更新すること。"""
+
+    def test_on_realtime_error_handler_updates_status_state(self):
+        """_on_realtime_error_handler が TAG_STATUS_STATE を更新すること。"""
+        set_value_calls: list[tuple] = []
+        mock_dpg = _make_dpg_mock()
+        mock_dpg.set_value.side_effect = lambda tag, val: set_value_calls.append((tag, val))
+
+        with patch.object(app, "dpg", mock_dpg):
+            app._on_realtime_error_handler("a", "quota", "⚠️ OpenAI クォータ超過: test")
+
+        status_updates = [
+            (tag, val) for tag, val in set_value_calls
+            if tag == app.TAG_STATUS_STATE
+        ]
+        assert len(status_updates) >= 1, (
+            f"TAG_STATUS_STATE への set_value が呼ばれなかった: {set_value_calls}"
+        )
+        # display_text が含まれていること
+        assert "クォータ" in status_updates[0][1], (
+            f"ステータスバーに クォータ が含まれていない: {status_updates[0][1]!r}"
+        )
+
+    def test_on_realtime_error_handler_includes_route_label(self):
+        """_on_realtime_error_handler がステータスに [系統1] / [系統2] ラベルを含めること。"""
+        set_value_calls_a: list[tuple] = []
+        set_value_calls_b: list[tuple] = []
+        mock_dpg = _make_dpg_mock()
+
+        mock_dpg.set_value.side_effect = lambda tag, val: set_value_calls_a.append((tag, val))
+        with patch.object(app, "dpg", mock_dpg):
+            app._on_realtime_error_handler("a", "quota", "⚠️ test error")
+
+        mock_dpg2 = _make_dpg_mock()
+        mock_dpg2.set_value.side_effect = lambda tag, val: set_value_calls_b.append((tag, val))
+        with patch.object(app, "dpg", mock_dpg2):
+            app._on_realtime_error_handler("b", "auth", "⚠️ test auth error")
+
+        a_updates = [v for t, v in set_value_calls_a if t == app.TAG_STATUS_STATE]
+        b_updates = [v for t, v in set_value_calls_b if t == app.TAG_STATUS_STATE]
+
+        assert a_updates and "[系統1]" in a_updates[0], (
+            f"route_id='a' のとき [系統1] が含まれない: {a_updates}"
+        )
+        assert b_updates and "[系統2]" in b_updates[0], (
+            f"route_id='b' のとき [系統2] が含まれない: {b_updates}"
+        )
+
+    def test_on_realtime_error_handler_no_item_does_not_raise(self):
+        """TAG_STATUS_STATE が存在しなくても例外を投げないこと。"""
+        mock_dpg = _make_dpg_mock()
+        mock_dpg.does_item_exist.return_value = False  # 存在しない
+
+        # 例外が出なければ OK
+        with patch.object(app, "dpg", mock_dpg):
+            app._on_realtime_error_handler("a", "quota", "⚠️ OpenAI クォータ超過")
+
+    def test_on_realtime_error_handler_set_value_exception_does_not_raise(self):
+        """dpg.set_value が例外を投げても _on_realtime_error_handler が安全に完了すること。"""
+        mock_dpg = _make_dpg_mock()
+        mock_dpg.set_value.side_effect = RuntimeError("dpg error")
+
+        # 例外が伝播しないこと
+        with patch.object(app, "dpg", mock_dpg):
+            app._on_realtime_error_handler("a", "other", "⚠️ unknown error")
+
+    def test_on_realtime_error_passed_to_multi_caption_system(self):
+        """_on_konnyaku_start_stop_click が MultiCaptionSystem に on_realtime_error を渡すこと。"""
+        fake_devices = _fake_devices()
+        route_a_label = _device_label_for(fake_devices[0])
+        route_b_label = _device_label_for(fake_devices[1])
+        widget_values = _make_widget_values(route_a_label, route_b_label)
+        mock_dpg = _make_dpg_mock(widget_values)
+        mock_instance = MagicMock()
+        captured = {}
+
+        def capture_mcs(**kwargs):
+            captured.update(kwargs)
+            return mock_instance
+
+        with (
+            patch.object(app, "dpg", mock_dpg),
+            patch.object(app, "_devices", fake_devices),
+            patch.object(app, "_config", _fake_config()),
+            patch.object(app, "_system", None),
+            patch.object(app, "_konnyaku_system", None),
+            patch.object(app, "_konnyaku_running", False),
+            patch.object(app, "MultiCaptionSystem", side_effect=capture_mcs),
+        ):
+            app._on_konnyaku_start_stop_click()
+
+        assert "on_realtime_error" in captured, (
+            "MultiCaptionSystem に on_realtime_error が渡されていない"
+        )
+        assert captured["on_realtime_error"] is not None, (
+            "on_realtime_error が None で渡されている"
+        )
+        assert callable(captured["on_realtime_error"]), (
+            "on_realtime_error が callable でない"
+        )
+
+
 class TestSliderCallbackFunctions:
     """スライダー callback 関数が _konnyaku_system に正しく委譲すること。"""
 
