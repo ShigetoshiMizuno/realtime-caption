@@ -512,3 +512,163 @@ class TestAudioOutputStreamSampleRateFallback:
         assert written_data[0] == original, (
             "レート一致のとき、データはそのまま渡されるはず（リサンプリングなし）"
         )
+
+
+@pytest.mark.skipif(not _MODULE_AVAILABLE, reason="audio_output モジュール未実装")
+class TestAudioOutputStreamStereoDetection:
+    """Issue #41: デバイスが stereo のとき自動的に 2ch でオープンする機能のテスト。"""
+
+    def test_start_auto_detects_stereo_device_and_opens_stereo(self):
+        """device の maxOutputChannels >= 2 のとき、stream は channels=2 でオープンされること。"""
+        mock_pa = MagicMock()
+        mock_pa.get_device_info_by_index.return_value = {
+            "maxOutputChannels": 2,
+            "defaultSampleRate": 48000.0,
+            "name": "CABLE Input (VB-Audio Virtual Cable)",
+        }
+        mock_pa.open.return_value = MagicMock()
+
+        stream = AudioOutputStream(pyaudio_instance=mock_pa, device_index=21)
+        stream.start()
+
+        # pa.open の kwargs を取り出して channels=2 を検証
+        call_kwargs = mock_pa.open.call_args[1]
+        assert call_kwargs["channels"] == 2, (
+            f"stereo デバイスでは channels=2 でオープンされるべき、実際: {call_kwargs['channels']}"
+        )
+        assert stream._output_channels == 2, (
+            f"_output_channels は 2 のはず、実際: {stream._output_channels}"
+        )
+        stream.stop()
+
+    def test_start_opens_mono_when_device_is_mono(self):
+        """device の maxOutputChannels == 1 のとき、stream は channels=1 でオープンされること。"""
+        mock_pa = MagicMock()
+        mock_pa.get_device_info_by_index.return_value = {
+            "maxOutputChannels": 1,
+            "defaultSampleRate": 48000.0,
+            "name": "Mono Output Device",
+        }
+        mock_pa.open.return_value = MagicMock()
+
+        stream = AudioOutputStream(pyaudio_instance=mock_pa, device_index=5)
+        stream.start()
+
+        call_kwargs = mock_pa.open.call_args[1]
+        assert call_kwargs["channels"] == 1, (
+            f"mono デバイスでは channels=1 でオープンされるべき、実際: {call_kwargs['channels']}"
+        )
+        assert stream._output_channels == 1, (
+            f"_output_channels は 1 のはず、実際: {stream._output_channels}"
+        )
+        stream.stop()
+
+    def test_input_channels_default_is_mono(self):
+        """_input_channels のデフォルトは 1 (mono) であること。"""
+        mock_pa = MagicMock()
+        mock_pa.open.return_value = MagicMock()
+
+        stream = AudioOutputStream(pyaudio_instance=mock_pa)
+        assert stream._input_channels == 1, (
+            f"_input_channels のデフォルトは 1 (mono) のはず、実際: {stream._input_channels}"
+        )
+
+    def test_drain_loop_converts_mono_to_stereo_when_device_is_stereo(self):
+        """mono 入力 + stereo 出力のとき、_drain_loop が PCM を mono→stereo 変換すること。
+
+        PCM [s1, s2] (mono, int16×2) → 変換後 [s1, s1, s2, s2] (stereo, int16×4 = 8 bytes)
+        """
+        import numpy as np
+
+        mock_pa = MagicMock()
+        mock_stream_obj = MagicMock()
+        written_data = []
+        mock_stream_obj.write.side_effect = lambda d: written_data.append(d)
+
+        # stereo デバイス: 1回目(24000Hz) 失敗、2回目(48000Hz) 成功
+        mock_pa.open.side_effect = [
+            Exception("[Errno -9997] Invalid sample rate"),
+            mock_stream_obj,
+        ]
+        mock_pa.get_device_info_by_index.return_value = {
+            "maxOutputChannels": 2,
+            "defaultSampleRate": 48000.0,
+            "name": "CABLE Input (VB-Audio Virtual Cable)",
+        }
+
+        stream = AudioOutputStream(
+            pyaudio_instance=mock_pa,
+            device_index=21,
+            sample_rate=24000,
+            channels=1,  # mono 入力（OpenAI Realtime API）
+        )
+        stream.start()
+        assert stream._output_channels == 2, "テスト前提: stereo デバイスなので _output_channels=2"
+        assert stream._input_channels == 1, "テスト前提: mono 入力なので _input_channels=1"
+
+        # mono PCM: [256, 512] (int16, 2サンプル, 4bytes)
+        pcm_mono = np.array([256, 512], dtype=np.int16).tobytes()
+        stream.write(pcm_mono)
+
+        deadline = time.time() + 3
+        while not written_data and time.time() < deadline:
+            time.sleep(0.05)
+
+        stream.stop()
+
+        assert written_data, "変換後のデータがストリームに届いていない"
+
+        out_bytes = written_data[0]
+        out_samples = np.frombuffer(out_bytes, dtype=np.int16)
+
+        # リサンプリング (24000→48000, 2倍) かつ mono→stereo (各サンプルを複製)
+        # 入力 2 サンプル → リサンプリング後 4 サンプル → stereo 変換後 8 サンプル
+        assert len(out_samples) == 8, (
+            f"mono 2サンプル → 48kHzリサンプリング後4サンプル → stereo後8サンプルのはず、実際: {len(out_samples)}"
+        )
+
+        # stereo 変換済みのため、隣り合うサンプル(L,R)が同値のはず
+        for i in range(0, len(out_samples), 2):
+            assert out_samples[i] == out_samples[i + 1], (
+                f"stereo 変換後: L[{i}]={out_samples[i]} と R[{i+1}]={out_samples[i+1]} が一致するはず"
+            )
+
+    def test_drain_loop_no_stereo_conversion_when_both_mono(self):
+        """mono 入力 + mono 出力のとき、stereo 変換が行われないこと。"""
+        import numpy as np
+
+        mock_pa = MagicMock()
+        mock_stream_obj = MagicMock()
+        written_data = []
+        mock_stream_obj.write.side_effect = lambda d: written_data.append(d)
+        mock_pa.open.return_value = mock_stream_obj
+        mock_pa.get_device_info_by_index.return_value = {
+            "maxOutputChannels": 1,
+            "defaultSampleRate": 24000.0,
+            "name": "Mono Device",
+        }
+
+        stream = AudioOutputStream(
+            pyaudio_instance=mock_pa,
+            device_index=0,
+            sample_rate=24000,
+            channels=1,
+        )
+        stream.start()
+        assert stream._output_channels == 1, "テスト前提: mono デバイス"
+
+        pcm_mono = np.array([1000, 2000, 3000, 4000], dtype=np.int16).tobytes()
+        stream.write(pcm_mono)
+
+        deadline = time.time() + 3
+        while not written_data and time.time() < deadline:
+            time.sleep(0.05)
+
+        stream.stop()
+
+        assert written_data, "データがストリームに届いていない"
+        # mono のまま届くはず: サンプル数は変わらない
+        out_samples = np.frombuffer(written_data[0], dtype=np.int16)
+        assert len(out_samples) == 4, (
+            f"mono→mono 変換なしで 4 サンプルのはず、実際: {len(out_samples)}"
+        )
