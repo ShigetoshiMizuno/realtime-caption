@@ -541,6 +541,10 @@ class CaptionSystem:
         self._update_audio_stats(manual_gain=value)
 
     def shutdown(self):
+        import time as _time
+        _t0 = _time.monotonic()
+        route_id = getattr(self, "_route_id", "?")
+
         # idempotent ガード: 二重 shutdown を防止（WinError 6 対策）
         if self._stop_event.is_set():
             return
@@ -550,45 +554,86 @@ class CaptionSystem:
         # stop_stream() が呼ばれると read() が OSError を投げ、capture loop が脱出できる。
         cs = getattr(self, "_capture_stream", None)
         if cs is not None:
+            _t1 = _time.monotonic()
             try:
                 cs.stop_stream()
             except Exception as e:
                 print(f"[WARN] capture stream stop_stream failed: {e}", flush=True)
+            print(
+                f"[TIMING] CaptionSystem(route_id={route_id}).stop_stream():"
+                f" {_time.monotonic() - _t1:.3f}s",
+                flush=True,
+            )
         # capture スレッドを先に停止させて、feed_audio が止まってから recorder.stop() を呼ぶ
         cap = getattr(self, "_capture_thread", None)
         if cap is not None and cap.is_alive():
+            _t1 = _time.monotonic()
             cap.join(timeout=5.0)
+            print(
+                f"[TIMING] CaptionSystem(route_id={route_id})._capture_thread.join():"
+                f" {_time.monotonic() - _t1:.3f}s",
+                flush=True,
+            )
             if cap.is_alive():
                 print(
-                    f"[WARN] capture thread (route_id={getattr(self, '_route_id', '?')})"
+                    f"[WARN] capture thread (route_id={route_id})"
                     f" did not exit in 5 seconds",
                     flush=True,
                 )
         if self._recorder:
+            _t1 = _time.monotonic()
             try:
                 self._recorder.stop()
             except Exception:
                 pass
+            print(
+                f"[TIMING] CaptionSystem(route_id={route_id})._recorder.stop():"
+                f" {_time.monotonic() - _t1:.3f}s",
+                flush=True,
+            )
         if self._loop and self._stop_event_async:
             self._loop.call_soon_threadsafe(self._stop_event_async.set)
         # Realtime モードの WebSocket 接続を停止
         if getattr(self, "_realtime_translator", None) is not None:
+            _t1 = _time.monotonic()
             try:
                 self._realtime_translator.stop()
             except Exception:
                 pass
+            print(
+                f"[TIMING] CaptionSystem(route_id={route_id})._realtime_translator.stop():"
+                f" {_time.monotonic() - _t1:.3f}s",
+                flush=True,
+            )
         # 音声出力ストリームを停止
         if getattr(self, "_audio_stream", None) is not None:
+            _t1 = _time.monotonic()
             try:
                 self._audio_stream.stop()
             except Exception:
                 pass
+            print(
+                f"[TIMING] CaptionSystem(route_id={route_id})._audio_stream.stop():"
+                f" {_time.monotonic() - _t1:.3f}s",
+                flush=True,
+            )
         # コストモニターを停止
         if getattr(self, "_cost_monitor", None) is not None:
+            _t1 = _time.monotonic()
             try:
                 self._cost_monitor.stop()
             except Exception:
                 pass
+            print(
+                f"[TIMING] CaptionSystem(route_id={route_id})._cost_monitor.stop():"
+                f" {_time.monotonic() - _t1:.3f}s",
+                flush=True,
+            )
+        print(
+            f"[TIMING] CaptionSystem(route_id={route_id}).shutdown() TOTAL:"
+            f" {_time.monotonic() - _t0:.3f}s",
+            flush=True,
+        )
         # subst ドライブの解除はアプリ終了時のみ（app.py の main() / main.py の main() で実施）。
 
     def _ensure_verbose_log_path(self) -> Path:
@@ -1288,22 +1333,34 @@ class MultiCaptionSystem:
           asyncio.run() を実行している _thread_a / _thread_b が終了するまで join してから
           共有 PyAudio を terminate することでクラッシュを防ぐ。
         """
+        import time as _time
+        _t0 = _time.monotonic()
+
         # 1. 各 CaptionSystem の stop_event をセット（capture ループ脱出シグナル）
+        _t1 = _time.monotonic()
         self._route_a.shutdown()
+        print(f"[TIMING] MultiCaptionSystem._route_a.shutdown(): {_time.monotonic() - _t1:.3f}s", flush=True)
+
+        _t1 = _time.monotonic()
         self._route_b.shutdown()
+        print(f"[TIMING] MultiCaptionSystem._route_b.shutdown(): {_time.monotonic() - _t1:.3f}s", flush=True)
 
         # 2. asyncio.run() スレッドが終了するまで待つ（join with timeout）
         #    _thread_a/_thread_b は start() で生成される。start() 前に shutdown() を呼んだ場合は
         #    None なのでスキップする。
         thread_a = getattr(self, "_thread_a", None)
         if thread_a is not None and thread_a.is_alive():
+            _t1 = _time.monotonic()
             thread_a.join(timeout=5.0)
+            print(f"[TIMING] MultiCaptionSystem._thread_a.join(): {_time.monotonic() - _t1:.3f}s", flush=True)
             if thread_a.is_alive():
                 print("[WARN] route_a thread did not exit in 5 seconds", flush=True)
 
         thread_b = getattr(self, "_thread_b", None)
         if thread_b is not None and thread_b.is_alive():
+            _t1 = _time.monotonic()
             thread_b.join(timeout=5.0)
+            print(f"[TIMING] MultiCaptionSystem._thread_b.join(): {_time.monotonic() - _t1:.3f}s", flush=True)
             if thread_b.is_alive():
                 print("[WARN] route_b thread did not exit in 5 seconds", flush=True)
 
@@ -1313,7 +1370,9 @@ class MultiCaptionSystem:
         cap_a = getattr(self._route_a, "_capture_thread", None)
         if cap_a is not None and cap_a.is_alive():
             print("[INFO] waiting for route_a capture thread to exit...", flush=True)
+            _t1 = _time.monotonic()
             cap_a.join(timeout=10.0)
+            print(f"[TIMING] MultiCaptionSystem.cap_a.join(): {_time.monotonic() - _t1:.3f}s", flush=True)
             if cap_a.is_alive():
                 print(
                     "[ERROR] route_a capture thread STILL ALIVE after 10s join."
@@ -1323,7 +1382,9 @@ class MultiCaptionSystem:
         cap_b = getattr(self._route_b, "_capture_thread", None)
         if cap_b is not None and cap_b.is_alive():
             print("[INFO] waiting for route_b capture thread to exit...", flush=True)
+            _t1 = _time.monotonic()
             cap_b.join(timeout=10.0)
+            print(f"[TIMING] MultiCaptionSystem.cap_b.join(): {_time.monotonic() - _t1:.3f}s", flush=True)
             if cap_b.is_alive():
                 print(
                     "[ERROR] route_b capture thread STILL ALIVE after 10s join."
@@ -1335,11 +1396,15 @@ class MultiCaptionSystem:
         #    getattr: object.__new__ で作られた minimal インスタンスには _pa が存在しない場合がある
         pa = getattr(self, "_pa", None)
         if pa is not None:
+            _t1 = _time.monotonic()
             try:
                 pa.terminate()
             except Exception as e:
                 print(f"[WARN] PyAudio terminate failed: {e}", flush=True)
+            print(f"[TIMING] MultiCaptionSystem.PyAudio.terminate(): {_time.monotonic() - _t1:.3f}s", flush=True)
             self._pa = None
+
+        print(f"[TIMING] MultiCaptionSystem.shutdown() TOTAL: {_time.monotonic() - _t0:.3f}s", flush=True)
 
     @property
     def route_a_system(self) -> CaptionSystem:

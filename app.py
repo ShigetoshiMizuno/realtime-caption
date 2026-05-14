@@ -605,13 +605,39 @@ def _on_konnyaku_start_stop_click():
     global _konnyaku_system, _konnyaku_running
 
     if _konnyaku_running:
-        # 停止
-        if _konnyaku_system is not None:
-            _konnyaku_system.shutdown()
-            _konnyaku_system = None
-        _konnyaku_running = False
+        # 停止ボタン押下: すぐにボタンを「停止中...」+ disabled に切り替え、
+        # shutdown はバックグラウンドスレッドで実行して GUI がフリーズしないようにする。
         if dpg.does_item_exist(TAG_KONNYAKU_START_BTN):
-            dpg.configure_item(TAG_KONNYAKU_START_BTN, label="こんにゃく開始")
+            dpg.configure_item(TAG_KONNYAKU_START_BTN, label="停止中...", enabled=False)
+        if dpg.does_item_exist(TAG_STATUS_STATE):
+            dpg.set_value(TAG_STATUS_STATE, "翻訳こんにゃくモード停止中...")
+
+        def _shutdown_in_background():
+            global _konnyaku_system, _konnyaku_running
+            try:
+                if _konnyaku_system is not None:
+                    _konnyaku_system.shutdown()
+                    _konnyaku_system = None
+                _konnyaku_running = False
+            except Exception as e:
+                print(f"[ERROR] こんにゃく停止失敗: {e}", flush=True)
+            finally:
+                if dpg.does_item_exist(TAG_KONNYAKU_START_BTN):
+                    try:
+                        dpg.configure_item(TAG_KONNYAKU_START_BTN, label="こんにゃく開始", enabled=True)
+                    except Exception:
+                        pass
+                if dpg.does_item_exist(TAG_STATUS_STATE):
+                    try:
+                        dpg.set_value(TAG_STATUS_STATE, "停止しました")
+                    except Exception:
+                        pass
+
+        threading.Thread(
+            target=_shutdown_in_background,
+            daemon=True,
+            name="KonnyakuShutdown",
+        ).start()
         return
 
     # ポート競合チェック: 既存の単独モードが稼働中なら起動を拒否
@@ -2049,7 +2075,11 @@ def _auto_konnyaku_runner(duration: int) -> None:
 
         print(f"[AUTO] Phase 5/5: こんにゃく停止ボタン押下", flush=True)
         _on_konnyaku_start_stop_click()
-        time.sleep(3)  # shutdown 完了待ち
+
+        # バックグラウンド shutdown スレッドの完了を待つ（最大15秒）
+        deadline = time.monotonic() + 15.0
+        while _konnyaku_running and time.monotonic() < deadline:
+            time.sleep(0.2)
 
         print(f"[AUTO] アプリ終了", flush=True)
         dpg.stop_dearpygui()
