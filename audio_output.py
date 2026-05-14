@@ -79,6 +79,8 @@ class AudioOutputStream:
         # 直近に write された PCM の peak 値（絶対値最大）を保持（GUIレベルメーター用）
         self._audio_peak_now: int = 0
         self._peak_lock = threading.Lock()
+        # デバッグ: write() 呼び出し回数（最初の数回だけログ出力）
+        self._write_count: int = 0
 
     def start(self) -> None:
         """
@@ -101,7 +103,27 @@ class AudioOutputStream:
 
             self._stream = self._pa.open(**kwargs)
         except Exception as e:
-            logger.error("[AudioOutputStream] ストリームのオープンに失敗: %s", e)
+            # デバイス情報を添えてエラーを詳細に出力（デバッグ用）
+            dev_info = ""
+            if self._pa is not None and self._device_index is not None:
+                try:
+                    info = self._pa.get_device_info_by_index(self._device_index)
+                    dev_info = (
+                        f" device_name={info.get('name', '?')!r}"
+                        f" defaultSampleRate={info.get('defaultSampleRate', '?')}"
+                    )
+                except Exception:
+                    pass
+            logger.error(
+                "[AudioOutputStream] ストリームのオープンに失敗: %s"
+                " (device_index=%s rate=%d%s)",
+                e, self._device_index, self._sample_rate, dev_info,
+            )
+            print(
+                f"[AudioOutputStream] ストリームのオープンに失敗: {e}"
+                f" (device_index={self._device_index} rate={self._sample_rate}{dev_info})",
+                flush=True,
+            )
             return
 
         self._stop_event.clear()
@@ -138,6 +160,16 @@ class AudioOutputStream:
         """
         if self._stop_event.is_set():
             return
+
+        # デバッグ: 最初の 3 回だけバイト数をログ出力（実機テスト時に音声が届いているか確認）
+        if self._write_count < 3:
+            print(
+                f"[AudioOutputStream] write {len(pcm16_bytes)} bytes"
+                f" to device_index={self._device_index}"
+                f" (stream={'open' if self._stream is not None else 'closed'})",
+                flush=True,
+            )
+            self._write_count += 1
 
         if self._volume != 1.0:
             # PCM16 を int32 に拡張して乗算し、int16 範囲にクリップして戻す
