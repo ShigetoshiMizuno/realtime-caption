@@ -11,6 +11,7 @@ Dear PyGui を実起動せずに pytest で検証するシミュレーション�
 - CI 環境でも動作すること（外部デバイス・API 不要）
 """
 import sys
+import threading
 from pathlib import Path
 from unittest.mock import MagicMock, patch, call
 
@@ -430,3 +431,172 @@ class TestKonnyakuStartIntegration:
         # __init__ が成功したら route_a / route_b が存在すること
         assert system.route_a_system is not None
         assert system.route_b_system is not None
+
+
+# ---------------------------------------------------------------------------
+# CLI 自動操作モード (--auto-konnyaku) テスト
+# ---------------------------------------------------------------------------
+
+class TestAutoKonnyakuRunner:
+    """_auto_konnyaku_runner が正しい順序で各コールバックを呼ぶことを検証する。"""
+
+    def test_auto_konnyaku_runner_executes_correct_sequence(self):
+        """
+        _auto_konnyaku_runner が正しい順序で各コールバックを呼ぶこと:
+        1. _on_konnyaku_preset_click
+        2. _on_konnyaku_start_stop_click (開始)
+        3. _on_konnyaku_start_stop_click (停止)
+        4. dpg.stop_dearpygui
+        time.sleep をモックしてスキップし、順序のみ検証する。
+        """
+        call_order: list[str] = []
+
+        def fake_preset():
+            call_order.append("preset")
+
+        def fake_start_stop():
+            call_order.append("start_stop")
+
+        def fake_stop_dpg():
+            call_order.append("stop_dearpygui")
+
+        mock_dpg = MagicMock()
+        mock_dpg.stop_dearpygui.side_effect = fake_stop_dpg
+
+        with (
+            patch.object(app, "_on_konnyaku_preset_click", fake_preset),
+            patch.object(app, "_on_konnyaku_start_stop_click", fake_start_stop),
+            patch.object(app, "dpg", mock_dpg),
+            patch("app.time") as mock_time,
+        ):
+            # time モジュールの sleep をノーオプに
+            mock_time.sleep = MagicMock()
+            # _auto_konnyaku_runner を直接呼ぶ（スレッド経由でなく同期的に）
+            app._auto_konnyaku_runner(duration=0)
+
+        # 呼び出し順序の検証
+        assert call_order == ["preset", "start_stop", "start_stop", "stop_dearpygui"], (
+            f"呼び出し順序が期待と異なる: {call_order}"
+        )
+
+    def test_auto_konnyaku_runner_sleeps_correct_durations(self):
+        """
+        _auto_konnyaku_runner が正しい sleep 引数で time.sleep を呼ぶこと:
+        - 5秒 (モデルロード待機)
+        - 1秒 (GUI 反映待機)
+        - N秒 (duration)
+        - 3秒 (shutdown 完了待機)
+        """
+        sleep_args: list[float] = []
+
+        mock_dpg = MagicMock()
+
+        with (
+            patch.object(app, "_on_konnyaku_preset_click", MagicMock()),
+            patch.object(app, "_on_konnyaku_start_stop_click", MagicMock()),
+            patch.object(app, "dpg", mock_dpg),
+            patch("app.time") as mock_time,
+        ):
+            def record_sleep(n):
+                sleep_args.append(n)
+            mock_time.sleep = record_sleep
+            app._auto_konnyaku_runner(duration=10)
+
+        # 順番に 5, 1, 10, 3 が記録されること
+        assert sleep_args == [5, 1, 10, 3], (
+            f"sleep の呼び出しシーケンスが期待と異なる: {sleep_args}"
+        )
+
+    def test_auto_konnyaku_runner_calls_stop_dearpygui_on_exception(self):
+        """
+        _auto_konnyaku_runner 内で例外が発生した場合でも dpg.stop_dearpygui が呼ばれること。
+        """
+        mock_dpg = MagicMock()
+
+        with (
+            patch.object(app, "_on_konnyaku_preset_click", side_effect=RuntimeError("boom")),
+            patch.object(app, "dpg", mock_dpg),
+            patch("app.time") as mock_time,
+        ):
+            mock_time.sleep = MagicMock()
+            app._auto_konnyaku_runner(duration=0)
+
+        mock_dpg.stop_dearpygui.assert_called()
+
+
+class TestAutoKonnyakuArgparse:
+    """main() の --auto-konnyaku 引数処理を検証する。"""
+
+    def test_main_with_auto_konnyaku_arg_starts_runner_thread(self):
+        """
+        main(--auto-konnyaku=N) で _auto_konnyaku_runner を target にしたスレッドが
+        起動されること。
+        """
+        started_threads: list[threading.Thread] = []
+
+        real_thread_init = threading.Thread.__init__
+
+        def capturing_thread_init(self_t, *args, **kwargs):
+            real_thread_init(self_t, *args, **kwargs)
+            # AutoKonnyakuRunner スレッドだけ捕捉
+            if getattr(self_t, "name", "") == "AutoKonnyakuRunner":
+                started_threads.append(self_t)
+
+        mock_dpg = MagicMock()
+        # is_dearpygui_running() を1回だけ True にして即終了させる
+        mock_dpg.is_dearpygui_running.return_value = False
+
+        with (
+            patch.object(app, "dpg", mock_dpg),
+            patch.object(app, "load_config", return_value=_fake_config()),
+            patch.object(app, "list_audio_devices", return_value=_fake_devices()),
+            patch.object(app, "_start_rpc_server", MagicMock()),
+            patch.object(app, "_build_gui", MagicMock()),
+            patch.object(app, "_save_settings", MagicMock()),
+            patch.object(app, "_system", None),
+            patch.object(app, "_konnyaku_system", None),
+            patch("sys.argv", ["app.py", "--auto-konnyaku=5"]),
+            patch.object(threading.Thread, "__init__", capturing_thread_init),
+        ):
+            app.main()
+
+        assert len(started_threads) == 1, (
+            f"AutoKonnyakuRunner スレッドが起動されていない: {started_threads}"
+        )
+        assert started_threads[0].daemon is True, (
+            "AutoKonnyakuRunner スレッドが daemon=True でない"
+        )
+
+    def test_main_without_auto_konnyaku_no_runner_thread(self):
+        """
+        --auto-konnyaku 引数なしで main() を呼ぶと AutoKonnyakuRunner スレッドが起動しないこと。
+        """
+        started_threads: list[threading.Thread] = []
+
+        real_thread_init = threading.Thread.__init__
+
+        def capturing_thread_init(self_t, *args, **kwargs):
+            real_thread_init(self_t, *args, **kwargs)
+            if getattr(self_t, "name", "") == "AutoKonnyakuRunner":
+                started_threads.append(self_t)
+
+        mock_dpg = MagicMock()
+        mock_dpg.is_dearpygui_running.return_value = False
+
+        with (
+            patch.object(app, "dpg", mock_dpg),
+            patch.object(app, "load_config", return_value=_fake_config()),
+            patch.object(app, "list_audio_devices", return_value=_fake_devices()),
+            patch.object(app, "_start_rpc_server", MagicMock()),
+            patch.object(app, "_build_gui", MagicMock()),
+            patch.object(app, "_save_settings", MagicMock()),
+            patch.object(app, "_system", None),
+            patch.object(app, "_konnyaku_system", None),
+            patch("sys.argv", ["app.py"]),
+            patch.object(threading.Thread, "__init__", capturing_thread_init),
+        ):
+            app.main()
+
+        assert len(started_threads) == 0, (
+            f"引数なし時に AutoKonnyakuRunner スレッドが起動してしまった: {started_threads}"
+        )
