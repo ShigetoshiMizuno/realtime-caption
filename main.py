@@ -511,6 +511,15 @@ class CaptionSystem:
         with self._audio_stats_lock:
             self._audio_stats = replace(self._audio_stats, **kwargs)
 
+    def _log(self, category: str, message: str) -> None:
+        """route_id プレフィックス付きでログを出力するヘルパー。
+
+        出力形式: [CATEGORY][route_id] message
+        _route_id が未設定の場合は '?' をフォールバックとして使う。
+        """
+        rid = getattr(self, "_route_id", "?")
+        print(f"[{category}][{rid}] {message}", flush=True)
+
     # ---- RouteState 管理 ------------------------------------------------
     @property
     def state(self) -> RouteState:
@@ -710,7 +719,7 @@ class CaptionSystem:
                 try:
                     cs.stop_stream()
                 except Exception as e:
-                    print(f"[WARN] capture stream stop_stream failed: {e}", flush=True)
+                    self._log("WARN", f"capture stream stop_stream failed: {e}")
                 print(
                     f"[TIMING] CaptionSystem(route_id={route_id}).stop_stream():"
                     f" {_time.monotonic() - _t1:.3f}s",
@@ -1088,7 +1097,7 @@ class CaptionSystem:
                 frames_per_buffer=chunk_size,
             )
         except Exception as e:
-            print(f"[ERROR] ループバックストリームのオープンに失敗しました: {e}")
+            self._log("ERROR", f"キャプチャストリームのオープンに失敗: {e}")
             if owns_pa:
                 pa.terminate()
             return
@@ -1170,7 +1179,7 @@ class CaptionSystem:
                     )
                     pct = level_window_max * 100 // 32767
                     bar = "█" * (pct // 5)
-                    print(f"[AUDIO] peak={level_window_max:>5d} ({pct:3d}%) {bar} chunks={level_window_chunks}", flush=True)
+                    self._log("AUDIO", f"peak={level_window_max:>5d} ({pct:3d}%) {bar} chunks={level_window_chunks}")
                     level_window_max = 0
                     level_window_chunks = 0
                     next_log = now + 1.0
@@ -1195,7 +1204,7 @@ class CaptionSystem:
                         self._recorder.feed_audio(pcm_bytes)
 
         except Exception as e:
-            print(f"[ERROR] ループバックキャプチャ中にエラーが発生しました: {e}")
+            self._log("ERROR", f"キャプチャ中にエラー: {e}")
         finally:
             # インスタンス変数を先に None に戻す（shutdown の二重 stop_stream を防ぐ）
             self._capture_stream = None
@@ -1259,7 +1268,7 @@ class CaptionSystem:
                     use_microphone=True,
                 )
         except Exception as e:
-            print(f"[ERROR] AudioToTextRecorder の初期化に失敗しました: {e}")
+            self._log("ERROR", f"AudioToTextRecorder 初期化失敗: {e}")
 
     def _start_recorder(self):
         """別スレッドで録音ループを起動する。prepare() が未完了なら先に呼ぶ。"""
@@ -1269,7 +1278,7 @@ class CaptionSystem:
                 target=self._capture_thread_body, daemon=True
             )
             self._capture_thread.start()
-            print("\n[INFO] 録音を開始しました（Realtimeモード）。\n")
+            self._log("INFO", "録音を開始しました（Realtimeモード）。")
             # on_ready は RealtimeTranslator の on_connected で呼ばれるため、ここでは呼ばない
             # キャプチャスレッドの終了を待つ（stop_event が set されるまで）
             while not self._stop_event.is_set():
@@ -1288,7 +1297,7 @@ class CaptionSystem:
             )
             self._capture_thread.start()
 
-        print("\n[INFO] 録音を開始しました。\n")
+        self._log("INFO", "録音を開始しました。")
         if self._on_ready:
             self._on_ready()
         try:
@@ -1296,7 +1305,7 @@ class CaptionSystem:
                 self._recorder.text(self._on_transcription)
         except Exception as e:
             if not self._stop_event.is_set():
-                print(f"[ERROR] 録音中にエラーが発生しました: {e}")
+                self._log("ERROR", f"録音中にエラー: {e}")
 
     async def run(self):
         """WebSocket サーバーを起動し、録音スレッドを開始する。"""
@@ -1327,7 +1336,7 @@ class CaptionSystem:
                 owns_pa=owns_pa,
             )
             self._audio_stream.start()
-            print(f"[INFO] 音声出力ストリーム開始: device_index={self._output_device_index}", flush=True)
+            self._log("INFO", f"音声出力ストリーム開始: device_index={self._output_device_index}")
 
         # Realtime モードでは RealtimeTranslator を起動
         if self._realtime_mode and self._realtime_translator is not None:
@@ -1342,12 +1351,12 @@ class CaptionSystem:
         recorder_thread = threading.Thread(target=self._start_recorder, daemon=True)
         recorder_thread.start()
 
-        print(f"[INFO] ログファイル: {self._log_path}")
+        self._log("INFO", f"ログファイル: {self._log_path}")
 
         try:
             if self._owns_broadcaster:
                 # WebSocket サーバーを自前で起動（単体起動 / MultiCaptionSystem の route_a）
-                print(f"[INFO] WebSocket サーバーを起動中: ws://{ws_host}:{ws_port}")
+                self._log("INFO", f"WebSocket サーバーを起動中: ws://{ws_host}:{ws_port}")
                 async with websockets.serve(self._broadcaster.register, ws_host, ws_port):
                     await self._stop_event_async.wait()
             else:
@@ -1358,7 +1367,7 @@ class CaptionSystem:
             # asyncio 中断時のみ shutdown 必要（Stop ボタン経由の正常終了は呼び出し側が責務）
             self.shutdown()
         finally:
-            print("[INFO] 終了しました。")
+            self._log("INFO", "終了しました。")
 
 
 def main():
