@@ -546,16 +546,19 @@ class TestCaptureThreadJoinBeforeTerminate:
 
         obj.shutdown()
 
-        # join() が timeout 付きで呼ばれ、かつ timeout >= 5.0 秒であること
-        mock_cap_a.join.assert_called_once()
-        call_kwargs = mock_cap_a.join.call_args
-        timeout_val = call_kwargs.kwargs.get("timeout") or (
-            call_kwargs.args[0] if call_kwargs.args else None
-        )
-        assert timeout_val is not None, "_capture_thread.join() が timeout 引数なしで呼ばれた"
-        assert timeout_val >= 5.0, (
-            f"capture thread join timeout={timeout_val} が小さすぎる（5.0 秒以上必要）"
-        )
+        # join() が少なくとも1回以上呼ばれること
+        assert mock_cap_a.join.call_count >= 1, "_capture_thread.join() が呼ばれなかった"
+        # 各呼び出しすべてで timeout が 5.0 秒以上であること
+        for i, call in enumerate(mock_cap_a.join.call_args_list):
+            timeout_val = call.kwargs.get("timeout") or (
+                call.args[0] if call.args else None
+            )
+            assert timeout_val is not None, (
+                f"_capture_thread.join() 呼び出し #{i} に timeout 引数がない"
+            )
+            assert timeout_val >= 5.0, (
+                f"capture thread join #{i} timeout={timeout_val} が小さすぎる（5.0 秒以上必要）"
+            )
 
     def test_caption_system_shutdown_capture_thread_join_timeout_is_5_seconds(self):
         """CaptionSystem.shutdown() の capture thread join が timeout=5.0 で呼ばれること。

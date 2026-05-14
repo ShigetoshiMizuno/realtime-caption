@@ -546,7 +546,13 @@ class CaptionSystem:
         # capture スレッドを先に停止させて、feed_audio が止まってから recorder.stop() を呼ぶ
         cap = getattr(self, "_capture_thread", None)
         if cap is not None and cap.is_alive():
-            cap.join(timeout=1.0)
+            cap.join(timeout=5.0)
+            if cap.is_alive():
+                print(
+                    f"[WARN] capture thread (route_id={getattr(self, '_route_id', '?')})"
+                    f" did not exit in 5 seconds",
+                    flush=True,
+                )
         if self._recorder:
             try:
                 self._recorder.stop()
@@ -815,7 +821,13 @@ class CaptionSystem:
 
         try:
             while not self._stop_event.is_set():
-                raw = stream.read(chunk_size, exception_on_overflow=False)
+                try:
+                    raw = stream.read(chunk_size, exception_on_overflow=False)
+                except OSError:
+                    # stream が close/terminate された場合（shutdown 中）は静かに抜ける
+                    if self._stop_event.is_set():
+                        break
+                    raise
 
                 # bytes -> numpy int16 配列
                 audio = np.frombuffer(raw, dtype=np.int16)
@@ -1279,7 +1291,31 @@ class MultiCaptionSystem:
             if thread_b.is_alive():
                 print("[WARN] route_b thread did not exit in 5 seconds", flush=True)
 
-        # 3. すべてのスレッドが exit してから共有 PyAudio を terminate
+        # 3. capture スレッドが確実に exit するまで待つ（pa.terminate() の前に必須）
+        #    CaptionSystem.shutdown() で既に join 試行済みだが、pa.read() のブロック対策で
+        #    ここでもう一度 join。timeout 10 秒で安全マージン。
+        cap_a = getattr(self._route_a, "_capture_thread", None)
+        if cap_a is not None and cap_a.is_alive():
+            print("[INFO] waiting for route_a capture thread to exit...", flush=True)
+            cap_a.join(timeout=10.0)
+            if cap_a.is_alive():
+                print(
+                    "[ERROR] route_a capture thread STILL ALIVE after 10s join."
+                    " terminate may crash.",
+                    flush=True,
+                )
+        cap_b = getattr(self._route_b, "_capture_thread", None)
+        if cap_b is not None and cap_b.is_alive():
+            print("[INFO] waiting for route_b capture thread to exit...", flush=True)
+            cap_b.join(timeout=10.0)
+            if cap_b.is_alive():
+                print(
+                    "[ERROR] route_b capture thread STILL ALIVE after 10s join."
+                    " terminate may crash.",
+                    flush=True,
+                )
+
+        # 5. すべてのスレッドが exit してから共有 PyAudio を terminate
         #    getattr: object.__new__ で作られた minimal インスタンスには _pa が存在しない場合がある
         pa = getattr(self, "_pa", None)
         if pa is not None:
