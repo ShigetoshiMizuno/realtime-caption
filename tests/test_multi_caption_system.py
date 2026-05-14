@@ -812,3 +812,95 @@ class TestCaptionSystemOutputVolumeSetter:
         # 例外が出なければ OK
         cs.output_volume = 0.3
         assert cs._output_volume == 0.3
+
+
+# ---------------------------------------------------------------------------
+# Issue #48: on_realtime_error コールバック伝播テスト
+# ---------------------------------------------------------------------------
+
+class TestOnRealtimeErrorCallback:
+    """CaptionSystem._on_realtime_error が MultiCaptionSystem の on_realtime_error コールバックを呼ぶこと。"""
+
+    def test_multi_caption_system_calls_on_realtime_error_for_route_a(self):
+        """CaptionSystem._on_realtime_error が MultiCaptionSystem の on_realtime_error コールバックを
+        route_id='a', 正しい category と display_text で呼ぶこと。"""
+        callbacks = []
+
+        with patch("realtime_translator.RealtimeTranslator"):
+            mcs = MultiCaptionSystem(
+                config=_make_fake_config(),
+                route_a=_make_route_config("a"),
+                route_b=_make_route_config("b"),
+                on_realtime_error=lambda r, c, t: callbacks.append((r, c, t)),
+            )
+
+        # 経路A の _on_realtime_error を直接呼ぶ
+        mcs.route_a_system._on_realtime_error("insufficient_quota: exceeded")
+
+        assert len(callbacks) == 1
+        assert callbacks[0][0] == "a"            # route_id
+        assert callbacks[0][1] == "quota"         # category
+        assert "クォータ" in callbacks[0][2]      # display_text
+
+    def test_multi_caption_system_calls_on_realtime_error_for_route_b(self):
+        """経路Bの _on_realtime_error がコールバックを route_id='b' で呼ぶこと。"""
+        callbacks = []
+
+        with patch("realtime_translator.RealtimeTranslator"):
+            mcs = MultiCaptionSystem(
+                config=_make_fake_config(),
+                route_a=_make_route_config("a"),
+                route_b=_make_route_config("b"),
+                on_realtime_error=lambda r, c, t: callbacks.append((r, c, t)),
+            )
+
+        mcs.route_b_system._on_realtime_error("invalid_api_key: bad key")
+
+        assert len(callbacks) == 1
+        assert callbacks[0][0] == "b"            # route_id
+        assert callbacks[0][1] == "auth"          # category
+        assert "API キーが無効" in callbacks[0][2]
+
+    def test_on_realtime_error_callback_not_required(self):
+        """on_realtime_error を渡さなくても MultiCaptionSystem が正常にインスタンス化できること。"""
+        with patch("realtime_translator.RealtimeTranslator"):
+            mcs = MultiCaptionSystem(
+                config=_make_fake_config(),
+                route_a=_make_route_config("a"),
+                route_b=_make_route_config("b"),
+                # on_realtime_error を渡さない（デフォルト None）
+            )
+
+        # コールバックなしでも _on_realtime_error が例外を投げないこと
+        mcs.route_a_system._on_realtime_error("some error")
+
+    def test_on_realtime_error_callback_exception_does_not_propagate(self):
+        """on_realtime_error コールバック自身が例外を投げても _on_realtime_error が安全に完了すること。"""
+        def _bad_callback(r, c, t):
+            raise RuntimeError("callback crashed")
+
+        with patch("realtime_translator.RealtimeTranslator"):
+            mcs = MultiCaptionSystem(
+                config=_make_fake_config(),
+                route_a=_make_route_config("a"),
+                route_b=_make_route_config("b"),
+                on_realtime_error=_bad_callback,
+            )
+
+        # 例外が伝播しないこと
+        mcs.route_a_system._on_realtime_error("some error")
+
+    def test_on_realtime_error_not_called_when_no_error(self):
+        """エラーが発生しないときにコールバックが呼ばれないこと（誤発火なし）。"""
+        callbacks = []
+
+        with patch("realtime_translator.RealtimeTranslator"):
+            mcs = MultiCaptionSystem(
+                config=_make_fake_config(),
+                route_a=_make_route_config("a"),
+                route_b=_make_route_config("b"),
+                on_realtime_error=lambda r, c, t: callbacks.append((r, c, t)),
+            )
+
+        # _on_realtime_error を呼ばない状態ではコールバックは0件
+        assert len(callbacks) == 0
