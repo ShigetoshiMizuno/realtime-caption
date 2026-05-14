@@ -403,7 +403,8 @@ class CaptionSystem:
                  output_device_index: int | None = None,
                  output_volume: float = 1.0,
                  route_id: str = "a",
-                 shared_broadcaster: "SubtitleBroadcaster | None" = None):
+                 shared_broadcaster: "SubtitleBroadcaster | None" = None,
+                 pa_instance: "pyaudio.PyAudio | None" = None):
         self._config = config
         self._device_info = device_info
         self._model_name = model_name
@@ -461,6 +462,9 @@ class CaptionSystem:
             )
 
         self._route_id: str = route_id
+        # 注入された共有 PyAudio インスタンス（None なら各スレッドが自前で生成）
+        # MultiCaptionSystem が共有 PyAudio を管理し、PortAudio 二重初期化を防ぐ
+        self._pa_instance: "pyaudio.PyAudio | None" = pa_instance
         # shared_broadcaster が注入された場合は WebSocket サーバーを自前で起動しない
         if shared_broadcaster is not None:
             self._broadcaster = shared_broadcaster
@@ -778,7 +782,13 @@ class CaptionSystem:
         up = target_rate // g
         down = src_rate // g
 
-        pa = pyaudio.PyAudio()
+        # 注入された共有 PyAudio があればそれを使い、なければローカル生成
+        if self._pa_instance is not None:
+            pa = self._pa_instance
+            owns_pa = False
+        else:
+            pa = pyaudio.PyAudio()
+            owns_pa = True
         try:
             stream = pa.open(
                 format=pyaudio.paInt16,
@@ -790,7 +800,8 @@ class CaptionSystem:
             )
         except Exception as e:
             print(f"[ERROR] ループバックストリームのオープンに失敗しました: {e}")
-            pa.terminate()
+            if owns_pa:
+                pa.terminate()
             return
 
         print(f"[INFO] ループバックキャプチャ開始: {src_rate}Hz, {channels}ch -> {target_rate}Hz mono", flush=True)
@@ -894,7 +905,9 @@ class CaptionSystem:
                 stream.close()
             except Exception:
                 pass
-            pa.terminate()
+            # 共有インスタンスは MultiCaptionSystem が shutdown() で terminate するため呼ばない
+            if owns_pa:
+                pa.terminate()
 
     def prepare(self):
         """Whisper モデルをロードして recorder を初期化する。
@@ -996,11 +1009,20 @@ class CaptionSystem:
             from audio_output import AudioOutputStream
             ao_cfg = self._config.get("openai_realtime", {}).get("audio_output", {})
             sample_rate = ao_cfg.get("sample_rate", 24000)
+            # 共有 PyAudio があればそれを使い（owns_pa=False で terminate しない）、
+            # なければ新規生成（owns_pa=True で AudioOutputStream.stop() が terminate する）
+            if self._pa_instance is not None:
+                pa_for_output = self._pa_instance
+                owns_pa = False
+            else:
+                pa_for_output = pyaudio.PyAudio()
+                owns_pa = True
             self._audio_stream = AudioOutputStream(
-                pyaudio_instance=pyaudio.PyAudio(),
+                pyaudio_instance=pa_for_output,
                 device_index=self._output_device_index,
                 sample_rate=sample_rate,
                 volume=self._output_volume,
+                owns_pa=owns_pa,
             )
             self._audio_stream.start()
             print(f"[INFO] 音声出力ストリーム開始: device_index={self._output_device_index}", flush=True)
@@ -1146,6 +1168,12 @@ class MultiCaptionSystem:
         # route_b: shared_broadcaster=route_a._broadcaster → _owns_broadcaster=False（WS サーバースキップ）
         # これにより overlay.html への WebSocket は1本（route_a が管理）で、
         # 両系統が同一 SubtitleBroadcaster インスタンスを共有する。
+        # 共有 PyAudio インスタンスを1つだけ生成（PortAudio assertion 回避）
+        # 複数の pyaudio.PyAudio() を並列初期化すると WASAPI の状態が破壊され
+        # 'Assertion failed: hostApi->info.defaultOutputDevice < hostApi->info.deviceCount'
+        # でプロセスがクラッシュする。MultiCaptionSystem が責任を持って1つ管理する。
+        self._pa = pyaudio.PyAudio()
+
         config_a = self._build_route_config_dict(config, route_a)
         self._route_a = CaptionSystem(
             config=config_a,
@@ -1157,6 +1185,7 @@ class MultiCaptionSystem:
             output_volume=route_a.output_volume,
             route_id=route_a.route_id,
             shared_broadcaster=None,  # route_a が broadcaster を所有
+            pa_instance=self._pa,     # 共有 PyAudio を注入
         )
 
         # route_b: route_a の broadcaster を共有（WS サーバー起動をスキップ）
@@ -1171,6 +1200,7 @@ class MultiCaptionSystem:
             output_volume=route_b.output_volume,
             route_id=route_b.route_id,
             shared_broadcaster=self._route_a._broadcaster,  # route_a の broadcaster を共有
+            pa_instance=self._pa,                           # 共有 PyAudio を注入
         )
 
         # start() で生成するスレッドへの参照（shutdown/join で利用）
@@ -1221,9 +1251,18 @@ class MultiCaptionSystem:
         self._thread_b.start()
 
     def shutdown(self) -> None:
-        """両系統を停止する。"""
+        """両系統を停止し、共有 PyAudio インスタンスを terminate する。"""
         self._route_a.shutdown()
         self._route_b.shutdown()
+        # 共有 PyAudio を terminate（各 CaptionSystem は owns_pa=False なので terminate しない）
+        # getattr: object.__new__ で作られた minimal インスタンスには _pa が存在しない場合がある
+        pa = getattr(self, "_pa", None)
+        if pa is not None:
+            try:
+                pa.terminate()
+            except Exception:
+                pass
+            self._pa = None
 
     @property
     def route_a_system(self) -> CaptionSystem:

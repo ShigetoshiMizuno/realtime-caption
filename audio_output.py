@@ -49,6 +49,7 @@ class AudioOutputStream:
         channels: int = _DEFAULT_CHANNELS,
         chunk_size: int = _DEFAULT_CHUNK,
         volume: float = 1.0,
+        owns_pa: bool = True,
     ):
         """
         Parameters
@@ -59,8 +60,11 @@ class AudioOutputStream:
         channels:          チャンネル数
         chunk_size:        1回の write サイズ（bytes）
         volume:            出力音量倍率（0.0〜2.0）。1.0 のときはバイパス（変換なし）
+        owns_pa:           True（デフォルト）なら stop() で pa.terminate() を呼ぶ。
+                           False なら呼ばない（共有 PyAudio の場合に使用）。
         """
         self._pa = pyaudio_instance
+        self._owns_pa = owns_pa
         self._device_index = device_index
         self._sample_rate = sample_rate
         self._channels = channels
@@ -179,7 +183,9 @@ class AudioOutputStream:
                 pass
             self._stream = None
 
-        if self._pa is not None:
+        # 共有インスタンス（owns_pa=False）の場合は terminate しない
+        # terminate は MultiCaptionSystem.shutdown() 等の呼び出し側が責任を持つ
+        if self._pa is not None and self._owns_pa:
             try:
                 self._pa.terminate()
             except Exception:
