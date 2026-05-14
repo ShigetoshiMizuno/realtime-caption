@@ -539,6 +539,14 @@ class CaptionSystem:
                 flush=True,
             )
 
+    def get_asyncio_thread(self) -> "threading.Thread | None":
+        """start() で生成された asyncio スレッドを返す (terminate での join 用)。
+
+        start() 前または stop() 後は None を返す。
+        MultiCaptionSystem.start_route() が _thread_a/_thread_b を更新する際に使用する。
+        """
+        return getattr(self, "_asyncio_thread", None)
+
     # ---- 後方互換プロパティ（既存の外部呼び出し維持） -------------------
     @property
     def audio_peak(self) -> int:
@@ -1593,11 +1601,14 @@ class MultiCaptionSystem:
         - route_id: "a" | "b"
         - 対象 CaptionSystem.start() を呼ぶ（PR-2 実装済み）
         - 該当 route が None なら no-op
+        - start() 成功後に _thread_a/_thread_b を更新する（C-1: terminate() の join 用）
         """
         if route_id == "a" and self._route_a is not None:
             self._route_a.start()
+            self._thread_a = self._route_a.get_asyncio_thread()
         elif route_id == "b" and self._route_b is not None:
             self._route_b.start()
+            self._thread_b = self._route_b.get_asyncio_thread()
 
     def stop_route(self, route_id: str) -> None:
         """指定 route を停止する（IDLE に遷移）。インスタンスは破棄しない。

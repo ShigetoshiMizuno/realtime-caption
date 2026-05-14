@@ -1003,6 +1003,13 @@ def _on_konnyaku_start_stop_click():
     """翻訳こんにゃくモードの開始/停止ボタン（常駐モデル）。"""
     global _konnyaku_system, _konnyaku_running
 
+    # 連打ガード: ボタンが disabled（処理中）なら無視する（W-5）
+    # 停止処理中に「開始」連打すると二重起動や内部状態不整合が起きるため早期 return する。
+    if dpg.does_item_exist(TAG_KONNYAKU_START_BTN):
+        if not dpg.get_item_configuration(TAG_KONNYAKU_START_BTN).get("enabled", True):
+            print("[USER] 開始ボタン連打を無視 (処理中)", flush=True)
+            return
+
     print(
         f"[USER] {'停止' if _konnyaku_running else '開始'}ボタン押下"
         f" (running={_konnyaku_running})",
@@ -1023,10 +1030,10 @@ def _on_konnyaku_start_stop_click():
             try:
                 if _konnyaku_system is not None:
                     _konnyaku_system.stop_all()
-                _konnyaku_running = False
             except Exception as e:
                 print(f"[ERROR] こんにゃく停止失敗: {e}", flush=True)
             finally:
+                _konnyaku_running = False
                 try:
                     _gui_set_label(TAG_KONNYAKU_START_BTN, "開始",
                                    name="konnyaku_start_btn", enabled=True)
