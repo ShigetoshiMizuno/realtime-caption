@@ -1972,10 +1972,17 @@ def _build_gui():
                 device_labels[0] if device_labels else "",
             )
             _route_a_saved_device = route_a_saved.get("device", "")
-            _route_a_default_device = (
-                _route_a_saved_device if _route_a_saved_device in device_labels
-                else _route_a_default_loopback
-            )
+            if _route_a_saved_device and _route_a_saved_device in device_labels:
+                _route_a_default_device = _route_a_saved_device
+                print(f"[INFO] route_a device restored: '{_route_a_default_device}'", flush=True)
+            elif _route_a_saved_device:
+                _route_a_default_device = _route_a_default_loopback
+                print(f"[WARN] route_a saved device not in list. "
+                      f"saved='{_route_a_saved_device}', fallback='{_route_a_default_device}'", flush=True)
+                print(f"[WARN] available device_labels: {device_labels}", flush=True)
+            else:
+                _route_a_default_device = _route_a_default_loopback
+                print(f"[INFO] route_a no saved device, using default: '{_route_a_default_device}'", flush=True)
             _route_a_default_lang = route_a_saved.get("lang", _lang_display_names[0] if _lang_display_names else "")
             if _route_a_default_lang not in _lang_display_names:
                 _route_a_default_lang = _lang_display_names[0] if _lang_display_names else ""
@@ -2059,10 +2066,16 @@ def _build_gui():
                 device_labels[0] if device_labels else "",
             )
             _route_b_saved_device = route_b_saved.get("device", "")
-            _route_b_default_device = (
-                _route_b_saved_device if _route_b_saved_device in device_labels
-                else _route_b_default_non_loopback
-            )
+            if _route_b_saved_device and _route_b_saved_device in device_labels:
+                _route_b_default_device = _route_b_saved_device
+                print(f"[INFO] route_b device restored: '{_route_b_default_device}'", flush=True)
+            elif _route_b_saved_device:
+                _route_b_default_device = _route_b_default_non_loopback
+                print(f"[WARN] route_b saved device not in list. "
+                      f"saved='{_route_b_saved_device}', fallback='{_route_b_default_device}'", flush=True)
+            else:
+                _route_b_default_device = _route_b_default_non_loopback
+                print(f"[INFO] route_b no saved device, using default: '{_route_b_default_device}'", flush=True)
             _route_b_default_lang = route_b_saved.get("lang", _lang_display_names[-1] if _lang_display_names else "")
             if _route_b_default_lang not in _lang_display_names:
                 _route_b_default_lang = _lang_display_names[-1] if _lang_display_names else ""
