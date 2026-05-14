@@ -584,3 +584,89 @@ class TestCaptureThreadJoinBeforeTerminate:
         assert timeout_val >= 5.0, (
             f"CaptionSystem.shutdown() の capture join timeout={timeout_val} が小さすぎる（5.0 秒以上必要）"
         )
+
+
+# ---------------------------------------------------------------------------
+# Phase 8: shutdown() が _capture_stream.stop_stream() を呼んで read() ブロックを解除
+# ---------------------------------------------------------------------------
+
+class TestCaptureStreamStopOnShutdown:
+    """shutdown() が _capture_stream.stop_stream() を呼んで read() のブロックを解除すること。
+
+    背景: pyaudio.Stream.read() はブロッキング呼び出しで、stop_event をポーリングしない。
+    _stop_event.set() だけでは capture loop が read() から抜け出せず、スレッドが 5 秒
+    タイムアウト後も生き残り pa.terminate() 時に access violation が起きていた（実機確認済み）。
+
+    修正: shutdown() は _stop_event.set() の直後に _capture_stream.stop_stream() を呼び、
+    read() に OSError を投げさせて capture loop を即座に脱出させる。
+    """
+
+    def test_shutdown_calls_capture_stream_stop_stream(self):
+        """CaptionSystem.shutdown() が _capture_stream.stop_stream() を呼ぶこと。"""
+        cs = _make_minimal_caption_system()
+        mock_stream = MagicMock()
+        cs._capture_stream = mock_stream
+
+        cs.shutdown()
+
+        mock_stream.stop_stream.assert_called_once()
+
+    def test_shutdown_calls_stop_stream_even_when_no_capture_thread(self):
+        """_capture_thread が存在しない場合でも stop_stream() が呼ばれること。"""
+        cs = _make_minimal_caption_system()
+        mock_stream = MagicMock()
+        cs._capture_stream = mock_stream
+        # _capture_thread は設定しない（存在しない状態）
+
+        cs.shutdown()
+
+        mock_stream.stop_stream.assert_called_once()
+
+    def test_shutdown_does_not_raise_if_capture_stream_is_none(self):
+        """_capture_stream が None の場合に shutdown() が例外を投げないこと。"""
+        cs = _make_minimal_caption_system()
+        # _capture_stream は _make_minimal_caption_system では設定されていない
+        # （None がデフォルト相当）
+
+        # 例外が出なければ OK
+        cs.shutdown()
+
+    def test_shutdown_does_not_raise_if_stop_stream_raises(self):
+        """stop_stream() が例外を投げても shutdown() が継続すること。"""
+        cs = _make_minimal_caption_system()
+        mock_stream = MagicMock()
+        mock_stream.stop_stream.side_effect = OSError("stream already stopped")
+        cs._capture_stream = mock_stream
+
+        # 例外が出なければ OK（shutdown は stop_stream のエラーを飲み込む）
+        cs.shutdown()
+
+    def test_shutdown_calls_stop_stream_before_capture_thread_join(self):
+        """stop_stream() が capture thread の join より前に呼ばれること。
+
+        stop_stream() → read() が OSError → capture loop 脱出 → join 成功、
+        という順序が保証されなければ join が 5 秒タイムアウトしてしまう。
+        """
+        call_order = []
+
+        mock_stream = MagicMock()
+        mock_stream.stop_stream.side_effect = lambda: call_order.append("stop_stream")
+
+        mock_cap = MagicMock(spec=threading.Thread)
+        mock_cap.is_alive.return_value = True
+        mock_cap.join.side_effect = lambda timeout=None: call_order.append("join_cap")
+
+        cs = _make_minimal_caption_system()
+        cs._capture_stream = mock_stream
+        cs._capture_thread = mock_cap
+
+        cs.shutdown()
+
+        assert "stop_stream" in call_order, "stop_stream() が呼ばれなかった"
+        assert "join_cap" in call_order, "capture thread の join() が呼ばれなかった"
+
+        stop_idx = call_order.index("stop_stream")
+        join_idx = call_order.index("join_cap")
+        assert stop_idx < join_idx, (
+            f"stop_stream({stop_idx}) が join_cap({join_idx}) より後に呼ばれた"
+        )
