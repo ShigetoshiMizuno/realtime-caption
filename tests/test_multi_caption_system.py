@@ -467,3 +467,117 @@ class TestSafeShutdownOrdering:
 
         # call_soon_threadsafe が _stop_event_async.set を引数に呼ばれること
         mock_loop.call_soon_threadsafe.assert_called_once_with(mock_async_event.set)
+
+
+# ---------------------------------------------------------------------------
+# Phase 7: capture スレッドを join してから PyAudio.terminate()（Issue #38 クラッシュ修正）
+# ---------------------------------------------------------------------------
+
+class TestCaptureThreadJoinBeforeTerminate:
+    """shutdown() が _capture_thread も join してから PyAudio.terminate() を呼ぶこと。
+
+    背景: _thread_a/_thread_b は asyncio.run() のスレッドのみ。
+    _capture_thread (音声キャプチャ) は別物であり、read() 中に terminate() が呼ばれると
+    PortAudio が access violation でクラッシュする（実機ログ確認済み）。
+    """
+
+    def test_shutdown_joins_capture_threads_before_pa_terminate(self):
+        """shutdown() が capture スレッド (_capture_thread) も join してから
+        pa.terminate() を呼ぶこと（access violation 防止）。
+
+        背景: _thread_a/_thread_b は asyncio.run() のスレッドのみで、
+        別途存在する _capture_thread (音声キャプチャ) は別物。
+        pa.terminate() 時に _capture_thread が read() 中だとクラッシュ。
+        """
+        call_order = []
+
+        # capture スレッドモック: join() 呼び出しを記録する
+        mock_cap_a = MagicMock(spec=threading.Thread)
+        mock_cap_a.is_alive.return_value = True
+        mock_cap_a.join.side_effect = lambda timeout=None: call_order.append("join_cap_a")
+
+        mock_cap_b = MagicMock(spec=threading.Thread)
+        mock_cap_b.is_alive.return_value = True
+        mock_cap_b.join.side_effect = lambda timeout=None: call_order.append("join_cap_b")
+
+        # PyAudio モック: terminate() 呼び出しを記録する
+        mock_pa = MagicMock()
+        mock_pa.terminate.side_effect = lambda: call_order.append("pa_terminate")
+
+        # MultiCaptionSystem を object.__new__ で最小構成にする
+        obj = object.__new__(MultiCaptionSystem)
+        obj._route_a = _make_minimal_caption_system()
+        obj._route_b = _make_minimal_caption_system()
+        # _capture_thread を各 CaptionSystem に注入
+        obj._route_a._capture_thread = mock_cap_a
+        obj._route_b._capture_thread = mock_cap_b
+        # asyncio スレッドは持たない（shutdown が _capture_thread まで到達するケース）
+        obj._pa = mock_pa
+
+        obj.shutdown()
+
+        # capture スレッドの join が pa_terminate より前に呼ばれること
+        assert "pa_terminate" in call_order, "pa_terminate が呼ばれなかった"
+        assert "join_cap_a" in call_order, "_route_a._capture_thread の join() が呼ばれなかった"
+        assert "join_cap_b" in call_order, "_route_b._capture_thread の join() が呼ばれなかった"
+
+        terminate_idx = call_order.index("pa_terminate")
+        for label in ("join_cap_a", "join_cap_b"):
+            join_idx = call_order.index(label)
+            assert join_idx < terminate_idx, (
+                f"{label}({join_idx}) が pa_terminate({terminate_idx}) より後に呼ばれた"
+            )
+
+    def test_shutdown_joins_capture_threads_with_sufficient_timeout(self):
+        """shutdown() の _capture_thread join が十分な timeout（>= 5.0 秒）で呼ばれること。
+
+        pa.read() は最大 chunk_size/sample_rate 秒ブロックするため、
+        短い timeout だとスレッドが生き残り terminate() クラッシュの原因になる。
+        """
+        mock_cap_a = MagicMock(spec=threading.Thread)
+        mock_cap_a.is_alive.return_value = True
+        mock_pa = MagicMock()
+
+        obj = object.__new__(MultiCaptionSystem)
+        obj._route_a = _make_minimal_caption_system()
+        obj._route_b = _make_minimal_caption_system()
+        obj._route_a._capture_thread = mock_cap_a
+        obj._pa = mock_pa
+
+        obj.shutdown()
+
+        # join() が timeout 付きで呼ばれ、かつ timeout >= 5.0 秒であること
+        mock_cap_a.join.assert_called_once()
+        call_kwargs = mock_cap_a.join.call_args
+        timeout_val = call_kwargs.kwargs.get("timeout") or (
+            call_kwargs.args[0] if call_kwargs.args else None
+        )
+        assert timeout_val is not None, "_capture_thread.join() が timeout 引数なしで呼ばれた"
+        assert timeout_val >= 5.0, (
+            f"capture thread join timeout={timeout_val} が小さすぎる（5.0 秒以上必要）"
+        )
+
+    def test_caption_system_shutdown_capture_thread_join_timeout_is_5_seconds(self):
+        """CaptionSystem.shutdown() の capture thread join が timeout=5.0 で呼ばれること。
+
+        旧実装は timeout=1.0 で pa.read() のブロックを抜けられず、
+        MultiCaptionSystem.shutdown() が terminate() を呼ぶ前にスレッドが残存していた。
+        """
+        mock_cap = MagicMock(spec=threading.Thread)
+        mock_cap.is_alive.return_value = True
+
+        cs = _make_minimal_caption_system()
+        cs._capture_thread = mock_cap
+
+        cs.shutdown()
+
+        # join() が timeout=5.0 で呼ばれること
+        mock_cap.join.assert_called_once()
+        call_kwargs = mock_cap.join.call_args
+        timeout_val = call_kwargs.kwargs.get("timeout") or (
+            call_kwargs.args[0] if call_kwargs.args else None
+        )
+        assert timeout_val is not None, "CaptionSystem.shutdown() の capture join に timeout がない"
+        assert timeout_val >= 5.0, (
+            f"CaptionSystem.shutdown() の capture join timeout={timeout_val} が小さすぎる（5.0 秒以上必要）"
+        )
