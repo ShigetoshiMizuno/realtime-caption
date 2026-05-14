@@ -171,13 +171,15 @@ class TestRouteIndependence:
     def test_route_a_and_b_have_different_translator_instances(self):
         """route_a と route_b の _realtime_translator が別インスタンスであること。
 
-        注: 実際の起動は重いので、インスタンス化直後のオブジェクト同一性のみ確認。
+        PR-2: lazy init 化により、__init__ 後は _realtime_translator=None。
+        _create_realtime_translator() を直接呼んで lazy 生成後に別インスタンスであることを確認。
         """
         config = _make_fake_config()
         route_a = _make_route_config("a")
         route_b = _make_route_config("b")
 
-        with patch("realtime_translator.RealtimeTranslator") as MockTranslator:
+        with patch("realtime_translator.RealtimeTranslator") as MockTranslator, \
+             patch("cost_monitor.CostMonitor"):
             # 呼び出しごとに別インスタンスを返す
             MockTranslator.side_effect = [MagicMock(), MagicMock()]
             mcs = MultiCaptionSystem(
@@ -185,12 +187,22 @@ class TestRouteIndependence:
                 route_a=route_a,
                 route_b=route_b,
             )
+            # PR-2: lazy init — __init__ 直後は None、_create_realtime_translator() で生成
+            assert mcs.route_a_system._realtime_translator is None, (
+                "__init__ 直後に route_a._realtime_translator が None でない（lazy init 違反）"
+            )
+            assert mcs.route_b_system._realtime_translator is None, (
+                "__init__ 直後に route_b._realtime_translator が None でない（lazy init 違反）"
+            )
+            # lazy 生成後に別インスタンスであることを確認
+            mcs.route_a_system._create_realtime_translator()
+            mcs.route_b_system._create_realtime_translator()
 
         translator_a = mcs.route_a_system._realtime_translator
         translator_b = mcs.route_b_system._realtime_translator
 
-        assert translator_a is not None, "route_a の _realtime_translator が None"
-        assert translator_b is not None, "route_b の _realtime_translator が None"
+        assert translator_a is not None, "route_a の _realtime_translator が None（lazy 生成後）"
+        assert translator_b is not None, "route_b の _realtime_translator が None（lazy 生成後）"
         assert translator_a is not translator_b, "route_a と route_b が同一の translator を共有している"
 
     def test_route_a_and_b_have_independent_audio_stats(self):

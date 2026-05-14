@@ -453,37 +453,10 @@ class CaptionSystem:
             self._cost_monitor = None
         else:
             self._translator = None
-            # API キー未設定チェック（早期失敗）
-            api_key = config.get("openai", {}).get("api_key", "")
-            if not api_key or api_key == "your-api-key-here" or "xxx" in api_key:
-                raise ValueError(
-                    "[ERROR] openai-realtime モードには config.yaml の openai.api_key が必要です。"
-                )
-            rt_cfg = config.get("openai_realtime", {})
-            ao_cfg = config.get("openai_realtime", {}).get("audio_output", {})
-            from realtime_translator import RealtimeTranslator
-            self._realtime_translator = RealtimeTranslator(
-                api_key=api_key,
-                target_language_code=rt_cfg.get("target_language_code", "ja"),
-                model=rt_cfg.get("model", "gpt-realtime-translate"),
-                connect_timeout=rt_cfg.get("connect_timeout", 10),
-                reconnect_max_attempts=rt_cfg.get("reconnect_max_attempts", 5),
-                reconnect_backoff_base=rt_cfg.get("reconnect_backoff_base", 1.5),
-                on_transcript=self._on_realtime_transcript,
-                on_source_transcript=self._on_realtime_source_transcript,
-                on_error=self._on_realtime_error,
-                on_connected=on_ready,
-                request_audio_output=self._audio_output_mode,
-                on_audio_delta=self._on_audio_delta if self._audio_output_mode else None,
-            )
-            # コスト保護: 最大稼働時間監視
-            from cost_monitor import CostMonitor
-            max_min = rt_cfg.get("max_session_minutes", 60)
-            self._cost_monitor = CostMonitor(
-                max_session_minutes=max_min,
-                on_max_reached=self._on_cost_max_reached,
-                on_warning=self._on_cost_warning,
-            )
+            # PR-2: API キーチェックは start() 時に遅延実施（lazy init）。
+            # __init__ では ValueError を投げず、_realtime_translator / _cost_monitor を None にする。
+            self._realtime_translator = None
+            self._cost_monitor = None
 
         self._route_id: str = route_id
         # route_id を先に確定させてから _log_path / _verbose_log_path を作成する
@@ -604,6 +577,108 @@ class CaptionSystem:
                 self._audio_stream.set_volume(float(value))
             except Exception:
                 pass
+
+    def _create_realtime_translator(self) -> None:
+        """start() 時に呼ばれる RealtimeTranslator / CostMonitor の lazy initialization。
+
+        既に生成済みの場合は no-op。
+        """
+        if self._realtime_translator is not None:
+            return
+        rt_cfg = self._config.get("openai_realtime", {})
+        api_key = self._config.get("openai", {}).get("api_key", "")
+        from realtime_translator import RealtimeTranslator
+        self._realtime_translator = RealtimeTranslator(
+            api_key=api_key,
+            target_language_code=rt_cfg.get("target_language_code", "ja"),
+            model=rt_cfg.get("model", "gpt-realtime-translate"),
+            connect_timeout=rt_cfg.get("connect_timeout", 10),
+            reconnect_max_attempts=rt_cfg.get("reconnect_max_attempts", 5),
+            reconnect_backoff_base=rt_cfg.get("reconnect_backoff_base", 1.5),
+            on_transcript=self._on_realtime_transcript,
+            on_source_transcript=self._on_realtime_source_transcript,
+            on_error=self._on_realtime_error,
+            on_connected=self._on_ready,
+            request_audio_output=self._audio_output_mode,
+            on_audio_delta=self._on_audio_delta if self._audio_output_mode else None,
+        )
+        from cost_monitor import CostMonitor
+        max_min = rt_cfg.get("max_session_minutes", 60)
+        self._cost_monitor = CostMonitor(
+            max_session_minutes=max_min,
+            on_max_reached=self._on_cost_max_reached,
+            on_warning=self._on_cost_warning,
+        )
+
+    def start(self) -> None:
+        """IDLE / ERROR 状態から RUNNING へ遷移する。
+
+        - _stop_event をリセット
+        - asyncio イベントループスレッドを生成して asyncio.run(self.run()) を実行
+        - STARTING / RUNNING 中は no-op（冪等性保証）
+        - API キー未設定の場合は state=ERROR に遷移して on_error を呼ぶ
+        """
+        # 冪等性ガード
+        if self.state in (RouteState.STARTING, RouteState.RUNNING):
+            return
+
+        self._set_state(RouteState.STARTING)
+        try:
+            # API キー遅延チェック（realtime モードの場合）
+            if self._realtime_mode:
+                api_key = self._config.get("openai", {}).get("api_key", "")
+                if not api_key or api_key == "your-api-key-here" or "xxx" in api_key:
+                    msg = "openai.api_key が未設定です"
+                    print(
+                        f"[ERROR] CaptionSystem(route_id={self._route_id})"
+                        f" start failed: {msg}",
+                        flush=True,
+                    )
+                    self._set_state(RouteState.ERROR)
+                    if self._on_realtime_error_external is not None:
+                        try:
+                            self._on_realtime_error_external(msg)
+                        except Exception:
+                            pass
+                    return
+                # RealtimeTranslator / CostMonitor を lazy 生成
+                self._create_realtime_translator()
+
+            # _stop_event をクリア（前回 stop() で再生成済みだが念のため）
+            self._stop_event.clear()
+
+            # asyncio.run(self.run()) を別スレッドで実行
+            def _run_in_thread():
+                try:
+                    asyncio.run(self.run())
+                except Exception as e:
+                    import traceback
+                    print(
+                        f"[ERROR] CaptionSystem(route_id={self._route_id})"
+                        f" run() exception: {e}",
+                        flush=True,
+                    )
+                    print(traceback.format_exc(), flush=True)
+                    self._set_state(RouteState.ERROR)
+                    return
+                # 正常終了: IDLE に戻す（stop() が先に IDLE にしている場合は no-op）
+                if self.state not in (RouteState.IDLE,):
+                    self._set_state(RouteState.IDLE)
+
+            self._asyncio_thread = threading.Thread(
+                target=_run_in_thread,
+                daemon=True,
+                name=f"CaptionSystem-{self._route_id}",
+            )
+            self._asyncio_thread.start()
+            self._set_state(RouteState.RUNNING)
+        except Exception as e:
+            print(
+                f"[ERROR] CaptionSystem(route_id={self._route_id}) start() failed: {e}",
+                flush=True,
+            )
+            self._set_state(RouteState.ERROR)
+            raise
 
     def stop(self) -> None:
         """RUNNING → STOPPING → IDLE への遷移。
