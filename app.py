@@ -916,6 +916,12 @@ def _on_konnyaku_start_stop_click():
             on_realtime_error=_on_realtime_error_handler,
             on_thread_error=_konnyaku_thread_error_handler,
         )
+        # verbose モードが有効なら各 CaptionSystem に反映
+        if _verbose_state:
+            if _konnyaku_system.route_a_system is not None:
+                _konnyaku_system.route_a_system.verbose = True
+            if _konnyaku_system.route_b_system is not None:
+                _konnyaku_system.route_b_system.verbose = True
         _konnyaku_system.start()
         _konnyaku_running = True
 
@@ -2222,7 +2228,15 @@ def main():
         "--inject-test-transcripts", action="store_true",
         help="Inject fake transcripts to verify broadcast path (use with --auto-konnyaku)",
     )
+    parser.add_argument(
+        "--verbose", action="store_true",
+        help="Enable verbose logging (RT_* events to _verbose.txt) from startup",
+    )
     args = parser.parse_args()
+
+    if args.verbose:
+        global _verbose_state
+        _verbose_state = True
 
     _config = load_config("config.yaml")
     _host_api = _config.get("audio", {}).get("host_api", "wasapi")
