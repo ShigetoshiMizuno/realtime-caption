@@ -744,3 +744,143 @@ class TestAutoKonnyakuArgparse:
         assert len(started_threads) == 0, (
             f"引数なし時に AutoKonnyakuRunner スレッドが起動してしまった: {started_threads}"
         )
+
+
+# ---------------------------------------------------------------------------
+# Issue #43: 系統別 ON/OFF トグル — GUI テスト
+# ---------------------------------------------------------------------------
+
+def _make_widget_values_with_enable(
+    route_a_device_label: str,
+    route_b_device_label: str,
+    route_a_enabled: bool = True,
+    route_b_enabled: bool = True,
+) -> dict:
+    """ON/OFF チェックボックスを含むウィジェット値辞書を組み立てる。"""
+    base = _make_widget_values(route_a_device_label, route_b_device_label)
+    base[app.TAG_ROUTE_A_ENABLE] = route_a_enabled
+    base[app.TAG_ROUTE_B_ENABLE] = route_b_enabled
+    return base
+
+
+class TestRouteToggle:
+    """系統別 ON/OFF トグルの GUI 動作テスト（Issue #43）。"""
+
+    def test_start_with_both_routes_disabled_shows_error(self):
+        """両系統 OFF で開始ボタン押下時、ステータスにエラー表示が出ること。"""
+        fake_devices = _fake_devices()
+        route_a_label = _device_label_for(fake_devices[0])
+        route_b_label = _device_label_for(fake_devices[1])
+        widget_values = _make_widget_values_with_enable(
+            route_a_label, route_b_label,
+            route_a_enabled=False, route_b_enabled=False,
+        )
+        set_value_calls: dict[str, str] = {}
+        mock_dpg = _make_dpg_mock(widget_values)
+        mock_dpg.set_value.side_effect = lambda tag, val: set_value_calls.update({tag: val})
+        mock_mcs = MagicMock()
+
+        with (
+            patch.object(app, "dpg", mock_dpg),
+            patch.object(app, "_devices", fake_devices),
+            patch.object(app, "_config", _fake_config()),
+            patch.object(app, "_system", None),
+            patch.object(app, "_konnyaku_system", None),
+            patch.object(app, "_konnyaku_running", False),
+            patch.object(app, "MultiCaptionSystem", mock_mcs),
+        ):
+            app._on_konnyaku_start_stop_click()
+
+        # MultiCaptionSystem は生成されないこと
+        mock_mcs.assert_not_called()
+        # ステータスにエラーが表示されること
+        assert app.TAG_STATUS_STATE in set_value_calls, (
+            "両系統 OFF 時に TAG_STATUS_STATE に set_value が呼ばれていない"
+        )
+
+    def test_start_with_only_route_a_enabled_passes_route_b_none(self):
+        """route_a のみ ON のとき MultiCaptionSystem に route_b=None が渡されること。"""
+        fake_devices = _fake_devices()
+        route_a_label = _device_label_for(fake_devices[0])
+        route_b_label = _device_label_for(fake_devices[1])
+        widget_values = _make_widget_values_with_enable(
+            route_a_label, route_b_label,
+            route_a_enabled=True, route_b_enabled=False,
+        )
+        mock_dpg = _make_dpg_mock(widget_values)
+        mock_mcs = MagicMock()
+        mock_mcs.return_value = MagicMock()
+
+        with (
+            patch.object(app, "dpg", mock_dpg),
+            patch.object(app, "_devices", fake_devices),
+            patch.object(app, "_config", _fake_config()),
+            patch.object(app, "_system", None),
+            patch.object(app, "_konnyaku_system", None),
+            patch.object(app, "_konnyaku_running", False),
+            patch.object(app, "MultiCaptionSystem", mock_mcs),
+        ):
+            app._on_konnyaku_start_stop_click()
+
+        mock_mcs.assert_called_once()
+        call_kwargs = mock_mcs.call_args.kwargs
+        assert call_kwargs["route_a"] is not None, "route_a が None になっている"
+        assert call_kwargs["route_b"] is None, "route_b が None でない"
+
+    def test_start_with_only_route_b_enabled_passes_route_a_none(self):
+        """route_b のみ ON のとき MultiCaptionSystem に route_a=None が渡されること。"""
+        fake_devices = _fake_devices()
+        route_a_label = _device_label_for(fake_devices[0])
+        route_b_label = _device_label_for(fake_devices[1])
+        widget_values = _make_widget_values_with_enable(
+            route_a_label, route_b_label,
+            route_a_enabled=False, route_b_enabled=True,
+        )
+        mock_dpg = _make_dpg_mock(widget_values)
+        mock_mcs = MagicMock()
+        mock_mcs.return_value = MagicMock()
+
+        with (
+            patch.object(app, "dpg", mock_dpg),
+            patch.object(app, "_devices", fake_devices),
+            patch.object(app, "_config", _fake_config()),
+            patch.object(app, "_system", None),
+            patch.object(app, "_konnyaku_system", None),
+            patch.object(app, "_konnyaku_running", False),
+            patch.object(app, "MultiCaptionSystem", mock_mcs),
+        ):
+            app._on_konnyaku_start_stop_click()
+
+        mock_mcs.assert_called_once()
+        call_kwargs = mock_mcs.call_args.kwargs
+        assert call_kwargs["route_a"] is None, "route_a が None でない"
+        assert call_kwargs["route_b"] is not None, "route_b が None になっている"
+
+    def test_start_with_both_enabled_passes_both_configs(self):
+        """両系統 ON のとき MultiCaptionSystem に route_a・route_b 両方が渡されること（既存動作維持）。"""
+        fake_devices = _fake_devices()
+        route_a_label = _device_label_for(fake_devices[0])
+        route_b_label = _device_label_for(fake_devices[1])
+        widget_values = _make_widget_values_with_enable(
+            route_a_label, route_b_label,
+            route_a_enabled=True, route_b_enabled=True,
+        )
+        mock_dpg = _make_dpg_mock(widget_values)
+        mock_mcs = MagicMock()
+        mock_mcs.return_value = MagicMock()
+
+        with (
+            patch.object(app, "dpg", mock_dpg),
+            patch.object(app, "_devices", fake_devices),
+            patch.object(app, "_config", _fake_config()),
+            patch.object(app, "_system", None),
+            patch.object(app, "_konnyaku_system", None),
+            patch.object(app, "_konnyaku_running", False),
+            patch.object(app, "MultiCaptionSystem", mock_mcs),
+        ):
+            app._on_konnyaku_start_stop_click()
+
+        mock_mcs.assert_called_once()
+        call_kwargs = mock_mcs.call_args.kwargs
+        assert call_kwargs["route_a"] is not None, "route_a が None になっている（両方 ON のはず）"
+        assert call_kwargs["route_b"] is not None, "route_b が None になっている（両方 ON のはず）"

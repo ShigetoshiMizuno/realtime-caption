@@ -670,3 +670,95 @@ class TestCaptureStreamStopOnShutdown:
         assert stop_idx < join_idx, (
             f"stop_stream({stop_idx}) が join_cap({join_idx}) より後に呼ばれた"
         )
+
+
+# ---------------------------------------------------------------------------
+# Issue #43: 系統別 ON/OFF — Optional route テスト
+# ---------------------------------------------------------------------------
+
+class TestOptionalRouteInstantiation:
+    """MultiCaptionSystem が route_a / route_b の片方を None で受け付けること。"""
+
+    def test_multi_caption_system_accepts_only_route_a(self):
+        """route_b=None で route_a のみで起動できること。"""
+        with patch("main.pyaudio.PyAudio"), patch("realtime_translator.RealtimeTranslator"):
+            mcs = MultiCaptionSystem(
+                config=_make_fake_config(),
+                route_a=_make_route_config("a"),
+                route_b=None,
+            )
+        assert mcs.route_a_system is not None
+        assert mcs.route_b_system is None
+
+    def test_multi_caption_system_accepts_only_route_b(self):
+        """route_a=None で route_b のみで起動できること。"""
+        with patch("main.pyaudio.PyAudio"), patch("realtime_translator.RealtimeTranslator"):
+            mcs = MultiCaptionSystem(
+                config=_make_fake_config(),
+                route_a=None,
+                route_b=_make_route_config("b"),
+            )
+        assert mcs.route_a_system is None
+        assert mcs.route_b_system is not None
+
+    def test_multi_caption_system_rejects_both_none(self):
+        """両方 None なら ValueError を投げること。"""
+        with pytest.raises(ValueError, match="少なくとも1つ"):
+            MultiCaptionSystem(
+                config=_make_fake_config(),
+                route_a=None,
+                route_b=None,
+            )
+
+    def test_route_a_only_total_cost_uses_single_session(self):
+        """route_b=None のとき total_estimated_cost_usd が route_a 分だけ計上されること。"""
+        with patch("main.pyaudio.PyAudio"), patch("realtime_translator.RealtimeTranslator"):
+            mcs = MultiCaptionSystem(
+                config=_make_fake_config(),
+                route_a=_make_route_config("a"),
+                route_b=None,
+            )
+        # _cost_monitor は None（初期状態）なので cost = 0.0 が返ること
+        assert mcs.total_estimated_cost_usd == 0.0
+
+    def test_route_b_only_creates_own_broadcaster(self):
+        """route_a=None のとき route_b が broadcaster を所有すること（_owns_broadcaster=True）。"""
+        with patch("main.pyaudio.PyAudio"), patch("realtime_translator.RealtimeTranslator"):
+            mcs = MultiCaptionSystem(
+                config=_make_fake_config(),
+                route_a=None,
+                route_b=_make_route_config("b"),
+            )
+        assert mcs.route_b_system._owns_broadcaster is True
+
+    def test_shutdown_handles_missing_route_a_safely(self):
+        """route_a=None（_route_a が None）のとき shutdown() が NoneType アクセスでクラッシュしないこと。"""
+        obj = object.__new__(MultiCaptionSystem)
+        obj._route_a = None
+        obj._route_b = _make_minimal_caption_system()
+        obj._pa = None
+
+        # 例外が出なければ OK
+        obj.shutdown()
+
+    def test_shutdown_handles_missing_route_b_safely(self):
+        """route_b=None（_route_b が None）のとき shutdown() が NoneType アクセスでクラッシュしないこと。"""
+        obj = object.__new__(MultiCaptionSystem)
+        obj._route_a = _make_minimal_caption_system()
+        obj._route_b = None
+        obj._pa = None
+
+        # 例外が出なければ OK
+        obj.shutdown()
+
+    def test_pyaudio_created_once_for_single_route(self):
+        """route_b=None でも PyAudio が1回だけ生成されること。"""
+        with patch("main.pyaudio.PyAudio") as mock_pa_cls:
+            mock_pa_cls.return_value = MagicMock()
+            with patch("realtime_translator.RealtimeTranslator"):
+                MultiCaptionSystem(
+                    config=_make_fake_config(),
+                    route_a=_make_route_config("a"),
+                    route_b=None,
+                )
+        assert mock_pa_cls.call_count == 1
