@@ -301,3 +301,62 @@ class TestMultiCaptionSystemPhase4:
             mcs._thread_b.join(timeout=3.0)
             assert not mcs._thread_a.is_alive(), "route_a スレッドが終了していない"
             assert not mcs._thread_b.is_alive(), "route_b スレッドが終了していない"
+
+
+# ---------------------------------------------------------------------------
+# Phase 5: 共有 PyAudio インスタンス（Issue #38 PortAudio assertion 対策）
+# ---------------------------------------------------------------------------
+
+class TestSharedPyAudioInstance:
+    """MultiCaptionSystem が PyAudio を1つだけ生成し両 route で共有すること。
+
+    背景: 複数の pyaudio.PyAudio() を並列初期化すると WASAPI の状態が破壊され
+    'Assertion failed: hostApi->info.defaultOutputDevice < hostApi->info.deviceCount'
+    が発生してプロセスがクラッシュする。
+    """
+
+    def test_multi_caption_system_creates_single_pyaudio_instance(self):
+        """MultiCaptionSystem が PyAudio インスタンスを1つだけ生成し、両 route で共有すること。"""
+        with patch("main.pyaudio.PyAudio") as mock_pa_cls:
+            mock_pa_cls.return_value = MagicMock()
+            with patch("realtime_translator.RealtimeTranslator"):
+                mcs = MultiCaptionSystem(
+                    config=_make_fake_config(),
+                    route_a=_make_route_config("a"),
+                    route_b=_make_route_config("b"),
+                )
+            # PyAudio() は1回だけ呼ばれること（共有インスタンス）
+            assert mock_pa_cls.call_count == 1, (
+                f"PyAudio() が {mock_pa_cls.call_count} 回呼ばれた。1回だけ呼ばれるべき。"
+            )
+            # 両 route が同じ PyAudio インスタンスを参照すること
+            assert mcs.route_a_system._pa_instance is mcs.route_b_system._pa_instance, (
+                "route_a と route_b が異なる PyAudio インスタンスを持っている"
+            )
+
+    def test_multi_caption_system_shutdown_terminates_pyaudio(self):
+        """MultiCaptionSystem.shutdown() で共有 PyAudio インスタンスが terminate されること。"""
+        with patch("main.pyaudio.PyAudio") as mock_pa_cls:
+            mock_instance = MagicMock()
+            mock_pa_cls.return_value = mock_instance
+            with patch("realtime_translator.RealtimeTranslator"):
+                mcs = MultiCaptionSystem(
+                    config=_make_fake_config(),
+                    route_a=_make_route_config("a"),
+                    route_b=_make_route_config("b"),
+                )
+            mcs.shutdown()
+            mock_instance.terminate.assert_called_once()
+
+    def test_caption_system_single_mode_has_none_pa_instance_by_default(self):
+        """CaptionSystem 単独起動時（pa_instance 未指定）は _pa_instance が None であること（後方互換）。"""
+        with patch("realtime_translator.RealtimeTranslator"):
+            cs = CaptionSystem(
+                config=_make_fake_config(),
+                device_info={"index": 0, "name": "FakeDevice"},
+                model_name="tiny",
+                # pa_instance を渡さない → デフォルト None
+            )
+        assert cs._pa_instance is None, (
+            "_pa_instance はデフォルトで None であるべき"
+        )
