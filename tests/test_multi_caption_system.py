@@ -360,3 +360,110 @@ class TestSharedPyAudioInstance:
         assert cs._pa_instance is None, (
             "_pa_instance はデフォルトで None であるべき"
         )
+
+
+# ---------------------------------------------------------------------------
+# Phase 6: shutdown 安全順序（Issue #38 access violation 修正）
+# ---------------------------------------------------------------------------
+
+class TestSafeShutdownOrdering:
+    """shutdown() が capture スレッドを join してから PyAudio.terminate() を呼ぶこと。
+
+    背景: capture スレッドが pyaudiowpatch.read() を実行中に terminate() を呼ぶと
+    PortAudio が access violation でクラッシュする（実機ログ確認済み）。
+    修正後は join(timeout=5.0) でスレッド終了を待ってから terminate する。
+    """
+
+    def test_multi_caption_system_shutdown_joins_threads_before_pa_terminate(self):
+        """shutdown() が asyncio スレッド (_thread_a/_thread_b) を join してから
+        PyAudio.terminate() を呼ぶこと。
+
+        背景: capture スレッドが pyaudiowpatch.read() を実行中に pa.terminate() が呼ばれると
+        PortAudio が access violation でクラッシュする。
+        MultiCaptionSystem.shutdown() は _thread_a/_thread_b を join(timeout=5.0) してから
+        pa.terminate() を呼ぶ必要がある。
+        """
+        call_order = []
+
+        # スレッドモック: join() が呼ばれたことを記録する
+        mock_thread_a = MagicMock(spec=threading.Thread)
+        mock_thread_a.is_alive.return_value = True
+        mock_thread_a.join.side_effect = lambda timeout=None: call_order.append("join_a")
+
+        mock_thread_b = MagicMock(spec=threading.Thread)
+        mock_thread_b.is_alive.return_value = True
+        mock_thread_b.join.side_effect = lambda timeout=None: call_order.append("join_b")
+
+        # PyAudio モック: terminate() が呼ばれたことを記録する
+        mock_pa = MagicMock()
+        mock_pa.terminate.side_effect = lambda: call_order.append("pa_terminate")
+
+        # start() 呼び出し済みを前提にした状態を組み立てる
+        # （_thread_a/_thread_b が shutdown 後に join されるべき状態）
+        obj = object.__new__(MultiCaptionSystem)
+        obj._route_a = _make_minimal_caption_system()
+        obj._route_b = _make_minimal_caption_system()
+        obj._thread_a = mock_thread_a
+        obj._thread_b = mock_thread_b
+        obj._pa = mock_pa
+
+        obj.shutdown()
+
+        # join_a と join_b が pa_terminate より前に現れていること
+        assert "pa_terminate" in call_order, "pa_terminate が呼ばれなかった"
+        assert "join_a" in call_order, "_thread_a の join() が呼ばれなかった"
+        assert "join_b" in call_order, "_thread_b の join() が呼ばれなかった"
+        terminate_idx = call_order.index("pa_terminate")
+        for join_label in ("join_a", "join_b"):
+            join_idx = call_order.index(join_label)
+            assert join_idx < terminate_idx, (
+                f"{join_label}({join_idx}) が pa_terminate({terminate_idx}) より後に呼ばれた"
+            )
+
+    def test_multi_caption_system_shutdown_calls_join_with_timeout(self):
+        """shutdown() の _thread join が timeout=5.0 で呼ばれること。
+
+        無限ブロックを防ぐため timeout 引数は必須。
+        """
+        mock_thread_a = MagicMock(spec=threading.Thread)
+        mock_thread_a.is_alive.return_value = True
+        mock_thread_b = MagicMock(spec=threading.Thread)
+        mock_thread_b.is_alive.return_value = True
+        mock_pa = MagicMock()
+
+        obj = object.__new__(MultiCaptionSystem)
+        obj._route_a = _make_minimal_caption_system()
+        obj._route_b = _make_minimal_caption_system()
+        obj._thread_a = mock_thread_a
+        obj._thread_b = mock_thread_b
+        obj._pa = mock_pa
+
+        obj.shutdown()
+
+        # join() が timeout 付きで呼ばれること（timeout=5.0）
+        mock_thread_a.join.assert_called_once()
+        call_kwargs = mock_thread_a.join.call_args
+        timeout_val = call_kwargs.kwargs.get("timeout") or (
+            call_kwargs.args[0] if call_kwargs.args else None
+        )
+        assert timeout_val is not None, "_thread_a.join() が timeout 引数なしで呼ばれた"
+        assert timeout_val >= 1.0, f"timeout={timeout_val} が小さすぎる（最低 1.0 秒必要）"
+
+    def test_caption_system_shutdown_wakes_asyncio_event(self):
+        """CaptionSystem.shutdown() が asyncio 側 _stop_event_async を起こすこと。
+
+        別スレッドから shutdown() を呼んだとき、loop.call_soon_threadsafe で
+        _stop_event_async.set() が安全に呼ばれることを確認する。
+        """
+        cs = _make_minimal_caption_system()
+
+        # asyncio loop と _stop_event_async のモックを注入
+        mock_loop = MagicMock()
+        mock_async_event = MagicMock()
+        cs._loop = mock_loop
+        cs._stop_event_async = mock_async_event
+
+        cs.shutdown()
+
+        # call_soon_threadsafe が _stop_event_async.set を引数に呼ばれること
+        mock_loop.call_soon_threadsafe.assert_called_once_with(mock_async_event.set)
