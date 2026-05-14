@@ -476,6 +476,8 @@ class CaptionSystem:
             )
 
         self._route_id: str = route_id
+        # route_id を先に確定させてから _log_path / _verbose_log_path を作成する
+        # （_make_log_path は route_id をサフィックスとして使うため）
         # 注入された共有 PyAudio インスタンス（None なら各スレッドが自前で生成）
         # MultiCaptionSystem が共有 PyAudio を管理し、PortAudio 二重初期化を防ぐ
         self._pa_instance: "pyaudio.PyAudio | None" = pa_instance
@@ -491,7 +493,7 @@ class CaptionSystem:
         self._stop_event = threading.Event()
         self._stop_event_async: asyncio.Event | None = None
         log_dir = config.get("output", {}).get("log_dir", ".")
-        self._log_path = self._make_log_path(Path(log_dir))
+        self._log_path = self._make_log_path(Path(log_dir), self._route_id)
         # 音声処理の共有状態（capture スレッドと GUI / RPC スレッド間）
         # frozen dataclass + Lock でスナップショット方式（PEP 703 free-threaded 対応）
         self._audio_stats_lock = threading.Lock()
@@ -678,9 +680,11 @@ class CaptionSystem:
             return
         try:
             ts = datetime.now().strftime("%H:%M:%S.%f")[:-3]
+            # 経路 ID を接頭辞に付与（複数系統で同一ファイルに書く場合の区別用）
+            route_prefix = f"[{getattr(self, '_route_id', '?')}]"
             with self._verbose_lock:
                 with self._ensure_verbose_log_path().open("a", encoding="utf-8") as f:
-                    f.write(f"[{ts}] {event}\n")
+                    f.write(f"[{ts}] {route_prefix} {event}\n")
                     for k, v in fields.items():
                         s = str(v).replace("\n", "\\n")
                         if len(s) > 500:
@@ -691,12 +695,17 @@ class CaptionSystem:
             pass  # ロギング自体で失敗してもアプリは止めない
 
     @staticmethod
-    def _make_log_path(log_dir: Path) -> Path:
-        """YYYY-MM-DD-n_translate.txt 形式のログファイルパスを生成する。"""
+    def _make_log_path(log_dir: Path, route_id: str = "a") -> Path:
+        """YYYY-MM-DD-n[-route-X]_translate.txt 形式のログファイルパスを生成する。
+
+        - route_id="a" の場合（既存・単独モード）: YYYY-MM-DD-n_translate.txt（互換）
+        - route_id="b" の場合: YYYY-MM-DD-n-route-b_translate.txt
+        """
         today = datetime.now().strftime("%Y-%m-%d")
+        suffix = f"-route-{route_id}" if route_id != "a" else ""
         n = 1
         while True:
-            path = log_dir / f"{today}-{n}_translate.txt"
+            path = log_dir / f"{today}-{n}{suffix}_translate.txt"
             if not path.exists():
                 return path
             n += 1
