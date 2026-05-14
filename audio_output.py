@@ -69,6 +69,7 @@ class AudioOutputStream:
         self._sample_rate = sample_rate
         self._channels = channels
         self._chunk_size = chunk_size
+        self._volume_lock = threading.Lock()
         self._volume = volume
 
         self._queue: queue.Queue = queue.Queue()
@@ -199,6 +200,22 @@ class AudioOutputStream:
         with self._peak_lock:
             return self._audio_peak_now
 
+    @property
+    def volume(self) -> float:
+        """現在の音量倍率を返す（thread-safe）。"""
+        with self._volume_lock:
+            return self._volume
+
+    def set_volume(self, value: float) -> None:
+        """音量倍率を動的に変更する（thread-safe）。
+
+        Parameters
+        ----------
+        value: 新しい音量倍率。0.0〜2.0 にクランプされる。
+        """
+        with self._volume_lock:
+            self._volume = max(0.0, min(float(value), 2.0))
+
     def write(self, pcm16_bytes: bytes) -> None:
         """
         PCM16 bytes をキューに積む（スレッドセーフ）。
@@ -221,10 +238,11 @@ class AudioOutputStream:
             )
             self._write_count += 1
 
-        if self._volume != 1.0:
+        vol = self.volume
+        if vol != 1.0:
             # PCM16 を int32 に拡張して乗算し、int16 範囲にクリップして戻す
             samples = np.frombuffer(pcm16_bytes, dtype=np.int16).astype(np.int32)
-            samples = np.clip((samples * self._volume).astype(np.int32), -32768, 32767)
+            samples = np.clip((samples * vol).astype(np.int32), -32768, 32767)
             pcm16_bytes = samples.astype(np.int16).tobytes()
 
         # peak 追跡: volume 適用後のデータで peak を更新

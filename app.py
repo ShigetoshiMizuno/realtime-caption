@@ -492,6 +492,66 @@ def _on_gain_value_change(sender, value, user_data):
         _system.manual_gain = float(value)
 
 
+def _on_route_a_gain_change(sender, app_data, user_data):
+    """経路A 入力ゲイン倍率スライダー変更時。動作中の系統に即反映。"""
+    if _konnyaku_system is None or _konnyaku_system.route_a_system is None:
+        return
+    try:
+        _konnyaku_system.route_a_system.manual_gain = float(app_data)
+    except Exception:
+        pass
+
+
+def _on_route_b_gain_change(sender, app_data, user_data):
+    """経路B 入力ゲイン倍率スライダー変更時。動作中の系統に即反映。"""
+    if _konnyaku_system is None or _konnyaku_system.route_b_system is None:
+        return
+    try:
+        _konnyaku_system.route_b_system.manual_gain = float(app_data)
+    except Exception:
+        pass
+
+
+def _on_route_a_volume_change(sender, app_data, user_data):
+    """経路A 出力音量スライダー変更時。動作中の AudioOutputStream に即反映。"""
+    if _konnyaku_system is None or _konnyaku_system.route_a_system is None:
+        return
+    try:
+        _konnyaku_system.route_a_system.output_volume = float(app_data)
+    except Exception:
+        pass
+
+
+def _on_route_b_volume_change(sender, app_data, user_data):
+    """経路B 出力音量スライダー変更時。動作中の AudioOutputStream に即反映。"""
+    if _konnyaku_system is None or _konnyaku_system.route_b_system is None:
+        return
+    try:
+        _konnyaku_system.route_b_system.output_volume = float(app_data)
+    except Exception:
+        pass
+
+
+def _on_route_a_gain_mode_change(sender, app_data, user_data):
+    """経路A ゲインモード（off/manual/auto）コンボ変更時。動作中の系統に即反映。"""
+    if _konnyaku_system is None or _konnyaku_system.route_a_system is None:
+        return
+    try:
+        _konnyaku_system.route_a_system.gain_mode = str(app_data)
+    except Exception:
+        pass
+
+
+def _on_route_b_gain_mode_change(sender, app_data, user_data):
+    """経路B ゲインモード（off/manual/auto）コンボ変更時。動作中の系統に即反映。"""
+    if _konnyaku_system is None or _konnyaku_system.route_b_system is None:
+        return
+    try:
+        _konnyaku_system.route_b_system.gain_mode = str(app_data)
+    except Exception:
+        pass
+
+
 def _find_zoom_preset_output(devices: list[dict]) -> int | None:
     """
     デバイスリストから CABLE Input (VB-CABLE) のインデックスを返す純関数。
@@ -1732,13 +1792,15 @@ def _build_gui():
                     items=["off", "manual", "auto"],
                     default_value="off",
                     width=90,
+                    callback=_on_route_a_gain_mode_change,
                 )
                 dpg.add_text("  倍率:")
                 dpg.add_slider_float(
                     tag=TAG_ROUTE_A_GAIN_SLIDER,
                     default_value=1.0,
-                    min_value=1.0, max_value=20.0,
+                    min_value=1.0, max_value=50.0,
                     width=160, format="%.2f",
+                    callback=_on_route_a_gain_change,
                 )
             with dpg.group(horizontal=True):
                 dpg.add_text("入力レベル:")
@@ -1777,6 +1839,7 @@ def _build_gui():
                     default_value=1.0,
                     min_value=0.0, max_value=2.0,
                     width=200, format="%.2f",
+                    callback=_on_route_a_volume_change,
                 )
             with dpg.group(horizontal=True):
                 dpg.add_text("出力レベル:")
@@ -1808,13 +1871,15 @@ def _build_gui():
                     items=["off", "manual", "auto"],
                     default_value="off",
                     width=90,
+                    callback=_on_route_b_gain_mode_change,
                 )
                 dpg.add_text("  倍率:")
                 dpg.add_slider_float(
                     tag=TAG_ROUTE_B_GAIN_SLIDER,
                     default_value=1.0,
-                    min_value=1.0, max_value=20.0,
+                    min_value=1.0, max_value=50.0,
                     width=160, format="%.2f",
+                    callback=_on_route_b_gain_change,
                 )
             with dpg.group(horizontal=True):
                 dpg.add_text("入力レベル:")
@@ -1856,6 +1921,7 @@ def _build_gui():
                     default_value=1.0,
                     min_value=0.0, max_value=2.0,
                     width=200, format="%.2f",
+                    callback=_on_route_b_volume_change,
                 )
             with dpg.group(horizontal=True):
                 dpg.add_text("出力レベル:")

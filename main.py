@@ -552,6 +552,21 @@ class CaptionSystem:
     def manual_gain(self, value: float) -> None:
         self._update_audio_stats(manual_gain=value)
 
+    @property
+    def output_volume(self) -> float:
+        """出力音量倍率を返す。"""
+        return self._output_volume
+
+    @output_volume.setter
+    def output_volume(self, value: float) -> None:
+        """出力音量倍率を設定し、動作中の AudioOutputStream に即座に反映する。"""
+        self._output_volume = float(value)
+        if self._audio_stream is not None:
+            try:
+                self._audio_stream.set_volume(float(value))
+            except Exception:
+                pass
+
     def shutdown(self):
         import time as _time
         _t0 = _time.monotonic()
@@ -916,7 +931,7 @@ class CaptionSystem:
                 stats_snapshot = self.audio_stats
                 audio_f = audio.astype(np.float32)
                 if stats_snapshot.mode == "manual":
-                    g = max(1.0, min(float(stats_snapshot.manual_gain), 20.0))
+                    g = max(1.0, min(float(stats_snapshot.manual_gain), 50.0))
                     new_gain = g
                     audio_f = audio_f * g
                 elif stats_snapshot.mode == "auto":
@@ -927,7 +942,7 @@ class CaptionSystem:
                     if self._agc_envelope > 1.0:
                         target = 20000.0
                         desired = target / self._agc_envelope
-                        desired = max(1.0, min(desired, 20.0))
+                        desired = max(1.0, min(desired, 50.0))
                         # 急減は速く、増大は遅く（attack 0.3 / release 0.05）
                         alpha = 0.3 if desired < self._agc_gain else 0.05
                         self._agc_gain += (desired - self._agc_gain) * alpha
