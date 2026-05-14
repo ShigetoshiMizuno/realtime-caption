@@ -81,47 +81,78 @@ class AudioOutputStream:
         self._peak_lock = threading.Lock()
         # デバッグ: write() 呼び出し回数（最初の数回だけログ出力）
         self._write_count: int = 0
+        # リサンプリング: 実際にデバイスをオープンしたレート（start() 後に確定する）
+        # input_rate（= sample_rate, 通常 24000）と異なる場合は _drain_loop でリサンプリングする
+        self._input_rate: int = sample_rate
+        self._output_rate: int = sample_rate
 
     def start(self) -> None:
         """
         pyaudio output stream を開き、キュー消費スレッドを起動する。
         既に起動済みの場合は何もしない。
+
+        サンプルレートのフォールバック順序:
+          1. 指定レート（通常 24000Hz）
+          2. デバイスの defaultSampleRate（48000Hz 等）
+          3. 48000Hz（最終フォールバック）
+          4. 44100Hz（最終フォールバック）
         """
         if self._started:
             return
 
-        try:
-            kwargs: dict = {
-                "format": self._get_pyaudio_format(),
-                "channels": self._channels,
-                "rate": self._sample_rate,
-                "output": True,
-                "frames_per_buffer": self._chunk_size,
-            }
-            if self._device_index is not None:
-                kwargs["output_device_index"] = self._device_index
+        # フォールバック用レートリストを構築
+        rates_to_try = [self._input_rate]
+        if self._pa is not None and self._device_index is not None:
+            try:
+                info = self._pa.get_device_info_by_index(self._device_index)
+                default_rate = int(info.get("defaultSampleRate", 48000))
+                if default_rate != self._input_rate:
+                    rates_to_try.append(default_rate)
+            except Exception:
+                pass
+        for fallback in (48000, 44100):
+            if fallback not in rates_to_try:
+                rates_to_try.append(fallback)
 
-            self._stream = self._pa.open(**kwargs)
-        except Exception as e:
-            # デバイス情報を添えてエラーを詳細に出力（デバッグ用）
-            dev_info = ""
-            if self._pa is not None and self._device_index is not None:
-                try:
-                    info = self._pa.get_device_info_by_index(self._device_index)
-                    dev_info = (
-                        f" device_name={info.get('name', '?')!r}"
-                        f" defaultSampleRate={info.get('defaultSampleRate', '?')}"
-                    )
-                except Exception:
-                    pass
+        last_error = None
+        for try_rate in rates_to_try:
+            try:
+                kwargs: dict = {
+                    "format": self._get_pyaudio_format(),
+                    "channels": self._channels,
+                    "rate": try_rate,
+                    "output": True,
+                    "frames_per_buffer": self._chunk_size,
+                }
+                if self._device_index is not None:
+                    kwargs["output_device_index"] = self._device_index
+
+                self._stream = self._pa.open(**kwargs)
+                self._output_rate = try_rate
+                print(
+                    f"[AudioOutputStream] 開始成功: device_index={self._device_index}"
+                    f" rate={try_rate}"
+                    f"{' (リサンプリング有効)' if try_rate != self._input_rate else ''}",
+                    flush=True,
+                )
+                break
+            except Exception as e:
+                last_error = e
+                print(
+                    f"[AudioOutputStream] rate={try_rate}Hz オープン失敗: {e}",
+                    flush=True,
+                )
+                continue
+
+        if self._stream is None:
+            # 全てのレートで失敗した場合
             logger.error(
-                "[AudioOutputStream] ストリームのオープンに失敗: %s"
-                " (device_index=%s rate=%d%s)",
-                e, self._device_index, self._sample_rate, dev_info,
+                "[AudioOutputStream] 全 rate で失敗 device_index=%s tried=%s last_error=%s",
+                self._device_index, rates_to_try, last_error,
             )
             print(
-                f"[AudioOutputStream] ストリームのオープンに失敗: {e}"
-                f" (device_index={self._device_index} rate={self._sample_rate}{dev_info})",
+                f"[AudioOutputStream] 全 rate で失敗 device_index={self._device_index}"
+                f" tried={rates_to_try} last_error={last_error}",
                 flush=True,
             )
             return
@@ -135,9 +166,10 @@ class AudioOutputStream:
         self._thread.start()
         self._started = True
         logger.info(
-            "[AudioOutputStream] 開始: device_index=%s rate=%d",
+            "[AudioOutputStream] 開始: device_index=%s input_rate=%d output_rate=%d",
             self._device_index,
-            self._sample_rate,
+            self._input_rate,
+            self._output_rate,
         )
 
     @property
@@ -255,7 +287,22 @@ class AudioOutputStream:
         """
         キューからデータを取り出して pyaudio ストリームに書き込む
         daemon スレッドのメインループ。
+
+        input_rate と output_rate が異なる場合は scipy.signal.resample_poly で
+        PCM16 データをリサンプリングしてから書き込む。
         """
+        from math import gcd
+        from scipy.signal import resample_poly
+
+        # リサンプリング比を事前計算（不要な場合は None で無効化）
+        if self._output_rate != self._input_rate:
+            g = gcd(self._output_rate, self._input_rate)
+            _resample_up = self._output_rate // g
+            _resample_down = self._input_rate // g
+        else:
+            _resample_up = None
+            _resample_down = None
+
         while not self._stop_event.is_set():
             try:
                 data = self._queue.get(timeout=0.1)
@@ -268,6 +315,12 @@ class AudioOutputStream:
 
             if self._stream is None:
                 continue
+
+            # リサンプリングが必要な場合（input_rate != output_rate）
+            if _resample_up is not None:
+                samples = np.frombuffer(data, dtype=np.int16).astype(np.float32)
+                resampled = resample_poly(samples, _resample_up, _resample_down)
+                data = np.clip(resampled, -32768, 32767).astype(np.int16).tobytes()
 
             try:
                 self._stream.write(data)
