@@ -871,20 +871,50 @@ def _create_konnyaku_system() -> None:
     if saved_b_lang_name in lang_names:
         b_lang_code = lang_codes[lang_names.index(saved_b_lang_name)]
 
+    # 出力デバイスインデックスを解決
+    # （audio_output_enabled=True かつ output_device の保存値があれば index を解決）
+    def _resolve_output_device_index(saved_label: str) -> int | None:
+        if not saved_label or saved_label == "(なし)":
+            return None
+        out_devs = list_audio_devices(device_type="output")
+        matched = find_device_by_name(saved_label, out_devs)
+        return matched["index"] if matched else None
+
+    a_output_enabled = bool(route_a_saved.get("output_enabled", False))
+    a_output_idx = (
+        _resolve_output_device_index(route_a_saved.get("output_device", ""))
+        if a_output_enabled else None
+    )
+    b_output_enabled = bool(route_b_saved.get("output_enabled", True))
+    b_output_idx = (
+        _resolve_output_device_index(route_b_saved.get("output_device", ""))
+        if b_output_enabled else None
+    )
+    print(
+        f"[INFO] _create_konnyaku_system: route_a output_enabled={a_output_enabled} "
+        f"output_device_index={a_output_idx}",
+        flush=True,
+    )
+    print(
+        f"[INFO] _create_konnyaku_system: route_b output_enabled={b_output_enabled} "
+        f"output_device_index={b_output_idx}",
+        flush=True,
+    )
+
     route_a_cfg = RouteConfig(
         route_id="a",
         input_device_info=route_a_device,
         target_language_code=a_lang_code,
-        audio_output_enabled=bool(route_a_saved.get("output_enabled", False)),
-        output_device_index=None,
+        audio_output_enabled=a_output_enabled,
+        output_device_index=a_output_idx,
         output_volume=float(route_a_saved.get("output_volume", 1.0)),
     )
     route_b_cfg = RouteConfig(
         route_id="b",
         input_device_info=route_b_device,
         target_language_code=b_lang_code,
-        audio_output_enabled=bool(route_b_saved.get("output_enabled", True)),
-        output_device_index=None,
+        audio_output_enabled=b_output_enabled,
+        output_device_index=b_output_idx,
         output_volume=float(route_b_saved.get("output_volume", 1.0)),
     )
 
