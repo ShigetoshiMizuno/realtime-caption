@@ -603,6 +603,22 @@ def _on_zoom_preset_click():
     _save_settings()
 
 
+def _on_both_routes_on(sender=None, app_data=None, user_data=None):
+    """系統1・系統2 を両方とも有効化（一括 ON）。"""
+    if dpg.does_item_exist(TAG_ROUTE_A_ENABLE):
+        dpg.set_value(TAG_ROUTE_A_ENABLE, True)
+    if dpg.does_item_exist(TAG_ROUTE_B_ENABLE):
+        dpg.set_value(TAG_ROUTE_B_ENABLE, True)
+
+
+def _on_both_routes_off(sender=None, app_data=None, user_data=None):
+    """系統1・系統2 を両方とも無効化（一括 OFF）。"""
+    if dpg.does_item_exist(TAG_ROUTE_A_ENABLE):
+        dpg.set_value(TAG_ROUTE_A_ENABLE, False)
+    if dpg.does_item_exist(TAG_ROUTE_B_ENABLE):
+        dpg.set_value(TAG_ROUTE_B_ENABLE, False)
+
+
 def _on_konnyaku_preset_click():
     """翻訳こんにゃくモードプリセットボタン押下。
 
@@ -1790,13 +1806,30 @@ def _build_gui():
                     callback=_on_konnyaku_start_stop_click,
                     enabled=bool(trans_models),
                 )
+                dpg.add_text("  系統一括:")
+                dpg.add_button(
+                    label="両方 ON",
+                    width=90,
+                    callback=_on_both_routes_on,
+                )
+                dpg.add_button(
+                    label="両方 OFF",
+                    width=90,
+                    callback=_on_both_routes_off,
+                )
 
             dpg.add_separator()
 
             _lang_display_names = get_language_display_names()
 
             # --- 系統1: 相手→自分（聞き取り字幕）経路 ---
-            dpg.add_text("【系統1】相手→自分（聞き取り字幕）  You speak, I hear")
+            with dpg.group(horizontal=True):
+                dpg.add_checkbox(
+                    tag=TAG_ROUTE_A_ENABLE,
+                    label="",
+                    default_value=True,
+                )
+                dpg.add_text("【系統1】相手→自分（聞き取り字幕）  You speak, I hear")
             with dpg.group(horizontal=True):
                 dpg.add_text("入力デバイス:")
                 dpg.add_combo(
@@ -1875,7 +1908,13 @@ def _build_gui():
             dpg.add_separator()
 
             # --- 系統2: 自分→相手（同時通訳）経路 ---
-            dpg.add_text("【系統2】自分→相手（同時通訳）  I speak, they hear")
+            with dpg.group(horizontal=True):
+                dpg.add_checkbox(
+                    tag=TAG_ROUTE_B_ENABLE,
+                    label="",
+                    default_value=True,
+                )
+                dpg.add_text("【系統2】自分→相手（同時通訳）  I speak, they hear")
             with dpg.group(horizontal=True):
                 dpg.add_text("入力デバイス:")
                 dpg.add_combo(
