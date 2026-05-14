@@ -597,6 +597,10 @@ class CaptionSystem:
         rt_cfg = self._config.get("openai_realtime", {})
         api_key = self._config.get("openai", {}).get("api_key", "")
         from realtime_translator import RealtimeTranslator
+        # 常に request_audio_output=True / on_audio_delta=self._on_audio_delta で生成。
+        # こうしておけば、稼働中に音声出力 OFF→ON した場合でも RealtimeTranslator の
+        # callback を再設定する必要がなく、AudioOutputStream の有無で実出力を制御できる。
+        # （_on_audio_delta は _audio_stream が None なら no-op）
         self._realtime_translator = RealtimeTranslator(
             api_key=api_key,
             target_language_code=rt_cfg.get("target_language_code", "ja"),
@@ -608,8 +612,8 @@ class CaptionSystem:
             on_source_transcript=self._on_realtime_source_transcript,
             on_error=self._on_realtime_error,
             on_connected=self._on_ready,
-            request_audio_output=self._audio_output_mode,
-            on_audio_delta=self._on_audio_delta if self._audio_output_mode else None,
+            request_audio_output=True,
+            on_audio_delta=self._on_audio_delta,
         )
         from cost_monitor import CostMonitor
         max_min = rt_cfg.get("max_session_minutes", 60)
