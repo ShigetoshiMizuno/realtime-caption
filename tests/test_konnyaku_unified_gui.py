@@ -404,11 +404,17 @@ class TestSingleModeUIHidden:
         )
 
     def test_level_meter_not_added_in_build_gui(self):
-        """旧単独モードのレベルメーター（TAG_LEVEL_METER）が _build_gui から削除されていること。"""
+        """旧単独モードのレベルメーター（TAG_LEVEL_METER）が _build_gui から削除されていること。
+
+        TAG_LEVEL_METER_A_IN / B_IN 等のこんにゃくモードレベルメーターは残るため、
+        'tag=TAG_LEVEL_METER,' のように終端カンマを含む形式で旧単独モードのみをチェックする。
+        """
         import inspect
         source = inspect.getsource(app._build_gui)
 
-        assert "tag=TAG_LEVEL_METER" not in source, (
+        # TAG_LEVEL_METER, (末尾カンマ) で旧単独モードのウィジェット追加のみを確認
+        # TAG_LEVEL_METER_A_IN / A_OUT / B_IN / B_OUT は残るので部分一致しないよう注意
+        assert "tag=TAG_LEVEL_METER," not in source, (
             "_build_gui に TAG_LEVEL_METER の add_progress_bar 呼び出しが残っている"
         )
 
