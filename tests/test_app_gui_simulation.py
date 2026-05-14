@@ -887,3 +887,168 @@ class TestRouteToggle:
         call_kwargs = mock_mcs.call_args.kwargs
         assert call_kwargs["route_a"] is not None, "route_a が None になっている（両方 ON のはず）"
         assert call_kwargs["route_b"] is not None, "route_b が None になっている（両方 ON のはず）"
+
+
+# ---------------------------------------------------------------------------
+# Issue #51: 出力デバイス・ON/OFF コールバック RT 反映テスト
+# ---------------------------------------------------------------------------
+
+class TestOutputDeviceRTReflect:
+    """出力デバイスコンボと ON/OFF チェックボックスが稼働中に即反映されること（Issue #51）。"""
+
+    def test_route_a_output_device_combo_has_callback(self):
+        """_build_gui 内の TAG_ROUTE_A_OUTPUT_DEVICE_COMBO の add_combo に callback が設定されていること。"""
+        import inspect
+        source = inspect.getsource(app._build_gui)
+        # TAG_ROUTE_A_OUTPUT_DEVICE_COMBO の add_combo ブロックに callback= が含まれていること
+        # ソースを行単位で解析して確認する
+        lines = source.splitlines()
+        in_route_a_combo = False
+        found_callback = False
+        for i, line in enumerate(lines):
+            if "TAG_ROUTE_A_OUTPUT_DEVICE_COMBO" in line and "add_combo" in line:
+                in_route_a_combo = True
+            if in_route_a_combo:
+                if "callback=" in line and "_on_route_a_output_device_change" in line:
+                    found_callback = True
+                    break
+                # 次の add_ 系呼び出しが来たら抜ける（この combo ブロックは終わり）
+                if i > 0 and "add_" in line and "TAG_ROUTE_A_OUTPUT_DEVICE_COMBO" not in line:
+                    break
+        assert found_callback, (
+            "TAG_ROUTE_A_OUTPUT_DEVICE_COMBO の add_combo に "
+            "callback=_on_route_a_output_device_change が設定されていない"
+        )
+
+    def test_route_a_output_enable_checkbox_has_callback(self):
+        """_build_gui 内の TAG_ROUTE_A_OUTPUT_ENABLE の add_checkbox に callback が設定されていること。"""
+        import inspect
+        source = inspect.getsource(app._build_gui)
+        lines = source.splitlines()
+        in_route_a_enable = False
+        found_callback = False
+        for i, line in enumerate(lines):
+            if "TAG_ROUTE_A_OUTPUT_ENABLE" in line and "add_checkbox" in line:
+                in_route_a_enable = True
+            if in_route_a_enable:
+                if "callback=" in line and "_on_route_a_output_enable_change" in line:
+                    found_callback = True
+                    break
+                if i > 0 and "add_" in line and "TAG_ROUTE_A_OUTPUT_ENABLE" not in line:
+                    break
+        assert found_callback, (
+            "TAG_ROUTE_A_OUTPUT_ENABLE の add_checkbox に "
+            "callback=_on_route_a_output_enable_change が設定されていない"
+        )
+
+    def test_on_route_a_output_device_change_calls_set_output_device(self):
+        """_on_route_a_output_device_change が稼働中に route_a_system.set_output_device を呼ぶこと。"""
+        mock_system = MagicMock()
+        mock_system.route_a_system = MagicMock()
+        mock_system.route_a_system.set_output_device = MagicMock()
+
+        fake_out_devices = [
+            {"index": 2, "name": "Fake Speaker", "isLoopback": False},
+        ]
+
+        with (
+            patch.object(app, "_konnyaku_system", mock_system),
+            patch("app.list_audio_devices", return_value=fake_out_devices),
+            patch("app.find_device_by_name", return_value=fake_out_devices[0]),
+        ):
+            app._on_route_a_output_device_change(
+                sender=None, app_data="Fake Speaker", user_data=None
+            )
+
+        mock_system.route_a_system.set_output_device.assert_called_once_with(2)
+
+    def test_on_route_a_output_device_change_none_label_stops_stream(self):
+        """_on_route_a_output_device_change に空ラベルを渡すと set_output_device(None) が呼ばれること。"""
+        mock_system = MagicMock()
+        mock_system.route_a_system = MagicMock()
+        mock_system.route_a_system.set_output_device = MagicMock()
+
+        with patch.object(app, "_konnyaku_system", mock_system):
+            app._on_route_a_output_device_change(
+                sender=None, app_data="(なし)", user_data=None
+            )
+
+        mock_system.route_a_system.set_output_device.assert_called_once_with(None)
+
+    def test_on_route_b_output_device_change_calls_set_output_device(self):
+        """_on_route_b_output_device_change が稼働中に route_b_system.set_output_device を呼ぶこと。"""
+        mock_system = MagicMock()
+        mock_system.route_b_system = MagicMock()
+        mock_system.route_b_system.set_output_device = MagicMock()
+
+        fake_out_devices = [
+            {"index": 4, "name": "CABLE Input", "isLoopback": False},
+        ]
+
+        with (
+            patch.object(app, "_konnyaku_system", mock_system),
+            patch("app.list_audio_devices", return_value=fake_out_devices),
+            patch("app.find_device_by_name", return_value=fake_out_devices[0]),
+        ):
+            app._on_route_b_output_device_change(
+                sender=None, app_data="CABLE Input", user_data=None
+            )
+
+        mock_system.route_b_system.set_output_device.assert_called_once_with(4)
+
+    def test_on_route_a_output_enable_change_enables_stream(self):
+        """_on_route_a_output_enable_change(True) がデバイスを取得して set_output_device を呼ぶこと。"""
+        mock_system = MagicMock()
+        mock_system.route_a_system = MagicMock()
+        mock_system.route_a_system.set_output_device = MagicMock()
+
+        fake_out_devices = [{"index": 2, "name": "Fake Speaker", "isLoopback": False}]
+        mock_dpg = _make_dpg_mock({
+            app.TAG_ROUTE_A_OUTPUT_DEVICE_COMBO: "Fake Speaker",
+        })
+
+        with (
+            patch.object(app, "_konnyaku_system", mock_system),
+            patch.object(app, "dpg", mock_dpg),
+            patch("app.list_audio_devices", return_value=fake_out_devices),
+            patch("app.find_device_by_name", return_value=fake_out_devices[0]),
+        ):
+            app._on_route_a_output_enable_change(
+                sender=None, app_data=True, user_data=None
+            )
+
+        mock_system.route_a_system.set_output_device.assert_called_once_with(2)
+
+    def test_on_route_a_output_enable_change_disables_stream(self):
+        """_on_route_a_output_enable_change(False) が set_output_device(None) を呼ぶこと。"""
+        mock_system = MagicMock()
+        mock_system.route_a_system = MagicMock()
+        mock_system.route_a_system.set_output_device = MagicMock()
+
+        with patch.object(app, "_konnyaku_system", mock_system):
+            app._on_route_a_output_enable_change(
+                sender=None, app_data=False, user_data=None
+            )
+
+        mock_system.route_a_system.set_output_device.assert_called_once_with(None)
+
+    def test_on_route_b_output_enable_change_disables_stream(self):
+        """_on_route_b_output_enable_change(False) が set_output_device(None) を呼ぶこと。"""
+        mock_system = MagicMock()
+        mock_system.route_b_system = MagicMock()
+        mock_system.route_b_system.set_output_device = MagicMock()
+
+        with patch.object(app, "_konnyaku_system", mock_system):
+            app._on_route_b_output_enable_change(
+                sender=None, app_data=False, user_data=None
+            )
+
+        mock_system.route_b_system.set_output_device.assert_called_once_with(None)
+
+    def test_on_route_a_output_device_change_no_system_does_not_crash(self):
+        """_konnyaku_system が None の場合にコールバックが例外なく終了すること。"""
+        with patch.object(app, "_konnyaku_system", None):
+            # 例外が出なければ OK
+            app._on_route_a_output_device_change(
+                sender=None, app_data="Some Device", user_data=None
+            )

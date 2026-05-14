@@ -904,3 +904,135 @@ class TestOnRealtimeErrorCallback:
 
         # _on_realtime_error を呼ばない状態ではコールバックは0件
         assert len(callbacks) == 0
+
+
+# ---------------------------------------------------------------------------
+# Issue #51: CaptionSystem.set_output_device — 動的出力デバイス切り替えテスト
+# ---------------------------------------------------------------------------
+
+class TestSetOutputDevice:
+    """CaptionSystem.set_output_device の動作テスト（Issue #51）。"""
+
+    def test_caption_system_set_output_device_to_none_stops_stream(self):
+        """set_output_device(None) で _audio_stream が stop され None になること。"""
+        cs = _make_minimal_caption_system()
+        mock_stream = MagicMock()
+        cs._audio_stream = mock_stream
+        cs._output_volume = 1.0
+        cs._output_device_index = 5
+        cs._audio_output_mode = True
+        cs._audio_stream_lock = __import__("threading").Lock()
+
+        cs.set_output_device(None)
+
+        mock_stream.stop.assert_called_once()
+        assert cs._audio_stream is None, "_audio_stream が None になっていない"
+        assert cs._output_device_index is None, "_output_device_index が None になっていない"
+        assert cs._audio_output_mode is False, "_audio_output_mode が False になっていない"
+
+    def test_caption_system_set_output_device_creates_new_stream(self):
+        """set_output_device(new_index) で新しい AudioOutputStream が生成されること。"""
+        from unittest.mock import patch as _patch, MagicMock as _MM
+
+        cs = _make_minimal_caption_system()
+        cs._audio_stream = None
+        cs._output_volume = 1.0
+        cs._output_device_index = None
+        cs._audio_output_mode = False
+        cs._audio_stream_lock = __import__("threading").Lock()
+        cs._pa_instance = _MM()  # 共有 PyAudio モック
+
+        mock_stream_instance = _MM()
+
+        with _patch("main.AudioOutputStream", return_value=mock_stream_instance) as mock_cls:
+            cs.set_output_device(3)
+
+        mock_cls.assert_called_once()
+        call_kwargs = mock_cls.call_args.kwargs if mock_cls.call_args.kwargs else {}
+        call_args = mock_cls.call_args.args if mock_cls.call_args.args else ()
+        # device_index=3 が渡されていること
+        device_passed = call_kwargs.get("device_index") or (call_args[1] if len(call_args) > 1 else None)
+        assert device_passed == 3, f"device_index=3 が渡されなかった: kwargs={call_kwargs}, args={call_args}"
+        mock_stream_instance.start.assert_called_once()
+        assert cs._audio_stream is mock_stream_instance
+        assert cs._output_device_index == 3
+        assert cs._audio_output_mode is True
+
+    def test_caption_system_set_output_device_inherits_volume(self):
+        """set_output_device 時に既存の _output_volume が新ストリームに引き継がれること。"""
+        from unittest.mock import patch as _patch, MagicMock as _MM
+
+        cs = _make_minimal_caption_system()
+        cs._audio_stream = None
+        cs._output_volume = 0.75
+        cs._output_device_index = None
+        cs._audio_output_mode = False
+        cs._audio_stream_lock = __import__("threading").Lock()
+        cs._pa_instance = _MM()
+
+        mock_stream_instance = _MM()
+
+        with _patch("main.AudioOutputStream", return_value=mock_stream_instance) as mock_cls:
+            cs.set_output_device(7)
+
+        call_kwargs = mock_cls.call_args.kwargs if mock_cls.call_args else {}
+        # volume=0.75 が渡されていること
+        volume_passed = call_kwargs.get("volume")
+        assert volume_passed == 0.75, (
+            f"volume=0.75 が AudioOutputStream に渡されなかった: kwargs={call_kwargs}"
+        )
+
+    def test_caption_system_set_output_device_thread_safe(self):
+        """並行する set_output_device と write が競合してもクラッシュしないこと。"""
+        from unittest.mock import patch as _patch, MagicMock as _MM
+        import threading as _threading
+
+        cs = _make_minimal_caption_system()
+        cs._output_volume = 1.0
+        cs._output_device_index = None
+        cs._audio_output_mode = False
+        cs._audio_stream_lock = _threading.Lock()
+
+        # AudioOutputStream のモックを作成（start/stop/write を記録）
+        created_streams = []
+
+        def _make_stream(*a, **kw):
+            s = _MM()
+            s._stopped = False
+            def _stop():
+                s._stopped = True
+            s.stop.side_effect = _stop
+            created_streams.append(s)
+            return s
+
+        errors = []
+        iterations = 20
+
+        def _setter():
+            for i in range(iterations):
+                try:
+                    with _patch("main.AudioOutputStream", side_effect=_make_stream):
+                        cs.set_output_device(i % 4)
+                except Exception as e:
+                    errors.append(e)
+
+        def _writer():
+            for _ in range(iterations * 5):
+                with cs._audio_stream_lock:
+                    s = cs._audio_stream
+                if s is not None:
+                    try:
+                        s.write(b"\x00" * 16)
+                    except Exception:
+                        pass
+
+        # setter と writer を並行実行
+        cs._pa_instance = _MM()
+        t1 = _threading.Thread(target=_setter)
+        t2 = _threading.Thread(target=_writer)
+        t1.start()
+        t2.start()
+        t1.join(timeout=5.0)
+        t2.join(timeout=5.0)
+
+        assert not errors, f"並行実行中に例外が発生: {errors}"
