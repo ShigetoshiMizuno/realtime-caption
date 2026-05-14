@@ -372,38 +372,146 @@ class TestRouteCallbackPrefixes:
 # ---------------------------------------------------------------------------
 
 class TestSingleModeUIHidden:
-    """単独モードの UI 要素が show=False で非表示になっていること。
+    """単独モードの UI 要素が _build_gui から完全に削除されていること。
 
-    _build_gui() の add_combo / add_button 呼び出しを mock して引数を捕捉し、
-    TAG_START_BTN / TAG_DEVICE_COMBO / TAG_TRANS_COMBO 等が show=False で
-    作られることを確認する。
-
-    注意: これらを完全に show=False にするか削除するかは実装依存だが、
-    TAG_START_BTN については「非表示化」することが仕様要件。
+    こんにゃくモード一本化後、旧単独モード用ウィジェットは _build_gui から削除される。
+    TAG 定数自体（_do_start / _do_stop 等の CLI 用関数から参照）は残っても良いが、
+    add_button / add_combo 呼び出しは _build_gui から取り除かれること。
     """
 
-    def test_start_btn_hidden_in_main_ui(self):
-        """TAG_START_BTN が _build_gui で非表示グループに入っているか、削除されていること。
+    def test_start_btn_not_added_in_build_gui(self):
+        """TAG_START_BTN の add_button が _build_gui から削除されていること。
 
-        ソースコードレベルで以下いずれかを確認する:
-        - パターン1: add_button(tag=TAG_START_BTN, ...) が show=False グループ内にある
-                     → ソースに 'show=False' と 'TAG_START_BTN' の両方が含まれる
-        - パターン2: add_button 呼び出し自体が削除され TAG 定数のみ残っている
-                     → 'add_button' の行に 'TAG_START_BTN' が含まれない
+        定数（TAG_START_BTN = "start_btn"）はモジュールトップに残るが、
+        _build_gui 内では add_button(tag=TAG_START_BTN, ...) が呼ばれないこと。
         """
         import inspect
         source = inspect.getsource(app._build_gui)
 
-        # TAG_START_BTN の add_button が存在すること
-        assert "TAG_START_BTN" in source, "_build_gui に TAG_START_BTN の定義がない"
-
-        # 仕様: TAG_START_BTN は show=False の group 内に配置する（こんにゃくモードに統合）
-        # ソース中に show=False と TAG_START_BTN の両方が含まれること
-        in_build_gui_with_show_false = (
-            'show=False' in source and 'TAG_START_BTN' in source
+        # _build_gui 内に TAG_START_BTN を使った add_button 呼び出しがないこと
+        # (TAG_START_BTN は _do_start 等から参照されるため定数定義は残る)
+        assert "tag=TAG_START_BTN" not in source, (
+            "_build_gui に TAG_START_BTN の add_button 呼び出しが残っている"
         )
-        assert in_build_gui_with_show_false, (
-            "_build_gui で TAG_START_BTN が show=False グループ内に配置されていない"
+
+    def test_gain_mode_combo_not_added_in_build_gui(self):
+        """旧単独モードの入力ゲインコンボ（TAG_GAIN_MODE）が _build_gui から削除されていること。"""
+        import inspect
+        source = inspect.getsource(app._build_gui)
+
+        assert "tag=TAG_GAIN_MODE" not in source, (
+            "_build_gui に TAG_GAIN_MODE の add_combo 呼び出しが残っている"
+        )
+
+    def test_level_meter_not_added_in_build_gui(self):
+        """旧単独モードのレベルメーター（TAG_LEVEL_METER）が _build_gui から削除されていること。
+
+        TAG_LEVEL_METER_A_IN / B_IN 等のこんにゃくモードレベルメーターは残るため、
+        'tag=TAG_LEVEL_METER,' のように終端カンマを含む形式で旧単独モードのみをチェックする。
+        """
+        import inspect
+        source = inspect.getsource(app._build_gui)
+
+        # TAG_LEVEL_METER, (末尾カンマ) で旧単独モードのウィジェット追加のみを確認
+        # TAG_LEVEL_METER_A_IN / A_OUT / B_IN / B_OUT は残るので部分一致しないよう注意
+        assert "tag=TAG_LEVEL_METER," not in source, (
+            "_build_gui に TAG_LEVEL_METER の add_progress_bar 呼び出しが残っている"
+        )
+
+    def test_trans_combo_not_added_in_build_gui(self):
+        """旧翻訳エンジン選択コンボ（TAG_TRANS_COMBO）が _build_gui から削除されていること。"""
+        import inspect
+        source = inspect.getsource(app._build_gui)
+
+        assert "tag=TAG_TRANS_COMBO" not in source, (
+            "_build_gui に TAG_TRANS_COMBO の add_combo 呼び出しが残っている"
+        )
+
+
+# ---------------------------------------------------------------------------
+# 7. 設定クリーンアップ後の削除済みウィジェット確認（ソースレベル）
+# ---------------------------------------------------------------------------
+
+class TestSettingsCleanup:
+    """settings cleanup (#38 followup) — 削除対象ウィジェットが _build_gui に存在しないこと。"""
+
+    def test_whisper_model_combo_not_in_build_gui(self):
+        """Whisper 認識モデルコンボ（TAG_MODEL_COMBO）が _build_gui のウィジェット作成から削除されていること。
+
+        注意: TAG_MODEL_COMBO 定数はモジュールトップに残るが、
+        _build_gui 内で add_combo(tag=TAG_MODEL_COMBO, ...) が呼ばれないこと。
+        """
+        import inspect
+        source = inspect.getsource(app._build_gui)
+
+        assert "tag=TAG_MODEL_COMBO" not in source, (
+            "_build_gui に TAG_MODEL_COMBO の add_combo が残っている（Whisper 設定削除済みのはず）"
+        )
+
+    def test_vad_sensitivity_slider_not_in_build_gui(self):
+        """VAD 感度スライダー（TAG_VAD_SENSITIVITY）が _build_gui から削除されていること。"""
+        import inspect
+        source = inspect.getsource(app._build_gui)
+
+        assert "tag=TAG_VAD_SENSITIVITY" not in source, (
+            "_build_gui に TAG_VAD_SENSITIVITY の add_slider_float が残っている"
+        )
+
+    def test_vad_silence_slider_not_in_build_gui(self):
+        """VAD 無音待機スライダー（TAG_VAD_SILENCE）が _build_gui から削除されていること。"""
+        import inspect
+        source = inspect.getsource(app._build_gui)
+
+        assert "tag=TAG_VAD_SILENCE" not in source, (
+            "_build_gui に TAG_VAD_SILENCE の add_slider_float が残っている"
+        )
+
+    def test_realtime_settings_group_not_in_build_gui(self):
+        """Realtime 専用「音声出力先」グループ（TAG_REALTIME_SETTINGS_GROUP）が _build_gui から削除されていること。"""
+        import inspect
+        source = inspect.getsource(app._build_gui)
+
+        assert "tag=TAG_REALTIME_SETTINGS_GROUP" not in source, (
+            "_build_gui に TAG_REALTIME_SETTINGS_GROUP の group が残っている"
+        )
+
+    def test_whisper_settings_group_not_in_build_gui(self):
+        """Whisper 専用設定グループ（TAG_WHISPER_SETTINGS_GROUP）が _build_gui から削除されていること。"""
+        import inspect
+        source = inspect.getsource(app._build_gui)
+
+        assert "tag=TAG_WHISPER_SETTINGS_GROUP" not in source, (
+            "_build_gui に TAG_WHISPER_SETTINGS_GROUP の group が残っている"
+        )
+
+    def test_api_key_inputs_still_in_build_gui(self):
+        """API キー入力（TAG_OPENAI_KEY_INPUT / TAG_DEEPL_KEY_INPUT）は _build_gui に残っていること。"""
+        import inspect
+        source = inspect.getsource(app._build_gui)
+
+        assert "TAG_OPENAI_KEY_INPUT" in source, (
+            "_build_gui から TAG_OPENAI_KEY_INPUT が消えている（残すべき）"
+        )
+        assert "TAG_DEEPL_KEY_INPUT" in source, (
+            "_build_gui から TAG_DEEPL_KEY_INPUT が消えている（残すべき）"
+        )
+
+    def test_device_filter_still_in_build_gui(self):
+        """デバイスフィルタ（TAG_HOST_API_COMBO）は _build_gui に残っていること。"""
+        import inspect
+        source = inspect.getsource(app._build_gui)
+
+        assert "TAG_HOST_API_COMBO" in source, (
+            "_build_gui から TAG_HOST_API_COMBO が消えている（残すべき）"
+        )
+
+    def test_konnyaku_section_still_in_build_gui(self):
+        """翻訳こんにゃくセクション（TAG_KONNYAKU_SECTION）は _build_gui に残っていること。"""
+        import inspect
+        source = inspect.getsource(app._build_gui)
+
+        assert "TAG_KONNYAKU_SECTION" in source, (
+            "_build_gui から TAG_KONNYAKU_SECTION が消えている（残すべき）"
         )
 
 

@@ -266,19 +266,23 @@ def _load_settings() -> dict:
 def _save_settings():
     try:
         # 翻訳エンジンは表示ラベルではなく内部キーで保存する
-        trans_label = dpg.get_value(TAG_TRANS_COMBO)
-        trans_key = _trans_label_to_key(trans_label)
+        # TAG_TRANS_COMBO は _build_gui から削除済み（単独モード廃止）のため does_item_exist で安全化
+        if dpg.does_item_exist(TAG_TRANS_COMBO):
+            trans_label = dpg.get_value(TAG_TRANS_COMBO)
+            trans_key = _trans_label_to_key(trans_label)
+        else:
+            trans_key = "openai-realtime"
         output_device = ""
         if dpg.does_item_exist(TAG_OUTPUT_DEVICE_COMBO):
             output_device = dpg.get_value(TAG_OUTPUT_DEVICE_COMBO)
         data = {
-            "device": dpg.get_value(TAG_DEVICE_COMBO),
-            "model": dpg.get_value(TAG_MODEL_COMBO),
+            "device": dpg.get_value(TAG_DEVICE_COMBO) if dpg.does_item_exist(TAG_DEVICE_COMBO) else "",
+            "model": dpg.get_value(TAG_MODEL_COMBO) if dpg.does_item_exist(TAG_MODEL_COMBO) else "",
             "trans": trans_key,
-            "vad_sensitivity": dpg.get_value(TAG_VAD_SENSITIVITY),
-            "vad_silence": dpg.get_value(TAG_VAD_SILENCE),
-            "gain_mode": dpg.get_value(TAG_GAIN_MODE),
-            "gain_value": dpg.get_value(TAG_GAIN_SLIDER),
+            "vad_sensitivity": dpg.get_value(TAG_VAD_SENSITIVITY) if dpg.does_item_exist(TAG_VAD_SENSITIVITY) else VAD_DEFAULT_SENSITIVITY,
+            "vad_silence": dpg.get_value(TAG_VAD_SILENCE) if dpg.does_item_exist(TAG_VAD_SILENCE) else VAD_DEFAULT_SILENCE,
+            "gain_mode": dpg.get_value(TAG_GAIN_MODE) if dpg.does_item_exist(TAG_GAIN_MODE) else GAIN_DEFAULT_MODE,
+            "gain_value": dpg.get_value(TAG_GAIN_SLIDER) if dpg.does_item_exist(TAG_GAIN_SLIDER) else GAIN_DEFAULT_VALUE,
             "verbose": _verbose_state,
             "output_device": output_device,
         }
@@ -1605,47 +1609,7 @@ def _build_gui():
     with dpg.window(tag="main_window", no_title_bar=True, no_resize=True,
                     no_move=True, no_scrollbar=True):
 
-        # --- ツールバー 1行目: 単独モード（非表示） ---
-        # こんにゃくモードに統合したため show=False で非表示化。
-        # 内部参照（_do_start / RPC サーバー）のためタグは保持する。
-        with dpg.group(horizontal=True, show=False):
-            dpg.add_text("音声入力:")
-            dpg.add_combo(
-                tag=TAG_DEVICE_COMBO,
-                items=device_labels,
-                default_value=default_device,
-                width=-130,
-                callback=lambda: threading.Thread(target=_trigger_preload, daemon=True).start(),
-            )
-            dpg.add_button(tag=TAG_START_BTN, label="開始", width=120,
-                           callback=_on_start_stop_click,
-                           enabled=bool(trans_models))
-
-        # --- ツールバー 2行目: 単独モード入力ゲイン（非表示） + ログクリア・Verbose ---
-        # 単独モード用の入力ゲイン・レベルメーターはこんにゃくモードの各経路メーターに統合。
-        with dpg.group(horizontal=True, show=False):
-            dpg.add_text("入力ゲイン:")
-            dpg.add_combo(
-                tag=TAG_GAIN_MODE,
-                items=["off", "manual", "auto"],
-                default_value=default_gain_mode,
-                width=90,
-                callback=_on_gain_mode_change,
-            )
-            dpg.add_text("  倍率:", tag=TAG_GAIN_LABEL,
-                         show=(default_gain_mode == "manual"))
-            dpg.add_slider_float(
-                tag=TAG_GAIN_SLIDER,
-                default_value=default_gain_value,
-                min_value=1.0, max_value=20.0,
-                width=200, format="%.2f",
-                callback=_on_gain_value_change,
-                show=(default_gain_mode == "manual"),
-            )
-            dpg.add_text("  音量:")
-            dpg.add_progress_bar(tag=TAG_LEVEL_METER, default_value=0.0,
-                                 width=180, overlay="0%")
-        # ログクリア・Verbose ボタンは常時表示
+        # ログクリア・Verbose ボタン
         with dpg.group(horizontal=True):
             dpg.add_button(label="ログクリア", width=100, callback=_clear_log)
             dpg.add_button(
@@ -1656,24 +1620,6 @@ def _build_gui():
 
         # --- 詳細設定（初期状態は折りたたみ） ---
         with dpg.collapsing_header(label="詳細設定", default_open=False):
-
-            # --- 翻訳エンジン選択（単独モード用・非表示） ---
-            # こんにゃくモードでは openai-realtime 固定のため非表示化。
-            # タグは _save_settings / _do_start から参照されるため残す。
-            with dpg.group(horizontal=True, show=False):
-                dpg.add_text("翻訳エンジン:")
-                dpg.add_combo(
-                    tag=TAG_TRANS_COMBO,
-                    items=trans_models if trans_models else ["(APIキー未設定)"],
-                    default_value=default_trans if trans_models else "(APIキー未設定)",
-                    width=180,
-                    enabled=len(trans_models) > 1,
-                    callback=lambda s, v, u: _update_settings_visibility(
-                        _trans_label_to_key(v)
-                    ),
-                )
-
-            dpg.add_separator()
 
             # --- API キー設定（全モード共通：OpenAI は常時表示） ---
             dpg.add_text("API キー設定（b64 難読化して config.yaml に保存）")
@@ -1724,61 +1670,6 @@ def _build_gui():
 
             dpg.add_separator()
 
-            # --- Realtime 専用設定（openai-realtime モード時のみ表示） ---
-            with dpg.group(tag=TAG_REALTIME_SETTINGS_GROUP):
-                with dpg.group(horizontal=True):
-                    dpg.add_text("音声出力先:")
-                    dpg.add_combo(
-                        tag=TAG_OUTPUT_DEVICE_COMBO,
-                        items=output_device_labels,
-                        default_value=default_output_device,
-                        width=280,
-                        callback=_save_settings,
-                    )
-                    dpg.add_text("  ")
-                    dpg.add_button(
-                        tag=TAG_ZOOM_PRESET_BTN,
-                        label="Zoom 同時通訳プリセット",
-                        width=200,
-                        callback=_on_zoom_preset_click,
-                    )
-                dpg.add_separator()
-
-            # --- Whisper 専用設定（非 openai-realtime モード時のみ表示） ---
-            with dpg.group(tag=TAG_WHISPER_SETTINGS_GROUP):
-                with dpg.group(horizontal=True):
-                    dpg.add_text("認識モデル:")
-                    dpg.add_combo(
-                        tag=TAG_MODEL_COMBO,
-                        items=["small", "medium"],
-                        default_value=default_model if default_model in ["small", "medium"] else "small",
-                        width=120,
-                        callback=lambda: threading.Thread(target=_trigger_preload, daemon=True).start(),
-                    )
-                with dpg.group(horizontal=True):
-                    dpg.add_text("発話検出感度:")
-                    dpg.add_slider_float(
-                        tag=TAG_VAD_SENSITIVITY,
-                        default_value=default_sensitivity,
-                        min_value=0.0, max_value=1.0,
-                        width=160, format="%.2f",
-                        callback=_on_vad_sensitivity_change,
-                    )
-                    dpg.add_text("  無音待機(秒):")
-                    dpg.add_slider_float(
-                        tag=TAG_VAD_SILENCE,
-                        default_value=default_silence,
-                        min_value=0.1, max_value=3.0,
-                        width=160, format="%.1f",
-                        callback=_on_vad_silence_change,
-                    )
-                    dpg.add_button(label="既定値に戻す", width=110,
-                                   callback=lambda: (
-                                       dpg.set_value(TAG_VAD_SENSITIVITY, VAD_DEFAULT_SENSITIVITY),
-                                       dpg.set_value(TAG_VAD_SILENCE, VAD_DEFAULT_SILENCE),
-                                   ))
-                dpg.add_separator()
-
             # --- Host API フィルタ（全モード共通） ---
             with dpg.group(horizontal=True):
                 dpg.add_text("デバイスフィルタ:")
@@ -1794,9 +1685,6 @@ def _build_gui():
                     callback=_on_host_api_change,
                 )
                 dpg.add_text("  ※ 同名デバイスが重複する場合は「all」に切り替え")
-
-        # 起動時の初期可視性を適用
-        _update_settings_visibility(_saved_trans_key)
 
         dpg.add_separator()
 
@@ -2046,6 +1934,10 @@ def _update_cost_status():
 
 def _update_level_meter():
     global _last_level_theme
+    # TAG_LEVEL_METER ウィジェットは _build_gui から削除済み（単独モード廃止）。
+    # _system が稼働中でもウィジェットが存在しない場合は何もしない。
+    if not dpg.does_item_exist(TAG_LEVEL_METER):
+        return
     peak = _system.audio_peak_now if _system else 0
     gain = _system.effective_gain if _system else 1.0
     level = min(1.0, peak / 32767.0)
