@@ -362,6 +362,17 @@ will re-download models.
 **`WinError 6` noise at stop**
 - Known upstream race in RealtimeSTT shutdown ([#4](../../issues/4)). Functionality is unaffected.
 
+### FAQ
+
+**Q: In Translation Konnyaku Mode, the translated audio plays ~5 seconds before the on-screen caption appears. Is this a bug?**
+
+No, this is the expected behavior of OpenAI's `gpt-realtime-translate` API:
+
+- `session.output_audio.delta` is streamed chunk-by-chunk **as soon as the model starts generating audio**.
+- `session.input_transcript.delta` / `session.output_transcript.delta` are emitted **once the model commits a sentence** (typically at sentence boundaries), which arrives later.
+
+Verbose logs typically show a 3-7 second gap between the first audio chunk and the first transcript chunk. The app does not buffer audio to wait for transcripts because the primary use-case (simultaneous interpretation through VB-CABLE) prioritizes low latency. If you need synchronized captions for recording purposes, please file an issue.
+
 ---
 ---
 
@@ -713,6 +724,17 @@ start.bat --cli
 
 **翻訳こんにゃくモードで片方の経路だけ動かない**
 - GUI のデバイス選択と各経路のレベルメーターで原因を切り分けてください。
+
+### よくある質問（FAQ）
+
+**Q: 翻訳こんにゃくモードで、翻訳音声が出てから 5 秒くらい遅れて字幕が出ます。バグですか？**
+
+これは OpenAI の `gpt-realtime-translate` API の仕様です：
+
+- `session.output_audio.delta` は **モデルが音声生成を始めた瞬間**から逐次ストリーミングされます。
+- `session.input_transcript.delta` / `session.output_transcript.delta` は **文単位で確定したあと** に送られるため、後発になります。
+
+verbose ログでは「最初の音声 chunk」と「最初の transcript chunk」の間に **3〜7 秒の差**が見えるのが普通です。本アプリは「同時通訳デバイス（VB-CABLE）」を主要用途として低レイテンシを優先しており、音声出力を transcript と同期するためのバッファリングは行いません。録画用途で字幕を同期させたい場合は issue を起票してください。
 
 ---
 
