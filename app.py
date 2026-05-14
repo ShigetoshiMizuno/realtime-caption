@@ -624,7 +624,7 @@ def _on_konnyaku_start_stop_click():
             finally:
                 if dpg.does_item_exist(TAG_KONNYAKU_START_BTN):
                     try:
-                        dpg.configure_item(TAG_KONNYAKU_START_BTN, label="こんにゃく開始", enabled=True)
+                        dpg.configure_item(TAG_KONNYAKU_START_BTN, label="開始", enabled=True)
                     except Exception:
                         pass
                 if dpg.does_item_exist(TAG_STATUS_STATE):
@@ -750,17 +750,56 @@ def _on_konnyaku_start_stop_click():
             output_volume=route_b_volume,
         )
 
+        # GUI ログに翻訳結果を出力するコールバック（経路 A / B 別）
+        def _on_result_route_a(original: str, translated: str) -> None:
+            """相手→自分 経路の翻訳結果を GUI ログに追加。"""
+            ts = datetime.now().strftime("%H:%M:%S")
+            _log_entries.append({
+                "ts": ts,
+                "original": (f"[相手] {original}" if original else ""),
+                "translated": (f"[相手] {translated}" if translated else ""),
+                "route": "a",
+            })
+            if len(_log_entries) > 200:
+                _log_entries.pop(0)
+            _enqueue(
+                "append_log",
+                ts=ts,
+                original=(f"[相手] {original}" if original else ""),
+                translated=(f"[相手] {translated}" if translated else ""),
+            )
+
+        def _on_result_route_b(original: str, translated: str) -> None:
+            """自分→相手 経路の翻訳結果を GUI ログに追加。"""
+            ts = datetime.now().strftime("%H:%M:%S")
+            _log_entries.append({
+                "ts": ts,
+                "original": (f"[自分] {original}" if original else ""),
+                "translated": (f"[自分] {translated}" if translated else ""),
+                "route": "b",
+            })
+            if len(_log_entries) > 200:
+                _log_entries.pop(0)
+            _enqueue(
+                "append_log",
+                ts=ts,
+                original=(f"[自分] {original}" if original else ""),
+                translated=(f"[自分] {translated}" if translated else ""),
+            )
+
         _konnyaku_system = MultiCaptionSystem(
             config=cfg,
             route_a=route_a_cfg,
             route_b=route_b_cfg,
+            on_result_a=_on_result_route_a,
+            on_result_b=_on_result_route_b,
             on_thread_error=_konnyaku_thread_error_handler,
         )
         _konnyaku_system.start()
         _konnyaku_running = True
 
         if dpg.does_item_exist(TAG_KONNYAKU_START_BTN):
-            dpg.configure_item(TAG_KONNYAKU_START_BTN, label="こんにゃく停止")
+            dpg.configure_item(TAG_KONNYAKU_START_BTN, label="停止")
 
     except Exception as e:
         import traceback
@@ -1548,8 +1587,10 @@ def _build_gui():
     with dpg.window(tag="main_window", no_title_bar=True, no_resize=True,
                     no_move=True, no_scrollbar=True):
 
-        # --- ツールバー 1行目: デバイス + Start ---
-        with dpg.group(horizontal=True):
+        # --- ツールバー 1行目: 単独モード（非表示） ---
+        # こんにゃくモードに統合したため show=False で非表示化。
+        # 内部参照（_do_start / RPC サーバー）のためタグは保持する。
+        with dpg.group(horizontal=True, show=False):
             dpg.add_text("音声入力:")
             dpg.add_combo(
                 tag=TAG_DEVICE_COMBO,
@@ -1562,8 +1603,9 @@ def _build_gui():
                            callback=_on_start_stop_click,
                            enabled=bool(trans_models))
 
-        # --- ツールバー 2行目: 入力ゲイン + レベルメーター + Clear log ---
-        with dpg.group(horizontal=True):
+        # --- ツールバー 2行目: 単独モード入力ゲイン（非表示） + ログクリア・Verbose ---
+        # 単独モード用の入力ゲイン・レベルメーターはこんにゃくモードの各経路メーターに統合。
+        with dpg.group(horizontal=True, show=False):
             dpg.add_text("入力ゲイン:")
             dpg.add_combo(
                 tag=TAG_GAIN_MODE,
@@ -1585,6 +1627,8 @@ def _build_gui():
             dpg.add_text("  音量:")
             dpg.add_progress_bar(tag=TAG_LEVEL_METER, default_value=0.0,
                                  width=180, overlay="0%")
+        # ログクリア・Verbose ボタンは常時表示
+        with dpg.group(horizontal=True):
             dpg.add_button(label="ログクリア", width=100, callback=_clear_log)
             dpg.add_button(
                 tag=TAG_VERBOSE_BTN,
@@ -1595,8 +1639,10 @@ def _build_gui():
         # --- 詳細設定（初期状態は折りたたみ） ---
         with dpg.collapsing_header(label="詳細設定", default_open=False):
 
-            # --- 翻訳エンジン選択（全モード共通） ---
-            with dpg.group(horizontal=True):
+            # --- 翻訳エンジン選択（単独モード用・非表示） ---
+            # こんにゃくモードでは openai-realtime 固定のため非表示化。
+            # タグは _save_settings / _do_start から参照されるため残す。
+            with dpg.group(horizontal=True, show=False):
                 dpg.add_text("翻訳エンジン:")
                 dpg.add_combo(
                     tag=TAG_TRANS_COMBO,
@@ -1736,24 +1782,22 @@ def _build_gui():
 
         dpg.add_separator()
 
-        # --- 翻訳こんにゃくモード (Issue #38 Phase 4) ---
-        with dpg.collapsing_header(
-            label="翻訳こんにゃくモード（双方向同時翻訳）",
-            tag=TAG_KONNYAKU_SECTION,
-            default_open=False,
-        ):
+        # --- 翻訳こんにゃくモード（メインコンテンツ） ---
+        # 旧: collapsing_header（折りたたみ）→ 常時展開に昇格（Issue #38 GUI 統一）
+        dpg.add_text("双方向同時翻訳  [相手] You speak, I hear  /  [自分] I speak, they hear")
+        with dpg.group(tag=TAG_KONNYAKU_SECTION):
             # プリセットボタン + 開始ボタン
             with dpg.group(horizontal=True):
                 dpg.add_button(
                     tag=TAG_KONNYAKU_PRESET_BTN,
-                    label="こんにゃくプリセット適用",
-                    width=200,
+                    label="翻訳こんにゃくモードプリセット",
+                    width=230,
                     callback=_on_konnyaku_preset_click,
                 )
                 dpg.add_button(
                     tag=TAG_KONNYAKU_START_BTN,
-                    label="こんにゃく開始",
-                    width=160,
+                    label="開始",
+                    width=130,
                     callback=_on_konnyaku_start_stop_click,
                     enabled=bool(trans_models),
                 )
@@ -1762,8 +1806,8 @@ def _build_gui():
 
             _lang_display_names = get_language_display_names()
 
-            # --- 経路A ---
-            dpg.add_text("【経路A】 話者の声 → 字幕翻訳")
+            # --- 相手→自分（聞き取り字幕）経路 ---
+            dpg.add_text("相手→自分（聞き取り字幕）  [相手] You speak, I hear")
             with dpg.group(horizontal=True):
                 dpg.add_text("入力デバイス:")
                 dpg.add_combo(
@@ -1838,8 +1882,8 @@ def _build_gui():
 
             dpg.add_separator()
 
-            # --- 経路B ---
-            dpg.add_text("【経路B】 相手の声 → 字幕翻訳")
+            # --- 自分→相手（同時通訳）経路 ---
+            dpg.add_text("自分→相手（同時通訳）  [自分] I speak, they hear")
             with dpg.group(horizontal=True):
                 dpg.add_text("入力デバイス:")
                 dpg.add_combo(

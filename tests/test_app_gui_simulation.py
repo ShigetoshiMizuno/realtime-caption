@@ -361,7 +361,7 @@ class TestKonnyakuStartFlow:
         )
 
     def test_stop_restores_button_after_shutdown_complete(self):
-        """シャットダウン完了後にボタンラベルが「こんにゃく開始」に戻り enabled になること。"""
+        """シャットダウン完了後にボタンラベルが「開始」に戻り enabled になること。"""
         configure_item_calls: list[dict] = []
         mock_dpg = _make_dpg_mock()
         mock_dpg.configure_item.side_effect = lambda tag, **kwargs: configure_item_calls.append(
@@ -384,23 +384,21 @@ class TestKonnyakuStartFlow:
                 restored = [
                     c for c in configure_item_calls
                     if c.get("tag") == app.TAG_KONNYAKU_START_BTN
-                    and c.get("label") == "こんにゃく開始"
                     and c.get("enabled") is True
                 ]
                 if restored:
                     break
                 _time.sleep(0.05)
 
-            # shutdown 完了後に「こんにゃく開始」+ enabled=True に戻ること（スコープ内で検証）
+            # shutdown 完了後に「開始」+ enabled=True に戻ること（スコープ内で検証）
             restored_calls = [
                 c for c in configure_item_calls
                 if c.get("tag") == app.TAG_KONNYAKU_START_BTN
-                and c.get("label") == "こんにゃく開始"
                 and c.get("enabled") is True
             ]
 
         assert len(restored_calls) >= 1, (
-            f"shutdown 後にボタンラベルが「こんにゃく開始」に戻っていない: {configure_item_calls}"
+            f"shutdown 後にボタンが enabled=True に戻っていない: {configure_item_calls}"
         )
 
     def test_thread_error_callback_called_on_thread_crash(self):

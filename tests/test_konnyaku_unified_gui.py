@@ -383,34 +383,27 @@ class TestSingleModeUIHidden:
     """
 
     def test_start_btn_hidden_in_main_ui(self):
-        """TAG_START_BTN が _build_gui で show=False で作られること。
+        """TAG_START_BTN が _build_gui で非表示グループに入っているか、削除されていること。
 
-        ソースコードレベルで add_button の show=False または TAG_START_BTN が
-        非表示グループ内にあることを確認する。
+        ソースコードレベルで以下いずれかを確認する:
+        - パターン1: add_button(tag=TAG_START_BTN, ...) が show=False グループ内にある
+                     → ソースに 'show=False' と 'TAG_START_BTN' の両方が含まれる
+        - パターン2: add_button 呼び出し自体が削除され TAG 定数のみ残っている
+                     → 'add_button' の行に 'TAG_START_BTN' が含まれない
         """
         import inspect
         source = inspect.getsource(app._build_gui)
 
-        # TAG_START_BTN に対応する文字列 "start_btn" が show=False と近接していること
-        # または add_button(..., show=False) が含まれること
-        # 厳密な行単位解析より「start_btn」と「show=False」の両方がソースに含まれることを確認
-        has_start_btn = "start_btn" in source or "TAG_START_BTN" in source
-        assert has_start_btn, "_build_gui に start_btn の定義がない"
+        # TAG_START_BTN の add_button が存在すること
+        assert "TAG_START_BTN" in source, "_build_gui に TAG_START_BTN の定義がない"
 
-        # TAG_START_BTN が GUI から削除されているか、show=False になっていること
-        # 仕様: 「「開始」ボタン（TAG_START_BTN）— こんにゃくモードボタンに統合」
-        # 実装パターン1: show=False で非表示
-        # 実装パターン2: add_button 呼び出し自体を削除（TAG 定数は残す）
-        # → ソース中の add_button で tag=TAG_START_BTN が show=False か、
-        #    または add_button の呼び出しが存在しないことを確認
+        # 仕様: TAG_START_BTN は show=False の group 内に配置する（こんにゃくモードに統合）
+        # ソース中に show=False と TAG_START_BTN の両方が含まれること
         in_build_gui_with_show_false = (
-            'show=False' in source and 'start_btn' in source
-        ) or (
-            # add_button で TAG_START_BTN タグが指定されていない（削除済み）
-            'add_button' in source and 'tag=TAG_START_BTN' not in source
+            'show=False' in source and 'TAG_START_BTN' in source
         )
         assert in_build_gui_with_show_false, (
-            "_build_gui で TAG_START_BTN が show=False になっていないか、削除されていない"
+            "_build_gui で TAG_START_BTN が show=False グループ内に配置されていない"
         )
 
 
