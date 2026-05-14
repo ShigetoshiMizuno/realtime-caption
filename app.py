@@ -181,6 +181,10 @@ TAG_ROUTE_B_OUTPUT_ENABLE = "route_b_output_enable"
 TAG_ROUTE_B_OUTPUT_DEVICE_COMBO = "route_b_output_device_combo"
 TAG_ROUTE_B_OUTPUT_VOLUME = "route_b_output_volume"
 
+# 経路 ON/OFF トグル（Issue #43）
+TAG_ROUTE_A_ENABLE = "route_a_enable"
+TAG_ROUTE_B_ENABLE = "route_b_enable"
+
 # こんにゃくモード コンテナ
 TAG_KONNYAKU_SECTION = "konnyaku_section"
 TAG_KONNYAKU_START_BTN = "konnyaku_start_btn"
@@ -647,6 +651,19 @@ def _on_konnyaku_start_stop_click():
 
     try:
         # 開始: GUI から設定を読み取って MultiCaptionSystem を起動
+        # 系統 ON/OFF チェック（Issue #43）
+        route_a_enabled = bool(
+            dpg.get_value(TAG_ROUTE_A_ENABLE)
+            if dpg.does_item_exist(TAG_ROUTE_A_ENABLE) else True
+        )
+        route_b_enabled = bool(
+            dpg.get_value(TAG_ROUTE_B_ENABLE)
+            if dpg.does_item_exist(TAG_ROUTE_B_ENABLE) else True
+        )
+        if not route_a_enabled and not route_b_enabled:
+            dpg.set_value(TAG_STATUS_STATE, "少なくとも1つの系統を有効にしてください")
+            return
+
         # 経路A デバイス
         route_a_device_label = (
             dpg.get_value(TAG_ROUTE_A_DEVICE_COMBO)
@@ -655,7 +672,7 @@ def _on_konnyaku_start_stop_click():
         route_a_device = next(
             (d for d in _devices if _device_label(d) == route_a_device_label), None
         )
-        if route_a_device is None:
+        if route_a_enabled and route_a_device is None:
             return
 
         # 経路B デバイス
@@ -666,7 +683,7 @@ def _on_konnyaku_start_stop_click():
         route_b_device = next(
             (d for d in _devices if _device_label(d) == route_b_device_label), None
         )
-        if route_b_device is None:
+        if route_b_enabled and route_b_device is None:
             return
 
         # 経路A 言語コード
@@ -733,6 +750,7 @@ def _on_konnyaku_start_stop_click():
         cfg = {**_config}
         cfg.setdefault("translation", {})["translation_model"] = "openai-realtime"
 
+        # 有効な系統のみ RouteConfig を生成（Issue #43 ON/OFF トグル）
         route_a_cfg = RouteConfig(
             route_id="a",
             input_device_info=route_a_device,
@@ -740,7 +758,7 @@ def _on_konnyaku_start_stop_click():
             audio_output_enabled=route_a_output_enabled,
             output_device_index=route_a_output_index,
             output_volume=route_a_volume,
-        )
+        ) if route_a_enabled else None
         route_b_cfg = RouteConfig(
             route_id="b",
             input_device_info=route_b_device,
@@ -748,7 +766,7 @@ def _on_konnyaku_start_stop_click():
             audio_output_enabled=route_b_output_enabled,
             output_device_index=route_b_output_index,
             output_volume=route_b_volume,
-        )
+        ) if route_b_enabled else None
 
         # GUI ログに翻訳結果を出力するコールバック（経路 A / B 別）
         def _on_result_route_a(original: str, translated: str) -> None:

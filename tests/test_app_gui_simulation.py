@@ -89,6 +89,9 @@ def _make_widget_values(route_a_device_label: str, route_b_device_label: str) ->
         app.TAG_ROUTE_B_OUTPUT_DEVICE_COMBO: "(なし)",
         app.TAG_ROUTE_A_OUTPUT_VOLUME: 1.0,
         app.TAG_ROUTE_B_OUTPUT_VOLUME: 1.0,
+        # Issue #43: 系統 ON/OFF トグル（デフォルト両方有効）
+        app.TAG_ROUTE_A_ENABLE: True,
+        app.TAG_ROUTE_B_ENABLE: True,
     }
 
 

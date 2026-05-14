@@ -1245,51 +1245,60 @@ class MultiCaptionSystem:
     def __init__(
         self,
         config: dict,
-        route_a: RouteConfig,
-        route_b: RouteConfig,
+        route_a: "RouteConfig | None",
+        route_b: "RouteConfig | None",
         on_result_a: Callable[[str, str], None] | None = None,
         on_result_b: Callable[[str, str], None] | None = None,
         on_ready: Callable[[], None] | None = None,
         on_thread_error: Callable[[str, Exception, str], None] | None = None,
     ) -> None:
-        # route_a: shared_broadcaster=None → _owns_broadcaster=True（WS サーバーを自前で起動）
-        # route_b: shared_broadcaster=route_a._broadcaster → _owns_broadcaster=False（WS サーバースキップ）
-        # これにより overlay.html への WebSocket は1本（route_a が管理）で、
-        # 両系統が同一 SubtitleBroadcaster インスタンスを共有する。
+        if route_a is None and route_b is None:
+            raise ValueError("少なくとも1つの route が必要です（route_a, route_b がともに None）")
+
         # 共有 PyAudio インスタンスを1つだけ生成（PortAudio assertion 回避）
         # 複数の pyaudio.PyAudio() を並列初期化すると WASAPI の状態が破壊され
         # 'Assertion failed: hostApi->info.defaultOutputDevice < hostApi->info.deviceCount'
         # でプロセスがクラッシュする。MultiCaptionSystem が責任を持って1つ管理する。
         self._pa = pyaudio.PyAudio()
 
-        config_a = self._build_route_config_dict(config, route_a)
-        self._route_a = CaptionSystem(
-            config=config_a,
-            device_info=route_a.input_device_info,
-            model_name=config_a.get("stt", {}).get("model", "tiny"),
-            on_result=on_result_a,
-            on_ready=on_ready,
-            output_device_index=route_a.output_device_index if route_a.audio_output_enabled else None,
-            output_volume=route_a.output_volume,
-            route_id=route_a.route_id,
-            shared_broadcaster=None,  # route_a が broadcaster を所有
-            pa_instance=self._pa,     # 共有 PyAudio を注入
-        )
+        # route_a: 存在すれば生成（shared_broadcaster=None → _owns_broadcaster=True、WS サーバー起動）
+        # route_b のみの場合: route_b が broadcaster を所有する（shared_broadcaster=None）
+        if route_a is not None:
+            config_a = self._build_route_config_dict(config, route_a)
+            self._route_a: "CaptionSystem | None" = CaptionSystem(
+                config=config_a,
+                device_info=route_a.input_device_info,
+                model_name=config_a.get("stt", {}).get("model", "tiny"),
+                on_result=on_result_a,
+                on_ready=on_ready,
+                output_device_index=route_a.output_device_index if route_a.audio_output_enabled else None,
+                output_volume=route_a.output_volume,
+                route_id=route_a.route_id,
+                shared_broadcaster=None,  # route_a が broadcaster を所有
+                pa_instance=self._pa,     # 共有 PyAudio を注入
+            )
+        else:
+            self._route_a = None
 
-        # route_b: route_a の broadcaster を共有（WS サーバー起動をスキップ）
-        config_b = self._build_route_config_dict(config, route_b)
-        self._route_b = CaptionSystem(
-            config=config_b,
-            device_info=route_b.input_device_info,
-            model_name=config_b.get("stt", {}).get("model", "tiny"),
-            on_result=on_result_b,
-            on_ready=on_ready,
-            output_device_index=route_b.output_device_index if route_b.audio_output_enabled else None,
-            output_volume=route_b.output_volume,
-            route_id=route_b.route_id,
-            shared_broadcaster=self._route_a._broadcaster,  # route_a の broadcaster を共有
-            pa_instance=self._pa,                           # 共有 PyAudio を注入
-        )
+        # route_b: 存在すれば生成
+        # broadcaster は route_a があれば共有、なければ自前（_owns_broadcaster=True）
+        if route_b is not None:
+            shared = self._route_a._broadcaster if self._route_a is not None else None
+            config_b = self._build_route_config_dict(config, route_b)
+            self._route_b: "CaptionSystem | None" = CaptionSystem(
+                config=config_b,
+                device_info=route_b.input_device_info,
+                model_name=config_b.get("stt", {}).get("model", "tiny"),
+                on_result=on_result_b,
+                on_ready=on_ready,
+                output_device_index=route_b.output_device_index if route_b.audio_output_enabled else None,
+                output_volume=route_b.output_volume,
+                route_id=route_b.route_id,
+                shared_broadcaster=shared,  # route_a あれば共有、なければ自前
+                pa_instance=self._pa,       # 共有 PyAudio を注入
+            )
+        else:
+            self._route_b = None
 
         # start() で生成するスレッドへの参照（shutdown/join で利用）
         self._thread_a: threading.Thread | None = None
@@ -1329,14 +1338,17 @@ class MultiCaptionSystem:
                     except Exception:
                         pass
 
-        self._thread_a = threading.Thread(
-            target=_run_route, args=(self._route_a,), daemon=True, name="MultiCapSys-route-a"
-        )
-        self._thread_b = threading.Thread(
-            target=_run_route, args=(self._route_b,), daemon=True, name="MultiCapSys-route-b"
-        )
-        self._thread_a.start()
-        self._thread_b.start()
+        if self._route_a is not None:
+            self._thread_a = threading.Thread(
+                target=_run_route, args=(self._route_a,), daemon=True, name="MultiCapSys-route-a"
+            )
+            self._thread_a.start()
+
+        if self._route_b is not None:
+            self._thread_b = threading.Thread(
+                target=_run_route, args=(self._route_b,), daemon=True, name="MultiCapSys-route-b"
+            )
+            self._thread_b.start()
 
     def shutdown(self) -> None:
         """両系統を停止し、capture スレッド終了を待ってから共有 PyAudio を terminate する。
@@ -1352,13 +1364,15 @@ class MultiCaptionSystem:
         _t0 = _time.monotonic()
 
         # 1. 各 CaptionSystem の stop_event をセット（capture ループ脱出シグナル）
-        _t1 = _time.monotonic()
-        self._route_a.shutdown()
-        print(f"[TIMING] MultiCaptionSystem._route_a.shutdown(): {_time.monotonic() - _t1:.3f}s", flush=True)
+        if self._route_a is not None:
+            _t1 = _time.monotonic()
+            self._route_a.shutdown()
+            print(f"[TIMING] MultiCaptionSystem._route_a.shutdown(): {_time.monotonic() - _t1:.3f}s", flush=True)
 
-        _t1 = _time.monotonic()
-        self._route_b.shutdown()
-        print(f"[TIMING] MultiCaptionSystem._route_b.shutdown(): {_time.monotonic() - _t1:.3f}s", flush=True)
+        if self._route_b is not None:
+            _t1 = _time.monotonic()
+            self._route_b.shutdown()
+            print(f"[TIMING] MultiCaptionSystem._route_b.shutdown(): {_time.monotonic() - _t1:.3f}s", flush=True)
 
         # 2. asyncio.run() スレッドが終了するまで待つ（join with timeout）
         #    _thread_a/_thread_b は start() で生成される。start() 前に shutdown() を呼んだ場合は
@@ -1433,21 +1447,17 @@ class MultiCaptionSystem:
 
     @property
     def total_estimated_cost_usd(self) -> float:
-        """両系統の CostMonitor の合算コスト（USD）を返す。
+        """存在する系統の CostMonitor の合算コスト（USD）を返す。
 
         仕様書 §4: CostMonitor 自体は変更せず、呼び出し側で2インスタンス管理。
+        None の系統はスキップする（Issue #43 Optional route 対応）。
         """
-        cost_a = (
-            self._route_a._cost_monitor.estimated_cost_usd()
-            if self._route_a._cost_monitor is not None
-            else 0.0
-        )
-        cost_b = (
-            self._route_b._cost_monitor.estimated_cost_usd()
-            if self._route_b._cost_monitor is not None
-            else 0.0
-        )
-        return cost_a + cost_b
+        cost = 0.0
+        if self._route_a is not None and self._route_a._cost_monitor is not None:
+            cost += self._route_a._cost_monitor.estimated_cost_usd()
+        if self._route_b is not None and self._route_b._cost_monitor is not None:
+            cost += self._route_b._cost_monitor.estimated_cost_usd()
+        return cost
 
 
 if __name__ == "__main__":
