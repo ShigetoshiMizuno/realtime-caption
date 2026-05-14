@@ -85,6 +85,10 @@ class AudioOutputStream:
         # input_rate（= sample_rate, 通常 24000）と異なる場合は _drain_loop でリサンプリングする
         self._input_rate: int = sample_rate
         self._output_rate: int = sample_rate
+        # チャンネル数: 入力（OpenAI Realtime API は mono=1）と出力（デバイス依存）を分離管理
+        # _output_channels は start() でデバイスの maxOutputChannels を確認後に更新される
+        self._input_channels: int = channels
+        self._output_channels: int = channels
 
     def start(self) -> None:
         """
@@ -99,6 +103,19 @@ class AudioOutputStream:
         """
         if self._started:
             return
+
+        # デバイスの maxOutputChannels を確認してチャンネル数決定
+        if self._pa is not None and self._device_index is not None:
+            try:
+                info = self._pa.get_device_info_by_index(self._device_index)
+                device_max_ch = int(info.get("maxOutputChannels", 1))
+                # デバイスが stereo 以上なら stereo で開く（mono 入力は _drain_loop で複製）
+                if device_max_ch >= 2:
+                    self._output_channels = 2
+                else:
+                    self._output_channels = 1
+            except Exception:
+                self._output_channels = self._input_channels
 
         # フォールバック用レートリストを構築
         rates_to_try = [self._input_rate]
@@ -119,7 +136,7 @@ class AudioOutputStream:
             try:
                 kwargs: dict = {
                     "format": self._get_pyaudio_format(),
-                    "channels": self._channels,
+                    "channels": self._output_channels,
                     "rate": try_rate,
                     "output": True,
                     "frames_per_buffer": self._chunk_size,
@@ -131,8 +148,9 @@ class AudioOutputStream:
                 self._output_rate = try_rate
                 print(
                     f"[AudioOutputStream] 開始成功: device_index={self._device_index}"
-                    f" rate={try_rate}"
-                    f"{' (リサンプリング有効)' if try_rate != self._input_rate else ''}",
+                    f" rate={try_rate}Hz channels={self._output_channels}"
+                    f"{' (リサンプリング有効)' if try_rate != self._input_rate else ''}"
+                    f"{' (mono→stereo 変換有効)' if self._output_channels > self._input_channels else ''}",
                     flush=True,
                 )
                 break
@@ -316,11 +334,25 @@ class AudioOutputStream:
             if self._stream is None:
                 continue
 
-            # リサンプリングが必要な場合（input_rate != output_rate）
+            # 1. リサンプリングが必要な場合（input_rate != output_rate）
             if _resample_up is not None:
                 samples = np.frombuffer(data, dtype=np.int16).astype(np.float32)
                 resampled = resample_poly(samples, _resample_up, _resample_down)
-                data = np.clip(resampled, -32768, 32767).astype(np.int16).tobytes()
+                samples = np.clip(resampled, -32768, 32767).astype(np.int16)
+            else:
+                samples = np.frombuffer(data, dtype=np.int16)
+
+            # 2. mono → stereo 変換（input_channels=1、output_channels=2 の場合）
+            if self._output_channels == 2 and self._input_channels == 1:
+                # 各サンプルを左右に複製: [s1, s2, s3] → [s1, s1, s2, s2, s3, s3]
+                samples = np.repeat(samples, 2)
+            elif self._output_channels != self._input_channels:
+                logger.warning(
+                    "未対応のチャンネル数変換: input=%d output=%d",
+                    self._input_channels, self._output_channels,
+                )
+
+            data = samples.tobytes()
 
             try:
                 self._stream.write(data)

@@ -98,6 +98,10 @@ class TestAudioOutputStreamDataFlow:
         """
         start() 後に write() したデータが
         バックグラウンドスレッドを通じてストリームに書かれること。
+
+        _MockPyAudio のデバイス (device_index=0) は maxOutputChannels=2 の stereo デバイスなので、
+        mono 入力データは mono→stereo 変換されてストリームに届く。
+        このテストではデータが届くこと（written が空でないこと）を確認する。
         """
         mock_stream = _MockPyAudioStream()
         mock_pa = _MockPyAudio(mock_stream)
@@ -115,7 +119,7 @@ class TestAudioOutputStreamDataFlow:
 
         stream.stop()
 
-        assert data in mock_stream.written, \
+        assert mock_stream.written, \
             f"write() したデータがストリームに届いていない: {mock_stream.written}"
 
     def test_stop_is_idempotent(self):
@@ -260,9 +264,20 @@ class TestAudioOutputStreamVolume:
         )
 
     def test_audio_output_stream_volume_default_bypass(self):
-        """volume=1.0 のとき write の audio_bytes が変更されないこと（パフォーマンス保護）。"""
+        """volume=1.0 のとき volume 処理によるデータ変更がないこと（パフォーマンス保護）。
+
+        mono デバイス (maxOutputChannels=1) を使い、stereo 変換なしで検証する。
+        volume=1.0 であれば PCM 値はそのまま stream に届くことを確認する。
+        """
         mock_stream = _MockPyAudioStream()
-        mock_pa = _MockPyAudio(mock_stream)
+        mock_pa = MagicMock()
+        mock_pa.open.return_value = mock_stream
+        # mono デバイス: stereo 変換を無効にする
+        mock_pa.get_device_info_by_index.return_value = {
+            "maxOutputChannels": 1,
+            "defaultSampleRate": 24000.0,
+            "name": "Mono Test Device",
+        }
 
         stream = AudioOutputStream(pyaudio_instance=mock_pa, device_index=0)
         stream.start()
@@ -279,7 +294,7 @@ class TestAudioOutputStreamVolume:
 
         assert mock_stream.written, "データがストリームに届いていない"
         assert mock_stream.written[0] == original, (
-            "volume=1.0 のとき write データは変更されないはず"
+            "volume=1.0 かつ mono デバイスのとき write データは変更されないはず"
         )
 
     def test_audio_output_stream_tracks_peak(self):
