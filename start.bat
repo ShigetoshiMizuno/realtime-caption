@@ -58,19 +58,19 @@ if exist "%PYTHON_DIR%\python.exe" (
 )
 
 :: --- launch ---
-:: コンソール出力をファイルにもキャプチャ。faulthandler でセグフォも記録。
-:: UTF-8 BOM 付きで書き出すため PYTHONIOENCODING を utf-8 にし、
-:: ファイル先頭に BOM を書く（メモ帳等で日本語表示できるように）。
+:: Capture stdout/stderr to console_*.log with UTF-8 BOM for Notepad compatibility.
+:: PYTHONIOENCODING=utf-8 forces Python to emit UTF-8.
+:: faulthandler records native crashes.
 for /f "tokens=2 delims==" %%a in ('wmic OS Get localdatetime /value') do set DT=%%a
 set CONSOLE_LOG=console_%DT:~0,8%-%DT:~8,6%.log
 set PYTHONFAULTHANDLER=1
 set PYTHONUNBUFFERED=1
 set PYTHONIOENCODING=utf-8
-:: UTF-8 BOM を先頭に書き込む (Windows メモ帳で UTF-8 として認識される)
+:: Write UTF-8 BOM at the head of the log file
 powershell -NoProfile -Command "[System.IO.File]::WriteAllText('%CONSOLE_LOG%', [char]0xFEFF)"
 echo Starting...
-echo   (Please wait 10-30 seconds for the GUI to appear.)
-echo   Console output -^> %CONSOLE_LOG% (UTF-8 BOM)
+echo   Please wait 10-30 seconds for the GUI to appear.
+echo   Console output -^> %CONSOLE_LOG% with UTF-8 BOM
 echo.
 if "%1"=="--cli" (
     %PYTHON_DIR%\python.exe -X faulthandler main.py >> "%CONSOLE_LOG%" 2>&1
