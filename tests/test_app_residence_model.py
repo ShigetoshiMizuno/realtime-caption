@@ -155,10 +155,15 @@ class TestResidenceModelCreation:
 class TestStartStopUsesStartAllStopAll:
     """開始/停止ボタンで start_all() / stop_all() が呼ばれること（常駐モデル）。"""
 
-    def test_start_button_calls_start_all_on_existing_system(self):
-        """開始ボタン押下時、既に存在する _konnyaku_system.start_all() が呼ばれること。"""
+    def test_start_button_calls_start_route_on_existing_system(self):
+        """開始ボタン押下時、既に存在する _konnyaku_system.start_route() が呼ばれること。
+
+        PR-4 設計: 両系統 ON のとき start_route('a') と start_route('b') が呼ばれる。
+        """
         fake_devices = _fake_devices()
         mock_instance = MagicMock()
+        mock_instance.route_a_system = MagicMock()
+        mock_instance.route_b_system = MagicMock()
         widget_values = {
             app.TAG_ROUTE_A_ENABLE: True,
             app.TAG_ROUTE_B_ENABLE: True,
@@ -176,7 +181,9 @@ class TestStartStopUsesStartAllStopAll:
             patch.object(app, "_konnyaku_running", False),
         ):
             app._on_konnyaku_start_stop_click()
-            mock_instance.start_all.assert_called_once()
+            calls = [c.args[0] for c in mock_instance.start_route.call_args_list]
+            assert "a" in calls, f"start_route('a') が呼ばれていない: {calls}"
+            assert "b" in calls, f"start_route('b') が呼ばれていない: {calls}"
 
     def test_start_button_does_not_create_new_instance_if_system_exists(self):
         """既に _konnyaku_system が存在するとき、新しい MultiCaptionSystem を生成しないこと。"""
@@ -227,11 +234,11 @@ class TestStartStopUsesStartAllStopAll:
             import time as _time
             _time.sleep(0.1)
 
-        mock_instance.stop_all.assert_called_once()
-        # 常駐モデル: _konnyaku_system は None にならない
-        assert app._konnyaku_system is not None, (
-            "停止後に _konnyaku_system が None になっている（常駐モデルでは保持するべき）"
-        )
+            mock_instance.stop_all.assert_called_once()
+            # 常駐モデル: _konnyaku_system は None にならない（with スコープ内で検証）
+            assert app._konnyaku_system is not None, (
+                "停止後に _konnyaku_system が None になっている（常駐モデルでは保持するべき）"
+            )
 
     def test_start_stop_cycle_reuses_same_instance(self):
         """開始/停止を繰り返しても _konnyaku_system は同じインスタンスであること。"""

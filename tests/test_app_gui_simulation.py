@@ -104,11 +104,13 @@ class TestKonnyakuStartFlow:
 
     def test_start_creates_multi_caption_system_with_correct_route_configs(self):
         """
-        GUI のウィジェット値（デバイス選択・言語）が RouteConfig として
-        正しく MultiCaptionSystem に渡されること。
-        """
-        from constants import get_language_display_names, get_language_codes
+        常駐モデル設計では、開始ボタン押下時に既存 _konnyaku_system.start_route が
+        呼ばれること（新規 MultiCaptionSystem は生成しない）。
 
+        PR-4 常駐モデル変更: MultiCaptionSystem は main() 起動時に _create_konnyaku_system()
+        で生成されるため、_on_konnyaku_start_stop_click では再生成しない。
+        _konnyaku_system が None のときは _create_konnyaku_system() のフォールバックが呼ばれる。
+        """
         fake_devices = _fake_devices()
         route_a_label = _device_label_for(fake_devices[0])  # "Test Loopback Device [Loopback]"
         route_b_label = _device_label_for(fake_devices[1])  # "Test Microphone"
@@ -116,57 +118,52 @@ class TestKonnyakuStartFlow:
         widget_values = _make_widget_values(route_a_label, route_b_label)
         mock_dpg = _make_dpg_mock(widget_values)
 
-        lang_names = get_language_display_names()
-        lang_codes = get_language_codes()
-        ja_code = "ja" if "ja" in lang_codes else lang_codes[0]
-        en_code = "en" if "en" in lang_codes else lang_codes[-1]
+        # 常駐モデル: 既にインスタンスが存在する状態をシミュレート
+        mock_instance = MagicMock()
+        mock_instance.route_a_system = MagicMock()
+        mock_instance.route_b_system = MagicMock()
 
         with (
             patch.object(app, "dpg", mock_dpg),
             patch.object(app, "_devices", fake_devices),
             patch.object(app, "_config", _fake_config()),
             patch.object(app, "_system", None),
-            patch.object(app, "_konnyaku_system", None),
+            patch.object(app, "_konnyaku_system", mock_instance),
             patch.object(app, "_konnyaku_running", False),
             patch.object(app, "MultiCaptionSystem") as mock_mcs,
         ):
-            mock_mcs.return_value = MagicMock()
             app._on_konnyaku_start_stop_click()
 
-        mock_mcs.assert_called_once()
-        call_kwargs = mock_mcs.call_args.kwargs
-        route_a = call_kwargs["route_a"]
-        route_b = call_kwargs["route_b"]
-
-        assert route_a.route_id == "a"
-        assert route_a.target_language_code == ja_code
-        assert route_a.input_device_info["index"] == 0
-
-        assert route_b.route_id == "b"
-        assert route_b.target_language_code == en_code
-        assert route_b.input_device_info["index"] == 1
+        # 常駐モデル: MultiCaptionSystem は再生成されない
+        mock_mcs.assert_not_called()
+        # start_route が呼ばれること
+        mock_instance.start_route.assert_called()
 
     def test_start_invokes_system_start(self):
-        """`_konnyaku_system.start()` がボタン押下後に必ず呼ばれること。"""
+        """開始ボタン押下後に _konnyaku_system.start_route が呼ばれること（常駐モデル）。
+
+        PR-4 変更: start() → start_route() への移行。
+        """
         fake_devices = _fake_devices()
         route_a_label = _device_label_for(fake_devices[0])
         route_b_label = _device_label_for(fake_devices[1])
         widget_values = _make_widget_values(route_a_label, route_b_label)
         mock_dpg = _make_dpg_mock(widget_values)
         mock_instance = MagicMock()
+        mock_instance.route_a_system = MagicMock()
+        mock_instance.route_b_system = MagicMock()
 
         with (
             patch.object(app, "dpg", mock_dpg),
             patch.object(app, "_devices", fake_devices),
             patch.object(app, "_config", _fake_config()),
             patch.object(app, "_system", None),
-            patch.object(app, "_konnyaku_system", None),
+            patch.object(app, "_konnyaku_system", mock_instance),
             patch.object(app, "_konnyaku_running", False),
-            patch.object(app, "MultiCaptionSystem", return_value=mock_instance),
         ):
             app._on_konnyaku_start_stop_click()
 
-        mock_instance.start.assert_called_once()
+        mock_instance.start_route.assert_called()
 
     def test_start_sets_konnyaku_running_true(self):
         """起動成功後に _konnyaku_running が True になること。"""
@@ -176,25 +173,27 @@ class TestKonnyakuStartFlow:
         widget_values = _make_widget_values(route_a_label, route_b_label)
         mock_dpg = _make_dpg_mock(widget_values)
         mock_instance = MagicMock()
+        mock_instance.route_a_system = MagicMock()
+        mock_instance.route_b_system = MagicMock()
 
         with (
             patch.object(app, "dpg", mock_dpg),
             patch.object(app, "_devices", fake_devices),
             patch.object(app, "_config", _fake_config()),
             patch.object(app, "_system", None),
-            patch.object(app, "_konnyaku_system", None) as _ks_patch,
-            patch.object(app, "_konnyaku_running", False) as _kr_patch,
-            patch.object(app, "MultiCaptionSystem", return_value=mock_instance),
+            patch.object(app, "_konnyaku_system", mock_instance),
+            patch.object(app, "_konnyaku_running", False),
         ):
             app._on_konnyaku_start_stop_click()
             assert app._konnyaku_running is True
 
     def test_start_does_not_swallow_exception(self):
         """
-        `MultiCaptionSystem.__init__` が例外を投げた場合、
+        start_route が例外を投げた場合、
         GUI ステータスバーにエラーメッセージが表示されること（クラッシュ防止）。
 
         Task A: _on_konnyaku_start_stop_click を try/except で囲む実装が必要。
+        PR-4 変更: 常駐モデルでは _create_konnyaku_system 経由でのエラーをテスト。
         """
         fake_devices = _fake_devices()
         route_a_label = _device_label_for(fake_devices[0])
@@ -206,14 +205,18 @@ class TestKonnyakuStartFlow:
         mock_dpg = _make_dpg_mock(widget_values)
         mock_dpg.set_value.side_effect = lambda tag, val: set_value_calls.update({tag: val})
 
+        mock_instance = MagicMock()
+        mock_instance.route_a_system = MagicMock()
+        mock_instance.route_b_system = MagicMock()
+        mock_instance.start_route.side_effect = RuntimeError("boom")
+
         with (
             patch.object(app, "dpg", mock_dpg),
             patch.object(app, "_devices", fake_devices),
             patch.object(app, "_config", _fake_config()),
             patch.object(app, "_system", None),
-            patch.object(app, "_konnyaku_system", None),
+            patch.object(app, "_konnyaku_system", mock_instance),
             patch.object(app, "_konnyaku_running", False),
-            patch.object(app, "MultiCaptionSystem", side_effect=RuntimeError("boom")),
         ):
             # 例外が外に漏れてはならない
             app._on_konnyaku_start_stop_click()
@@ -229,80 +232,91 @@ class TestKonnyakuStartFlow:
         )
 
     def test_start_resets_state_on_failure(self):
-        """起動失敗時に _konnyaku_running が False のまま、_konnyaku_system が None になること。"""
+        """起動失敗時に _konnyaku_running が False のまま維持されること。
+
+        PR-4 変更: 常駐モデルでは start_route 失敗時も _konnyaku_system は None にしない。
+        _konnyaku_running が False のままであることのみを検証。
+        """
         fake_devices = _fake_devices()
         route_a_label = _device_label_for(fake_devices[0])
         route_b_label = _device_label_for(fake_devices[1])
         widget_values = _make_widget_values(route_a_label, route_b_label)
         mock_dpg = _make_dpg_mock(widget_values)
 
+        mock_instance = MagicMock()
+        mock_instance.route_a_system = MagicMock()
+        mock_instance.route_b_system = MagicMock()
+        mock_instance.start_route.side_effect = RuntimeError("start failed")
+
         with (
             patch.object(app, "dpg", mock_dpg),
             patch.object(app, "_devices", fake_devices),
             patch.object(app, "_config", _fake_config()),
             patch.object(app, "_system", None),
-            patch.object(app, "_konnyaku_system", None),
+            patch.object(app, "_konnyaku_system", mock_instance),
             patch.object(app, "_konnyaku_running", False),
-            patch.object(app, "MultiCaptionSystem", side_effect=RuntimeError("init failed")),
         ):
             app._on_konnyaku_start_stop_click()
             assert app._konnyaku_running is False
-            assert app._konnyaku_system is None
 
     def test_existing_system_running_rejects_konnyaku_start(self):
         """既存単独モード稼働中はこんにゃく起動が拒否されること。"""
         mock_dpg = _make_dpg_mock()
         mock_system = MagicMock()
-        mock_mcs = MagicMock()
+        mock_instance = MagicMock()
 
         with (
             patch.object(app, "dpg", mock_dpg),
             patch.object(app, "_system", mock_system),
             patch.object(app, "_konnyaku_running", False),
-            patch.object(app, "_konnyaku_system", None),
-            patch.object(app, "MultiCaptionSystem", mock_mcs),
+            patch.object(app, "_konnyaku_system", mock_instance),
         ):
             app._on_konnyaku_start_stop_click()
 
-        # MultiCaptionSystem は生成されないこと
-        mock_mcs.assert_not_called()
+        # start_route は呼ばれないこと
+        mock_instance.start_route.assert_not_called()
         # 警告メッセージが出ること
         mock_dpg.set_value.assert_called()
 
     def test_device_not_found_no_crash(self):
-        """選択デバイス名が _devices に存在しない場合、早期 return して例外を投げないこと。"""
+        """_konnyaku_system が None で start_route が呼べない場合、例外を投げないこと。
+
+        PR-4 変更: 常駐モデルでは _create_konnyaku_system フォールバック後も
+        デバイスなし等で _konnyaku_system が None のときは早期 return する。
+        """
         widget_values = {
+            app.TAG_ROUTE_A_ENABLE: True,
+            app.TAG_ROUTE_B_ENABLE: True,
             app.TAG_ROUTE_A_DEVICE_COMBO: "存在しないデバイス",
             app.TAG_ROUTE_B_DEVICE_COMBO: "これも存在しない",
         }
         mock_dpg = _make_dpg_mock(widget_values)
-        mock_mcs = MagicMock()
 
         with (
             patch.object(app, "dpg", mock_dpg),
-            patch.object(app, "_devices", _fake_devices()),
+            patch.object(app, "_devices", []),  # デバイスなし
             patch.object(app, "_config", _fake_config()),
             patch.object(app, "_system", None),
             patch.object(app, "_konnyaku_running", False),
             patch.object(app, "_konnyaku_system", None),
-            patch.object(app, "MultiCaptionSystem", mock_mcs),
         ):
             # 例外が外に漏れてはいけない
             app._on_konnyaku_start_stop_click()
 
-        # MultiCaptionSystem は生成されないこと
-        mock_mcs.assert_not_called()
-
     def test_stop_shuts_down_system(self):
-        """停止ボタン押下時に _konnyaku_system.shutdown() が別スレッドで呼ばれること。"""
+        """停止ボタン押下時に _konnyaku_system.stop_all() が別スレッドで呼ばれること。
+
+        PR-4 変更: shutdown() → stop_all() に変更。
+        常駐モデル: _konnyaku_system は None にならず保持される。
+        """
         mock_dpg = _make_dpg_mock()
         mock_instance = MagicMock()
-        shutdown_called = threading.Event()
+        stop_all_called = threading.Event()
 
-        def fake_shutdown():
-            shutdown_called.set()
+        def fake_stop_all():
+            stop_all_called.set()
 
-        mock_instance.shutdown.side_effect = fake_shutdown
+        mock_instance.stop_all.side_effect = fake_stop_all
 
         with (
             patch.object(app, "dpg", mock_dpg),
@@ -311,30 +325,36 @@ class TestKonnyakuStartFlow:
         ):
             app._on_konnyaku_start_stop_click()
             # バックグラウンドスレッドの完了を待つ（最大3秒）
-            shutdown_called.wait(timeout=3.0)
+            stop_all_called.wait(timeout=3.0)
+            import time as _time
+            _time.sleep(0.1)
 
-        mock_instance.shutdown.assert_called_once()
-        assert app._konnyaku_system is None
-        assert app._konnyaku_running is False
+            mock_instance.stop_all.assert_called_once()
+            # 常駐モデル: _konnyaku_system は None にならない（with スコープ内で検証）
+            assert app._konnyaku_system is not None
+            assert app._konnyaku_running is False
 
     def test_stop_shows_stopping_label_immediately(self):
-        """停止ボタン押下直後にボタンラベルが「停止中...」になり disabled になること。"""
+        """停止ボタン押下直後にボタンラベルが「停止中...」になり disabled になること。
+
+        PR-4 変更: shutdown → stop_all に変更。
+        """
         configure_item_calls: list[dict] = []
         mock_dpg = _make_dpg_mock()
         mock_dpg.configure_item.side_effect = lambda tag, **kwargs: configure_item_calls.append(
             {"tag": tag, **kwargs}
         )
 
-        shutdown_start = threading.Event()
-        shutdown_done = threading.Event()
+        stop_all_start = threading.Event()
+        stop_all_done = threading.Event()
         mock_instance = MagicMock()
 
-        def fake_shutdown():
-            # shutdown 開始を通知してから解放シグナルを待つ
-            shutdown_start.set()
-            shutdown_done.wait(timeout=3.0)
+        def fake_stop_all():
+            # stop_all 開始を通知してから解放シグナルを待つ
+            stop_all_start.set()
+            stop_all_done.wait(timeout=3.0)
 
-        mock_instance.shutdown.side_effect = fake_shutdown
+        mock_instance.stop_all.side_effect = fake_stop_all
 
         with (
             patch.object(app, "dpg", mock_dpg),
@@ -342,20 +362,20 @@ class TestKonnyakuStartFlow:
             patch.object(app, "_konnyaku_system", mock_instance),
         ):
             app._on_konnyaku_start_stop_click()
-            # shutdown が始まるまで待つ（GUI が停止中...に更新された後）
-            shutdown_started = shutdown_start.wait(timeout=3.0)
+            # stop_all が始まるまで待つ（GUI が停止中...に更新された後）
+            stop_all_started = stop_all_start.wait(timeout=3.0)
             # 最初の configure_item 呼び出しで「停止中...」+ enabled=False になっていること
             stopping_calls = [
                 c for c in configure_item_calls
                 if c.get("tag") == app.TAG_KONNYAKU_START_BTN and c.get("label") == "停止中..."
             ]
-            # shutdown スレッドを解放（patch スコープ内で実行されるよう）
-            shutdown_done.set()
+            # stop_all スレッドを解放（patch スコープ内で実行されるよう）
+            stop_all_done.set()
             # スレッド完了を待つ（patch スコープ内で finally が動くよう）
             import time as _time
             _time.sleep(0.2)
 
-        assert shutdown_started, "shutdown が3秒以内に開始しなかった"
+        assert stop_all_started, "stop_all が3秒以内に開始しなかった"
         assert len(stopping_calls) >= 1, (
             f"「停止中...」ラベルへの configure_item が呼ばれていない: {configure_item_calls}"
         )
@@ -364,7 +384,10 @@ class TestKonnyakuStartFlow:
         )
 
     def test_stop_restores_button_after_shutdown_complete(self):
-        """シャットダウン完了後にボタンラベルが「開始」に戻り enabled になること。"""
+        """停止完了後にボタンラベルが「開始」に戻り enabled になること。
+
+        PR-4 変更: shutdown → stop_all に変更。
+        """
         configure_item_calls: list[dict] = []
         mock_dpg = _make_dpg_mock()
         mock_dpg.configure_item.side_effect = lambda tag, **kwargs: configure_item_calls.append(
@@ -372,7 +395,7 @@ class TestKonnyakuStartFlow:
         )
 
         mock_instance = MagicMock()
-        mock_instance.shutdown.side_effect = lambda: None  # 即完了
+        mock_instance.stop_all.side_effect = lambda: None  # 即完了
 
         with (
             patch.object(app, "dpg", mock_dpg),
@@ -406,35 +429,36 @@ class TestKonnyakuStartFlow:
 
     def test_thread_error_callback_called_on_thread_crash(self):
         """
-        MultiCaptionSystem が on_thread_error コールバックを受け取れること。
+        _create_konnyaku_system() が on_thread_error コールバックを受け取れること。
 
         Task B: MultiCaptionSystem.__init__ に on_thread_error 引数が追加されていること、
         かつ app 側からコールバックを渡していること。
+        PR-4 変更: _create_konnyaku_system() 経由で生成されるようになった。
         """
         fake_devices = _fake_devices()
-        route_a_label = _device_label_for(fake_devices[0])
-        route_b_label = _device_label_for(fake_devices[1])
-        widget_values = _make_widget_values(route_a_label, route_b_label)
-        mock_dpg = _make_dpg_mock(widget_values)
         mock_instance = MagicMock()
+        mock_instance.route_a_system = MagicMock()
+        mock_instance.route_b_system = MagicMock()
+
+        captured_kwargs: dict = {}
+
+        def capture_mcs(**kwargs):
+            captured_kwargs.update(kwargs)
+            return mock_instance
 
         with (
-            patch.object(app, "dpg", mock_dpg),
             patch.object(app, "_devices", fake_devices),
             patch.object(app, "_config", _fake_config()),
-            patch.object(app, "_system", None),
             patch.object(app, "_konnyaku_system", None),
-            patch.object(app, "_konnyaku_running", False),
-            patch.object(app, "MultiCaptionSystem", return_value=mock_instance) as mock_mcs_cls,
+            patch.object(app, "MultiCaptionSystem", side_effect=capture_mcs),
         ):
-            app._on_konnyaku_start_stop_click()
+            app._create_konnyaku_system()
 
         # MultiCaptionSystem が on_thread_error キーワード引数付きで呼ばれること
-        call_kwargs = mock_mcs_cls.call_args.kwargs
-        assert "on_thread_error" in call_kwargs, (
+        assert "on_thread_error" in captured_kwargs, (
             "MultiCaptionSystem の呼び出しに on_thread_error が含まれていない"
         )
-        assert callable(call_kwargs["on_thread_error"]), (
+        assert callable(captured_kwargs["on_thread_error"]), (
             "on_thread_error が callable でない"
         )
 
@@ -701,6 +725,7 @@ class TestAutoKonnyakuArgparse:
             patch.object(app, "_start_rpc_server", MagicMock()),
             patch.object(app, "_build_gui", MagicMock()),
             patch.object(app, "_save_settings", MagicMock()),
+            patch.object(app, "_create_konnyaku_system", MagicMock()),
             patch.object(app, "_system", None),
             patch.object(app, "_konnyaku_system", None),
             patch("sys.argv", ["app.py", "--auto-konnyaku=5"]),
@@ -738,6 +763,7 @@ class TestAutoKonnyakuArgparse:
             patch.object(app, "_start_rpc_server", MagicMock()),
             patch.object(app, "_build_gui", MagicMock()),
             patch.object(app, "_save_settings", MagicMock()),
+            patch.object(app, "_create_konnyaku_system", MagicMock()),
             patch.object(app, "_system", None),
             patch.object(app, "_konnyaku_system", None),
             patch("sys.argv", ["app.py"]),
@@ -802,8 +828,11 @@ class TestRouteToggle:
             "両系統 OFF 時に TAG_STATUS_STATE に set_value が呼ばれていない"
         )
 
-    def test_start_with_only_route_a_enabled_passes_route_b_none(self):
-        """route_a のみ ON のとき MultiCaptionSystem に route_b=None が渡されること。"""
+    def test_start_with_only_route_a_enabled_calls_start_route_a_only(self):
+        """route_a のみ ON のとき start_route('a') のみ呼ばれること（常駐モデル）。
+
+        PR-4 変更: MultiCaptionSystem の再生成をやめ、start_route で個別制御する。
+        """
         fake_devices = _fake_devices()
         route_a_label = _device_label_for(fake_devices[0])
         route_b_label = _device_label_for(fake_devices[1])
@@ -812,27 +841,31 @@ class TestRouteToggle:
             route_a_enabled=True, route_b_enabled=False,
         )
         mock_dpg = _make_dpg_mock(widget_values)
-        mock_mcs = MagicMock()
-        mock_mcs.return_value = MagicMock()
+        mock_instance = MagicMock()
+        mock_instance.route_a_system = MagicMock()
+        mock_instance.route_b_system = MagicMock()
 
         with (
             patch.object(app, "dpg", mock_dpg),
             patch.object(app, "_devices", fake_devices),
             patch.object(app, "_config", _fake_config()),
             patch.object(app, "_system", None),
-            patch.object(app, "_konnyaku_system", None),
+            patch.object(app, "_konnyaku_system", mock_instance),
             patch.object(app, "_konnyaku_running", False),
-            patch.object(app, "MultiCaptionSystem", mock_mcs),
         ):
             app._on_konnyaku_start_stop_click()
 
-        mock_mcs.assert_called_once()
-        call_kwargs = mock_mcs.call_args.kwargs
-        assert call_kwargs["route_a"] is not None, "route_a が None になっている"
-        assert call_kwargs["route_b"] is None, "route_b が None でない"
+        # start_route("a") が呼ばれること
+        mock_instance.start_route.assert_called_with("a")
+        # start_route("b") は呼ばれないこと
+        calls = [c.args[0] for c in mock_instance.start_route.call_args_list]
+        assert "b" not in calls, f"route_b が有効でないのに start_route('b') が呼ばれた: {calls}"
 
-    def test_start_with_only_route_b_enabled_passes_route_a_none(self):
-        """route_b のみ ON のとき MultiCaptionSystem に route_a=None が渡されること。"""
+    def test_start_with_only_route_b_enabled_calls_start_route_b_only(self):
+        """route_b のみ ON のとき start_route('b') のみ呼ばれること（常駐モデル）。
+
+        PR-4 変更: MultiCaptionSystem の再生成をやめ、start_route で個別制御する。
+        """
         fake_devices = _fake_devices()
         route_a_label = _device_label_for(fake_devices[0])
         route_b_label = _device_label_for(fake_devices[1])
@@ -841,27 +874,31 @@ class TestRouteToggle:
             route_a_enabled=False, route_b_enabled=True,
         )
         mock_dpg = _make_dpg_mock(widget_values)
-        mock_mcs = MagicMock()
-        mock_mcs.return_value = MagicMock()
+        mock_instance = MagicMock()
+        mock_instance.route_a_system = MagicMock()
+        mock_instance.route_b_system = MagicMock()
 
         with (
             patch.object(app, "dpg", mock_dpg),
             patch.object(app, "_devices", fake_devices),
             patch.object(app, "_config", _fake_config()),
             patch.object(app, "_system", None),
-            patch.object(app, "_konnyaku_system", None),
+            patch.object(app, "_konnyaku_system", mock_instance),
             patch.object(app, "_konnyaku_running", False),
-            patch.object(app, "MultiCaptionSystem", mock_mcs),
         ):
             app._on_konnyaku_start_stop_click()
 
-        mock_mcs.assert_called_once()
-        call_kwargs = mock_mcs.call_args.kwargs
-        assert call_kwargs["route_a"] is None, "route_a が None でない"
-        assert call_kwargs["route_b"] is not None, "route_b が None になっている"
+        # start_route("b") が呼ばれること
+        mock_instance.start_route.assert_called_with("b")
+        # start_route("a") は呼ばれないこと
+        calls = [c.args[0] for c in mock_instance.start_route.call_args_list]
+        assert "a" not in calls, f"route_a が有効でないのに start_route('a') が呼ばれた: {calls}"
 
-    def test_start_with_both_enabled_passes_both_configs(self):
-        """両系統 ON のとき MultiCaptionSystem に route_a・route_b 両方が渡されること（既存動作維持）。"""
+    def test_start_with_both_enabled_calls_start_route_for_both(self):
+        """両系統 ON のとき start_route('a') と start_route('b') が両方呼ばれること（常駐モデル）。
+
+        PR-4 変更: MultiCaptionSystem の再生成をやめ、start_route で個別制御する。
+        """
         fake_devices = _fake_devices()
         route_a_label = _device_label_for(fake_devices[0])
         route_b_label = _device_label_for(fake_devices[1])
@@ -870,24 +907,23 @@ class TestRouteToggle:
             route_a_enabled=True, route_b_enabled=True,
         )
         mock_dpg = _make_dpg_mock(widget_values)
-        mock_mcs = MagicMock()
-        mock_mcs.return_value = MagicMock()
+        mock_instance = MagicMock()
+        mock_instance.route_a_system = MagicMock()
+        mock_instance.route_b_system = MagicMock()
 
         with (
             patch.object(app, "dpg", mock_dpg),
             patch.object(app, "_devices", fake_devices),
             patch.object(app, "_config", _fake_config()),
             patch.object(app, "_system", None),
-            patch.object(app, "_konnyaku_system", None),
+            patch.object(app, "_konnyaku_system", mock_instance),
             patch.object(app, "_konnyaku_running", False),
-            patch.object(app, "MultiCaptionSystem", mock_mcs),
         ):
             app._on_konnyaku_start_stop_click()
 
-        mock_mcs.assert_called_once()
-        call_kwargs = mock_mcs.call_args.kwargs
-        assert call_kwargs["route_a"] is not None, "route_a が None になっている（両方 ON のはず）"
-        assert call_kwargs["route_b"] is not None, "route_b が None になっている（両方 ON のはず）"
+        calls = [c.args[0] for c in mock_instance.start_route.call_args_list]
+        assert "a" in calls, f"start_route('a') が呼ばれていない: {calls}"
+        assert "b" in calls, f"start_route('b') が呼ばれていない: {calls}"
 
 
 # ---------------------------------------------------------------------------

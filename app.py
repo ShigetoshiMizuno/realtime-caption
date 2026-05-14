@@ -728,8 +728,172 @@ def _on_realtime_error_handler(route_id: str, category: str, display_text: str) 
             pass
 
 
+def _on_result_route_a_dispatch(original: str, translated: str) -> None:
+    """系統1 翻訳結果を GUI ログに追加（常駐 callback）。"""
+    ts = datetime.now().strftime("%H:%M:%S")
+    _log_entries.append({
+        "ts": ts,
+        "original": (f"[系統1 入力] {original}" if original else ""),
+        "translated": (f"[系統1 出力] {translated}" if translated else ""),
+        "route": "a",
+    })
+    if len(_log_entries) > 200:
+        _log_entries.pop(0)
+    _enqueue(
+        "append_log",
+        ts=ts,
+        original=(f"[系統1 入力] {original}" if original else ""),
+        translated=(f"[系統1 出力] {translated}" if translated else ""),
+    )
+
+
+def _on_result_route_b_dispatch(original: str, translated: str) -> None:
+    """系統2 翻訳結果を GUI ログに追加（常駐 callback）。"""
+    ts = datetime.now().strftime("%H:%M:%S")
+    _log_entries.append({
+        "ts": ts,
+        "original": (f"[系統2 入力] {original}" if original else ""),
+        "translated": (f"[系統2 出力] {translated}" if translated else ""),
+        "route": "b",
+    })
+    if len(_log_entries) > 200:
+        _log_entries.pop(0)
+    _enqueue(
+        "append_log",
+        ts=ts,
+        original=(f"[系統2 入力] {original}" if original else ""),
+        translated=(f"[系統2 出力] {translated}" if translated else ""),
+    )
+
+
+def _create_konnyaku_system() -> None:
+    """アプリ起動時に MultiCaptionSystem を生成（常駐モデル）。
+
+    デフォルト RouteConfig で生成。GUI 操作時に set_input_device 等で更新される。
+    callback はクロージャ経由で遅延バインド。
+    """
+    global _konnyaku_system
+    if _konnyaku_system is not None:
+        return  # 既に生成済み
+
+    # デバイスがひとつもなければスキップ
+    if not _devices:
+        print("[WARN] 利用可能なデバイスがありません", flush=True)
+        return
+
+    # デフォルトデバイス選択
+    device_labels = [_device_label(d) for d in _devices]
+    loopback_label = next((lbl for lbl in device_labels if "[Loopback]" in lbl), None)
+    non_loopback_label = next((lbl for lbl in device_labels if "[Loopback]" not in lbl), None)
+
+    route_a_device = next(
+        (d for d in _devices if _device_label(d) == (loopback_label or device_labels[0])),
+        _devices[0],
+    )
+    route_b_device = next(
+        (d for d in _devices if _device_label(d) == (non_loopback_label or device_labels[0])),
+        _devices[0],
+    )
+
+    cfg = {**_config}
+    cfg.setdefault("translation", {})["translation_model"] = "openai-realtime"
+
+    route_a_cfg = RouteConfig(
+        route_id="a",
+        input_device_info=route_a_device,
+        target_language_code="ja",
+        audio_output_enabled=False,
+        output_device_index=None,
+        output_volume=1.0,
+    )
+    route_b_cfg = RouteConfig(
+        route_id="b",
+        input_device_info=route_b_device,
+        target_language_code="en",
+        audio_output_enabled=True,
+        output_device_index=None,
+        output_volume=1.0,
+    )
+
+    _konnyaku_system = MultiCaptionSystem(
+        config=cfg,
+        route_a=route_a_cfg,
+        route_b=route_b_cfg,
+        on_result_a=lambda o, t: _on_result_route_a_dispatch(o, t),
+        on_result_b=lambda o, t: _on_result_route_b_dispatch(o, t),
+        on_realtime_error=_on_realtime_error_handler,
+        on_thread_error=_konnyaku_thread_error_handler,
+    )
+    # ゲインモードは auto 固定
+    if _konnyaku_system.route_a_system is not None:
+        _konnyaku_system.route_a_system.gain_mode = "auto"
+    if _konnyaku_system.route_b_system is not None:
+        _konnyaku_system.route_b_system.gain_mode = "auto"
+    print("[INFO] MultiCaptionSystem 常駐生成完了", flush=True)
+
+
+def _on_route_a_enable_change(sender, app_data, user_data) -> None:
+    """系統1 有効チェック変更時。稼働中なら即時反映（B-14）。"""
+    print(f"[USER] 系統1 有効チェック {'ON' if app_data else 'OFF'}", flush=True)
+    if _konnyaku_system is None:
+        return
+    if app_data:
+        _konnyaku_system.start_route("a")
+    else:
+        _konnyaku_system.stop_route("a")
+
+
+def _on_route_b_enable_change(sender, app_data, user_data) -> None:
+    """系統2 有効チェック変更時。稼働中なら即時反映（B-14）。"""
+    print(f"[USER] 系統2 有効チェック {'ON' if app_data else 'OFF'}", flush=True)
+    if _konnyaku_system is None:
+        return
+    if app_data:
+        _konnyaku_system.start_route("b")
+    else:
+        _konnyaku_system.stop_route("b")
+
+
+def _on_route_a_device_change(sender, app_data, user_data) -> None:
+    """系統1 入力デバイス変更時。稼働中なら新デバイスで再起動（B-15）。"""
+    print(f"[USER] 系統1 入力デバイス選択: {app_data!r}", flush=True)
+    if _konnyaku_system is None or _konnyaku_system.route_a_system is None:
+        return
+    new_device = next((d for d in _devices if _device_label(d) == app_data), None)
+    if new_device is None:
+        return
+
+    from main import RouteState
+    route_a = _konnyaku_system.route_a_system
+    was_running = route_a.state == RouteState.RUNNING
+    if was_running:
+        route_a.stop()
+    route_a._device_info = new_device
+    if was_running:
+        route_a.start()
+
+
+def _on_route_b_device_change(sender, app_data, user_data) -> None:
+    """系統2 入力デバイス変更時。稼働中なら新デバイスで再起動（B-15）。"""
+    print(f"[USER] 系統2 入力デバイス選択: {app_data!r}", flush=True)
+    if _konnyaku_system is None or _konnyaku_system.route_b_system is None:
+        return
+    new_device = next((d for d in _devices if _device_label(d) == app_data), None)
+    if new_device is None:
+        return
+
+    from main import RouteState
+    route_b = _konnyaku_system.route_b_system
+    was_running = route_b.state == RouteState.RUNNING
+    if was_running:
+        route_b.stop()
+    route_b._device_info = new_device
+    if was_running:
+        route_b.start()
+
+
 def _on_konnyaku_start_stop_click():
-    """翻訳こんにゃくモードの開始/停止ボタン。"""
+    """翻訳こんにゃくモードの開始/停止ボタン（常駐モデル）。"""
     global _konnyaku_system, _konnyaku_running
 
     print(
@@ -740,18 +904,18 @@ def _on_konnyaku_start_stop_click():
 
     if _konnyaku_running:
         # 停止ボタン押下: すぐにボタンを「停止中...」+ disabled に切り替え、
-        # shutdown はバックグラウンドスレッドで実行して GUI がフリーズしないようにする。
+        # stop_all はバックグラウンドスレッドで実行して GUI がフリーズしないようにする。
+        # 常駐モデル: _konnyaku_system は None にせず保持する。
         if dpg.does_item_exist(TAG_KONNYAKU_START_BTN):
             dpg.configure_item(TAG_KONNYAKU_START_BTN, label="停止中...", enabled=False)
         if dpg.does_item_exist(TAG_STATUS_STATE):
             dpg.set_value(TAG_STATUS_STATE, "翻訳こんにゃくモード停止中...")
 
-        def _shutdown_in_background():
-            global _konnyaku_system, _konnyaku_running
+        def _stop_in_background():
+            global _konnyaku_running
             try:
                 if _konnyaku_system is not None:
-                    _konnyaku_system.shutdown()
-                    _konnyaku_system = None
+                    _konnyaku_system.stop_all()
                 _konnyaku_running = False
             except Exception as e:
                 print(f"[ERROR] こんにゃく停止失敗: {e}", flush=True)
@@ -768,9 +932,9 @@ def _on_konnyaku_start_stop_click():
                         pass
 
         threading.Thread(
-            target=_shutdown_in_background,
+            target=_stop_in_background,
             daemon=True,
-            name="KonnyakuShutdown",
+            name="KonnyakuStop",
         ).start()
         return
 
@@ -780,7 +944,6 @@ def _on_konnyaku_start_stop_click():
         return
 
     try:
-        # 開始: GUI から設定を読み取って MultiCaptionSystem を起動
         # 系統 ON/OFF チェック（Issue #43）
         route_a_enabled = bool(
             dpg.get_value(TAG_ROUTE_A_ENABLE)
@@ -794,178 +957,30 @@ def _on_konnyaku_start_stop_click():
             dpg.set_value(TAG_STATUS_STATE, "少なくとも1つの系統を有効にしてください")
             return
 
-        # 経路A デバイス
-        route_a_device_label = (
-            dpg.get_value(TAG_ROUTE_A_DEVICE_COMBO)
-            if dpg.does_item_exist(TAG_ROUTE_A_DEVICE_COMBO) else ""
-        )
-        route_a_device = next(
-            (d for d in _devices if _device_label(d) == route_a_device_label), None
-        )
-        if route_a_enabled and route_a_device is None:
-            # B-07: サイレントリターンせず、ステータスバーにエラー表示
-            msg = f"系統1 入力デバイスが見つかりません: '{route_a_device_label}'"
-            print(f"[ERROR] {msg}", flush=True)
+        # 常駐モデル: MultiCaptionSystem は既に存在するはず（main() で生成済み）
+        # 存在しない場合はフォールバックで生成
+        if _konnyaku_system is None:
+            _create_konnyaku_system()
+
+        if _konnyaku_system is None:
+            # デバイスがない等で生成失敗
             if dpg.does_item_exist(TAG_STATUS_STATE):
-                dpg.set_value(TAG_STATUS_STATE, msg)
+                dpg.set_value(TAG_STATUS_STATE, "こんにゃく起動失敗: デバイスが見つかりません")
             return
 
-        # 経路B デバイス
-        route_b_device_label = (
-            dpg.get_value(TAG_ROUTE_B_DEVICE_COMBO)
-            if dpg.does_item_exist(TAG_ROUTE_B_DEVICE_COMBO) else ""
-        )
-        route_b_device = next(
-            (d for d in _devices if _device_label(d) == route_b_device_label), None
-        )
-        if route_b_enabled and route_b_device is None:
-            # B-07: サイレントリターンせず、ステータスバーにエラー表示
-            msg = f"系統2 入力デバイスが見つかりません: '{route_b_device_label}'"
-            print(f"[ERROR] {msg}", flush=True)
-            if dpg.does_item_exist(TAG_STATUS_STATE):
-                dpg.set_value(TAG_STATUS_STATE, msg)
-            return
-
-        # 経路A 言語コード
-        lang_names = get_language_display_names()
-        lang_codes = get_language_codes()
-        route_a_lang_name = (
-            dpg.get_value(TAG_ROUTE_A_LANG_COMBO)
-            if dpg.does_item_exist(TAG_ROUTE_A_LANG_COMBO) else lang_names[0]
-        )
-        route_a_lang_code = (
-            lang_codes[lang_names.index(route_a_lang_name)]
-            if route_a_lang_name in lang_names else lang_codes[0]
-        )
-
-        # 経路B 言語コード
-        route_b_lang_name = (
-            dpg.get_value(TAG_ROUTE_B_LANG_COMBO)
-            if dpg.does_item_exist(TAG_ROUTE_B_LANG_COMBO) else lang_names[-1]
-        )
-        route_b_lang_code = (
-            lang_codes[lang_names.index(route_b_lang_name)]
-            if route_b_lang_name in lang_names else lang_codes[-1]
-        )
-
-        # 経路A 音声出力
-        route_a_output_enabled = (
-            bool(dpg.get_value(TAG_ROUTE_A_OUTPUT_ENABLE))
-            if dpg.does_item_exist(TAG_ROUTE_A_OUTPUT_ENABLE) else False
-        )
-        route_a_output_index: int | None = None
-        if route_a_output_enabled and dpg.does_item_exist(TAG_ROUTE_A_OUTPUT_DEVICE_COMBO):
-            a_out_label = dpg.get_value(TAG_ROUTE_A_OUTPUT_DEVICE_COMBO)
-            if a_out_label and a_out_label != "(なし)":
-                a_out_devices = list_audio_devices(device_type="output")
-                a_out_matched = find_device_by_name(a_out_label, a_out_devices)
-                if a_out_matched:
-                    route_a_output_index = a_out_matched["index"]
-
-        # 経路B 音声出力
-        route_b_output_enabled = (
-            bool(dpg.get_value(TAG_ROUTE_B_OUTPUT_ENABLE))
-            if dpg.does_item_exist(TAG_ROUTE_B_OUTPUT_ENABLE) else False
-        )
-        route_b_output_index: int | None = None
-        if route_b_output_enabled and dpg.does_item_exist(TAG_ROUTE_B_OUTPUT_DEVICE_COMBO):
-            b_out_label = dpg.get_value(TAG_ROUTE_B_OUTPUT_DEVICE_COMBO)
-            if b_out_label and b_out_label != "(なし)":
-                b_out_devices = list_audio_devices(device_type="output")
-                b_out_matched = find_device_by_name(b_out_label, b_out_devices)
-                if b_out_matched:
-                    route_b_output_index = b_out_matched["index"]
-
-        # 経路A 出力音量
-        route_a_volume = float(
-            dpg.get_value(TAG_ROUTE_A_OUTPUT_VOLUME)
-            if dpg.does_item_exist(TAG_ROUTE_A_OUTPUT_VOLUME) else 1.0
-        )
-        # 経路B 出力音量
-        route_b_volume = float(
-            dpg.get_value(TAG_ROUTE_B_OUTPUT_VOLUME)
-            if dpg.does_item_exist(TAG_ROUTE_B_OUTPUT_VOLUME) else 1.0
-        )
-
-        cfg = {**_config}
-        cfg.setdefault("translation", {})["translation_model"] = "openai-realtime"
-
-        # 有効な系統のみ RouteConfig を生成（Issue #43 ON/OFF トグル）
-        route_a_cfg = RouteConfig(
-            route_id="a",
-            input_device_info=route_a_device,
-            target_language_code=route_a_lang_code,
-            audio_output_enabled=route_a_output_enabled,
-            output_device_index=route_a_output_index,
-            output_volume=route_a_volume,
-        ) if route_a_enabled else None
-        route_b_cfg = RouteConfig(
-            route_id="b",
-            input_device_info=route_b_device,
-            target_language_code=route_b_lang_code,
-            audio_output_enabled=route_b_output_enabled,
-            output_device_index=route_b_output_index,
-            output_volume=route_b_volume,
-        ) if route_b_enabled else None
-
-        # GUI ログに翻訳結果を出力するコールバック（経路 A / B 別）
-        def _on_result_route_a(original: str, translated: str) -> None:
-            """系統1（相手→自分） 経路の翻訳結果を GUI ログに追加。"""
-            ts = datetime.now().strftime("%H:%M:%S")
-            _log_entries.append({
-                "ts": ts,
-                "original": (f"[系統1 入力] {original}" if original else ""),
-                "translated": (f"[系統1 出力] {translated}" if translated else ""),
-                "route": "a",
-            })
-            if len(_log_entries) > 200:
-                _log_entries.pop(0)
-            _enqueue(
-                "append_log",
-                ts=ts,
-                original=(f"[系統1 入力] {original}" if original else ""),
-                translated=(f"[系統1 出力] {translated}" if translated else ""),
-            )
-
-        def _on_result_route_b(original: str, translated: str) -> None:
-            """系統2（自分→相手） 経路の翻訳結果を GUI ログに追加。"""
-            ts = datetime.now().strftime("%H:%M:%S")
-            _log_entries.append({
-                "ts": ts,
-                "original": (f"[系統2 入力] {original}" if original else ""),
-                "translated": (f"[系統2 出力] {translated}" if translated else ""),
-                "route": "b",
-            })
-            if len(_log_entries) > 200:
-                _log_entries.pop(0)
-            _enqueue(
-                "append_log",
-                ts=ts,
-                original=(f"[系統2 入力] {original}" if original else ""),
-                translated=(f"[系統2 出力] {translated}" if translated else ""),
-            )
-
-        _konnyaku_system = MultiCaptionSystem(
-            config=cfg,
-            route_a=route_a_cfg,
-            route_b=route_b_cfg,
-            on_result_a=_on_result_route_a,
-            on_result_b=_on_result_route_b,
-            on_realtime_error=_on_realtime_error_handler,
-            on_thread_error=_konnyaku_thread_error_handler,
-        )
-        # ゲインモードは auto 固定（B-12: UI 削除に伴いコードで直接設定）
-        if _konnyaku_system.route_a_system is not None:
-            _konnyaku_system.route_a_system.gain_mode = "auto"
-        if _konnyaku_system.route_b_system is not None:
-            _konnyaku_system.route_b_system.gain_mode = "auto"
         # verbose モードが有効なら各 CaptionSystem に反映
         if _verbose_state:
             if _konnyaku_system.route_a_system is not None:
                 _konnyaku_system.route_a_system.verbose = True
             if _konnyaku_system.route_b_system is not None:
                 _konnyaku_system.route_b_system.verbose = True
-        _konnyaku_system.start()
+
+        # 有効な系統だけ start_route（常駐モデル: start_all でなく個別制御）
+        if route_a_enabled and _konnyaku_system.route_a_system is not None:
+            _konnyaku_system.start_route("a")
+        if route_b_enabled and _konnyaku_system.route_b_system is not None:
+            _konnyaku_system.start_route("b")
+
         _konnyaku_running = True
 
         if dpg.does_item_exist(TAG_KONNYAKU_START_BTN):
@@ -986,12 +1001,6 @@ def _on_konnyaku_start_stop_click():
             print(f"[ERROR] 詳細ログ: {log_path}", flush=True)
         except Exception:
             pass
-        if _konnyaku_system is not None:
-            try:
-                _konnyaku_system.shutdown()
-            except Exception:
-                pass
-        _konnyaku_system = None
         _konnyaku_running = False
 
 
@@ -1871,8 +1880,7 @@ def _build_gui():
                     tag=TAG_ROUTE_A_ENABLE,
                     label="",
                     default_value=True,
-                    callback=lambda s, a, u: print(
-                        f"[USER] 系統1 有効チェック {'ON' if a else 'OFF'}", flush=True),
+                    callback=_on_route_a_enable_change,
                 )
                 dpg.add_text("【系統1】相手→自分（聞き取り字幕）  You speak, I hear")
             with dpg.group(horizontal=True):
@@ -1943,8 +1951,7 @@ def _build_gui():
                     tag=TAG_ROUTE_B_ENABLE,
                     label="",
                     default_value=True,
-                    callback=lambda s, a, u: print(
-                        f"[USER] 系統2 有効チェック {'ON' if a else 'OFF'}", flush=True),
+                    callback=_on_route_b_enable_change,
                 )
                 dpg.add_text("【系統2】自分→相手（同時通訳）  I speak, they hear")
             with dpg.group(horizontal=True):
@@ -2274,6 +2281,9 @@ def main():
     rpc_port = _config.get("rpc", {}).get("port", 8767)
     _start_rpc_server(rpc_port)
 
+    # 常駐モデル: MultiCaptionSystem を即生成
+    _create_konnyaku_system()
+
     _build_gui()
     dpg.show_viewport()
 
@@ -2333,7 +2343,10 @@ def main():
     if _system is not None:
         _system.shutdown()
     if _konnyaku_system is not None:
-        _konnyaku_system.shutdown()
+        try:
+            _konnyaku_system.terminate()
+        except Exception as e:
+            print(f"[WARN] terminate failed: {e}", flush=True)
 
     _release_subst(_subst_letter)
     dpg.destroy_context()
