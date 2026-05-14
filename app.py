@@ -437,21 +437,47 @@ def _on_save_api_keys():
 # ---------------------------------------------------------------------------
 
 def _on_host_api_change(sender, value, user_data):
-    """Host API フィルタ変更時にデバイスコンボを再列挙する。"""
+    """Host API フィルタ変更時にデバイスコンボを再列挙する。
+
+    仕様書 §4.9 / B-05: 系統1・系統2 の入力/出力デバイスコンボも再列挙する。
+    """
     global _devices
     host_api_value = value.split()[0].lower()  # "wasapi (default)" -> "wasapi"
     _devices = list_audio_devices(host_api=host_api_value)
     device_labels = [_device_label(d) for d in _devices]
+    output_devices = list_audio_devices(device_type="output", host_api=host_api_value)
+    output_labels = ["(なし)"] + [d["name"] for d in output_devices]
+
+    # 旧単独モード用（残存）
     if dpg.does_item_exist(TAG_DEVICE_COMBO):
         dpg.configure_item(TAG_DEVICE_COMBO, items=device_labels)
         if device_labels:
             dpg.set_value(TAG_DEVICE_COMBO, device_labels[0])
-    # 出力デバイスも再列挙
-    output_devices = list_audio_devices(device_type="output", host_api=host_api_value)
-    output_labels = ["(なし)"] + [d["name"] for d in output_devices]
     if dpg.does_item_exist(TAG_OUTPUT_DEVICE_COMBO):
         dpg.configure_item(TAG_OUTPUT_DEVICE_COMBO, items=output_labels)
         dpg.set_value(TAG_OUTPUT_DEVICE_COMBO, "(なし)")
+
+    # 系統1: 入力 (loopback デフォルト) + 出力
+    if dpg.does_item_exist(TAG_ROUTE_A_DEVICE_COMBO):
+        dpg.configure_item(TAG_ROUTE_A_DEVICE_COMBO, items=device_labels)
+        if device_labels:
+            loopback_a = next((lbl for lbl in device_labels if "[Loopback]" in lbl), device_labels[0])
+            dpg.set_value(TAG_ROUTE_A_DEVICE_COMBO, loopback_a)
+    if dpg.does_item_exist(TAG_ROUTE_A_OUTPUT_DEVICE_COMBO):
+        dpg.configure_item(TAG_ROUTE_A_OUTPUT_DEVICE_COMBO, items=output_labels)
+        dpg.set_value(TAG_ROUTE_A_OUTPUT_DEVICE_COMBO, "(なし)")
+
+    # 系統2: 入力 (非 loopback デフォルト) + 出力 (CABLE Input デフォルト)
+    if dpg.does_item_exist(TAG_ROUTE_B_DEVICE_COMBO):
+        dpg.configure_item(TAG_ROUTE_B_DEVICE_COMBO, items=device_labels)
+        if device_labels:
+            mic_b = next((lbl for lbl in device_labels if "[Loopback]" not in lbl), device_labels[0])
+            dpg.set_value(TAG_ROUTE_B_DEVICE_COMBO, mic_b)
+    if dpg.does_item_exist(TAG_ROUTE_B_OUTPUT_DEVICE_COMBO):
+        dpg.configure_item(TAG_ROUTE_B_OUTPUT_DEVICE_COMBO, items=output_labels)
+        cable = next((lbl for lbl in output_labels if "cable input" in lbl.lower()), "(なし)")
+        dpg.set_value(TAG_ROUTE_B_OUTPUT_DEVICE_COMBO, cable)
+
     _save_settings()
 
 
@@ -874,6 +900,11 @@ def _on_konnyaku_start_stop_click():
             (d for d in _devices if _device_label(d) == route_a_device_label), None
         )
         if route_a_enabled and route_a_device is None:
+            # B-07: サイレントリターンせず、ステータスバーにエラー表示
+            msg = f"系統1 入力デバイスが見つかりません: '{route_a_device_label}'"
+            print(f"[ERROR] {msg}", flush=True)
+            if dpg.does_item_exist(TAG_STATUS_STATE):
+                dpg.set_value(TAG_STATUS_STATE, msg)
             return
 
         # 経路B デバイス
@@ -885,6 +916,11 @@ def _on_konnyaku_start_stop_click():
             (d for d in _devices if _device_label(d) == route_b_device_label), None
         )
         if route_b_enabled and route_b_device is None:
+            # B-07: サイレントリターンせず、ステータスバーにエラー表示
+            msg = f"系統2 入力デバイスが見つかりません: '{route_b_device_label}'"
+            print(f"[ERROR] {msg}", flush=True)
+            if dpg.does_item_exist(TAG_STATUS_STATE):
+                dpg.set_value(TAG_STATUS_STATE, msg)
             return
 
         # 経路A 言語コード
