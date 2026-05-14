@@ -1572,66 +1572,83 @@ class MultiCaptionSystem:
         cfg["openai_realtime"]["target_language_code"] = route.target_language_code
         return cfg
 
-    def start(self) -> None:
-        """両系統をバックグラウンドスレッドで並列起動する。
+    def start_route(self, route_id: str) -> None:
+        """指定 route を起動する（常駐モデル PR-3）。
 
-        各スレッドは独立した asyncio イベントループを持つ（R1 asyncio ループ競合を回避）。
-        route_a: WebSocket サーバーを起動（_owns_broadcaster=True）
-        route_b: WebSocket サーバーをスキップ（shared_broadcaster を注入済み）
+        - route_id: "a" | "b"
+        - 対象 CaptionSystem.start() を呼ぶ（PR-2 実装済み）
+        - 該当 route が None なら no-op
         """
-        def _run_route(system: CaptionSystem):
-            try:
-                asyncio.run(system.run())
-            except Exception as e:
-                import traceback
-                tb = traceback.format_exc()
-                print(f"[ERROR] route {system._route_id} thread crashed: {e}", flush=True)
-                print(tb, flush=True)
-                if self._on_thread_error is not None:
-                    try:
-                        self._on_thread_error(system._route_id, e, tb)
-                    except Exception:
-                        pass
+        if route_id == "a" and self._route_a is not None:
+            self._route_a.start()
+        elif route_id == "b" and self._route_b is not None:
+            self._route_b.start()
 
+    def stop_route(self, route_id: str) -> None:
+        """指定 route を停止する（IDLE に遷移）。インスタンスは破棄しない。
+
+        - route_id: "a" | "b"
+        - 該当 route が None なら no-op
+        """
+        if route_id == "a" and self._route_a is not None:
+            self._route_a.stop()
+        elif route_id == "b" and self._route_b is not None:
+            self._route_b.stop()
+
+    def start_all(self) -> None:
+        """有効な全 route を起動する（常駐モデル PR-3）。
+
+        PR-2 で実装した CaptionSystem.start() を呼ぶことで、各 CaptionSystem が
+        内部で daemon スレッドを起動する。
+        _thread_a/_thread_b は後方互換のため CaptionSystem._asyncio_thread への
+        参照を設定する（既存テスト test_multi_caption_system_start_creates_event_loop 等）。
+        """
         if self._route_a is not None:
-            self._thread_a = threading.Thread(
-                target=_run_route, args=(self._route_a,), daemon=True, name="MultiCapSys-route-a"
-            )
-            self._thread_a.start()
+            self._route_a.start()
+            # 後方互換: _thread_a = CaptionSystem 内部の asyncio スレッド参照
+            self._thread_a = getattr(self._route_a, "_asyncio_thread", None)
 
         if self._route_b is not None:
-            self._thread_b = threading.Thread(
-                target=_run_route, args=(self._route_b,), daemon=True, name="MultiCapSys-route-b"
-            )
-            self._thread_b.start()
+            self._route_b.start()
+            # 後方互換: _thread_b = CaptionSystem 内部の asyncio スレッド参照
+            self._thread_b = getattr(self._route_b, "_asyncio_thread", None)
 
-    def shutdown(self) -> None:
-        """両系統を停止し、capture スレッド終了を待ってから共有 PyAudio を terminate する。
+    def stop_all(self) -> None:
+        """全 route を停止する（IDLE に遷移）。インスタンスは破棄しない（常駐モデル PR-3）。"""
+        if self._route_a is not None:
+            self._route_a.stop()
+        if self._route_b is not None:
+            self._route_b.stop()
+
+    def terminate(self) -> None:
+        """アプリ終了時のみ呼ぶ。stop_all + スレッド join + PyAudio terminate（常駐モデル PR-3）。
 
         修正理由（Issue #38）:
           capture スレッドが pyaudiowpatch.read() を実行中に pa.terminate() を呼ぶと
           PortAudio が access violation でクラッシュする（実機ログ確認済み）。
-          _route_a.shutdown() / _route_b.shutdown() で stop_event をセットした後、
+          各 CaptionSystem.stop() で stop_event をセットした後、
           asyncio.run() を実行している _thread_a / _thread_b が終了するまで join してから
           共有 PyAudio を terminate することでクラッシュを防ぐ。
         """
         import time as _time
         _t0 = _time.monotonic()
 
-        # 1. 各 CaptionSystem の stop_event をセット（capture ループ脱出シグナル）
+        # 1. 全 route を停止（capture ループ脱出シグナル）
+        #    CaptionSystem.stop() は shutdown() の thin wrapper であり、
+        #    内部でスレッド join・_stop_event リセット・capture 停止を行う。
         if self._route_a is not None:
             _t1 = _time.monotonic()
-            self._route_a.shutdown()
-            print(f"[TIMING] MultiCaptionSystem._route_a.shutdown(): {_time.monotonic() - _t1:.3f}s", flush=True)
+            self._route_a.stop()
+            print(f"[TIMING] MultiCaptionSystem._route_a.stop(): {_time.monotonic() - _t1:.3f}s", flush=True)
 
         if self._route_b is not None:
             _t1 = _time.monotonic()
-            self._route_b.shutdown()
-            print(f"[TIMING] MultiCaptionSystem._route_b.shutdown(): {_time.monotonic() - _t1:.3f}s", flush=True)
+            self._route_b.stop()
+            print(f"[TIMING] MultiCaptionSystem._route_b.stop(): {_time.monotonic() - _t1:.3f}s", flush=True)
 
         # 2. asyncio.run() スレッドが終了するまで待つ（join with timeout）
-        #    _thread_a/_thread_b は start() で生成される。start() 前に shutdown() を呼んだ場合は
-        #    None なのでスキップする。
+        #    _thread_a/_thread_b は start_all() で生成される。start_all() 前に terminate() を
+        #    呼んだ場合は None なのでスキップする。
         thread_a = getattr(self, "_thread_a", None)
         if thread_a is not None and thread_a.is_alive():
             _t1 = _time.monotonic()
@@ -1676,7 +1693,7 @@ class MultiCaptionSystem:
                     flush=True,
                 )
 
-        # 5. すべてのスレッドが exit してから共有 PyAudio を terminate
+        # 4. すべてのスレッドが exit してから共有 PyAudio を terminate
         #    getattr: object.__new__ で作られた minimal インスタンスには _pa が存在しない場合がある
         pa = getattr(self, "_pa", None)
         if pa is not None:
@@ -1688,7 +1705,15 @@ class MultiCaptionSystem:
             print(f"[TIMING] MultiCaptionSystem.PyAudio.terminate(): {_time.monotonic() - _t1:.3f}s", flush=True)
             self._pa = None
 
-        print(f"[TIMING] MultiCaptionSystem.shutdown() TOTAL: {_time.monotonic() - _t0:.3f}s", flush=True)
+        print(f"[TIMING] MultiCaptionSystem.terminate() TOTAL: {_time.monotonic() - _t0:.3f}s", flush=True)
+
+    def start(self) -> None:
+        """後方互換: start_all() の thin wrapper（常駐モデル PR-3）。"""
+        self.start_all()
+
+    def shutdown(self) -> None:
+        """後方互換: terminate() の thin wrapper（常駐モデル PR-3）。"""
+        self.terminate()
 
     @property
     def route_a_system(self) -> CaptionSystem:
