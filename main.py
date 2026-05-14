@@ -57,6 +57,7 @@ os.environ.setdefault("TORCH_HOME", str(_ascii_models / "torch"))
 os.environ["RC_MODELS_CONFIGURED"] = "1"
 
 import asyncio
+from enum import Enum
 import io
 import json
 import sys
@@ -388,6 +389,15 @@ class TranslationService:
             return response.choices[0].message.content.strip()
 
 
+class RouteState(Enum):
+    """CaptionSystem の状態を表す列挙型。"""
+    IDLE     = "idle"      # 未起動（WS 未接続、capture スレッドなし）
+    STARTING = "starting"  # start() 呼び出し中（スレッド起動途中）
+    RUNNING  = "running"   # 稼働中（WS 接続済み、capture スレッド稼働）
+    STOPPING = "stopping"  # stop() 呼び出し中（シャットダウン処理中）
+    ERROR    = "error"     # エラー状態
+
+
 @dataclass(frozen=True)
 class AudioStats:
     """音声処理の共有状態のスナップショット（イミュータブル）。
@@ -512,6 +522,9 @@ class CaptionSystem:
         # Realtime モード: 原文・翻訳の最新バッファ（ペアリング配信用）
         self._latest_source: str = ""
         self._latest_translation: str = ""
+        # RouteState: IDLE / STARTING / RUNNING / STOPPING / ERROR
+        self._state: RouteState = RouteState.IDLE
+        self._state_lock = threading.Lock()
 
     # ---- スレッドセーフな共有状態アクセス --------------------------------
     @property
@@ -524,6 +537,25 @@ class CaptionSystem:
         """共有状態をスレッドセーフに更新する。"""
         with self._audio_stats_lock:
             self._audio_stats = replace(self._audio_stats, **kwargs)
+
+    # ---- RouteState 管理 ------------------------------------------------
+    @property
+    def state(self) -> RouteState:
+        """現在の RouteState をスレッドセーフに返す。"""
+        with self._state_lock:
+            return self._state
+
+    def _set_state(self, new_state: RouteState) -> None:
+        """内部メソッド。状態を変更してログ出力（thread-safe）。"""
+        with self._state_lock:
+            old = self._state
+            self._state = new_state
+        if old != new_state:
+            print(
+                f"[STATE] CaptionSystem(route_id={self._route_id})"
+                f" {old.value} -> {new_state.value}",
+                flush=True,
+            )
 
     # ---- 後方互換プロパティ（既存の外部呼び出し維持） -------------------
     @property
@@ -573,101 +605,126 @@ class CaptionSystem:
             except Exception:
                 pass
 
-    def shutdown(self):
+    def stop(self) -> None:
+        """RUNNING → STOPPING → IDLE への遷移。
+
+        - IDLE / STOPPING 中は no-op（冪等性保証）
+        - 内部状態（_stop_event / _loop 等）を stop 完了後にリセットする
+        """
         import time as _time
+
+        # 冪等性: IDLE または STOPPING なら no-op
+        if self.state in (RouteState.STOPPING,):
+            return
+        # _stop_event が既にセット済みの場合も no-op（既存の二重 shutdown 対策を継承）
+        if self._stop_event.is_set():
+            return
+
+        self._set_state(RouteState.STOPPING)
         _t0 = _time.monotonic()
         route_id = getattr(self, "_route_id", "?")
 
-        # idempotent ガード: 二重 shutdown を防止（WinError 6 対策）
-        if self._stop_event.is_set():
-            return
-        self._stop_event.set()
-        # capture stream を即座に停止して read() のブロックを解除する。
-        # pyaudio.Stream.read() はブロッキング呼び出しのため stop_event だけでは抜けられない。
-        # stop_stream() が呼ばれると read() が OSError を投げ、capture loop が脱出できる。
-        cs = getattr(self, "_capture_stream", None)
-        if cs is not None:
-            _t1 = _time.monotonic()
-            try:
-                cs.stop_stream()
-            except Exception as e:
-                print(f"[WARN] capture stream stop_stream failed: {e}", flush=True)
-            print(
-                f"[TIMING] CaptionSystem(route_id={route_id}).stop_stream():"
-                f" {_time.monotonic() - _t1:.3f}s",
-                flush=True,
-            )
-        # capture スレッドを先に停止させて、feed_audio が止まってから recorder.stop() を呼ぶ
-        cap = getattr(self, "_capture_thread", None)
-        if cap is not None and cap.is_alive():
-            _t1 = _time.monotonic()
-            cap.join(timeout=5.0)
-            print(
-                f"[TIMING] CaptionSystem(route_id={route_id})._capture_thread.join():"
-                f" {_time.monotonic() - _t1:.3f}s",
-                flush=True,
-            )
-            if cap.is_alive():
+        try:
+            self._stop_event.set()
+            # capture stream を即座に停止して read() のブロックを解除する。
+            # pyaudio.Stream.read() はブロッキング呼び出しのため stop_event だけでは抜けられない。
+            # stop_stream() が呼ばれると read() が OSError を投げ、capture loop が脱出できる。
+            cs = getattr(self, "_capture_stream", None)
+            if cs is not None:
+                _t1 = _time.monotonic()
+                try:
+                    cs.stop_stream()
+                except Exception as e:
+                    print(f"[WARN] capture stream stop_stream failed: {e}", flush=True)
                 print(
-                    f"[WARN] capture thread (route_id={route_id})"
-                    f" did not exit in 5 seconds",
+                    f"[TIMING] CaptionSystem(route_id={route_id}).stop_stream():"
+                    f" {_time.monotonic() - _t1:.3f}s",
                     flush=True,
                 )
-        if self._recorder:
-            _t1 = _time.monotonic()
-            try:
-                self._recorder.stop()
-            except Exception:
-                pass
+            # capture スレッドを先に停止させて、feed_audio が止まってから recorder.stop() を呼ぶ
+            cap = getattr(self, "_capture_thread", None)
+            if cap is not None and cap.is_alive():
+                _t1 = _time.monotonic()
+                cap.join(timeout=5.0)
+                print(
+                    f"[TIMING] CaptionSystem(route_id={route_id})._capture_thread.join():"
+                    f" {_time.monotonic() - _t1:.3f}s",
+                    flush=True,
+                )
+                if cap.is_alive():
+                    print(
+                        f"[WARN] capture thread (route_id={route_id})"
+                        f" did not exit in 5 seconds",
+                        flush=True,
+                    )
+            if self._recorder:
+                _t1 = _time.monotonic()
+                try:
+                    self._recorder.stop()
+                except Exception:
+                    pass
+                print(
+                    f"[TIMING] CaptionSystem(route_id={route_id})._recorder.stop():"
+                    f" {_time.monotonic() - _t1:.3f}s",
+                    flush=True,
+                )
+            if self._loop and self._stop_event_async:
+                self._loop.call_soon_threadsafe(self._stop_event_async.set)
+            # Realtime モードの WebSocket 接続を停止
+            if getattr(self, "_realtime_translator", None) is not None:
+                _t1 = _time.monotonic()
+                try:
+                    self._realtime_translator.stop()
+                except Exception:
+                    pass
+                print(
+                    f"[TIMING] CaptionSystem(route_id={route_id})._realtime_translator.stop():"
+                    f" {_time.monotonic() - _t1:.3f}s",
+                    flush=True,
+                )
+            # 音声出力ストリームを停止
+            if getattr(self, "_audio_stream", None) is not None:
+                _t1 = _time.monotonic()
+                try:
+                    self._audio_stream.stop()
+                except Exception:
+                    pass
+                print(
+                    f"[TIMING] CaptionSystem(route_id={route_id})._audio_stream.stop():"
+                    f" {_time.monotonic() - _t1:.3f}s",
+                    flush=True,
+                )
+            # コストモニターを停止
+            if getattr(self, "_cost_monitor", None) is not None:
+                _t1 = _time.monotonic()
+                try:
+                    self._cost_monitor.stop()
+                except Exception:
+                    pass
+                print(
+                    f"[TIMING] CaptionSystem(route_id={route_id})._cost_monitor.stop():"
+                    f" {_time.monotonic() - _t1:.3f}s",
+                    flush=True,
+                )
             print(
-                f"[TIMING] CaptionSystem(route_id={route_id})._recorder.stop():"
-                f" {_time.monotonic() - _t1:.3f}s",
+                f"[TIMING] CaptionSystem(route_id={route_id}).stop() TOTAL:"
+                f" {_time.monotonic() - _t0:.3f}s",
                 flush=True,
             )
-        if self._loop and self._stop_event_async:
-            self._loop.call_soon_threadsafe(self._stop_event_async.set)
-        # Realtime モードの WebSocket 接続を停止
-        if getattr(self, "_realtime_translator", None) is not None:
-            _t1 = _time.monotonic()
-            try:
-                self._realtime_translator.stop()
-            except Exception:
-                pass
-            print(
-                f"[TIMING] CaptionSystem(route_id={route_id})._realtime_translator.stop():"
-                f" {_time.monotonic() - _t1:.3f}s",
-                flush=True,
-            )
-        # 音声出力ストリームを停止
-        if getattr(self, "_audio_stream", None) is not None:
-            _t1 = _time.monotonic()
-            try:
-                self._audio_stream.stop()
-            except Exception:
-                pass
-            print(
-                f"[TIMING] CaptionSystem(route_id={route_id})._audio_stream.stop():"
-                f" {_time.monotonic() - _t1:.3f}s",
-                flush=True,
-            )
-        # コストモニターを停止
-        if getattr(self, "_cost_monitor", None) is not None:
-            _t1 = _time.monotonic()
-            try:
-                self._cost_monitor.stop()
-            except Exception:
-                pass
-            print(
-                f"[TIMING] CaptionSystem(route_id={route_id})._cost_monitor.stop():"
-                f" {_time.monotonic() - _t1:.3f}s",
-                flush=True,
-            )
-        print(
-            f"[TIMING] CaptionSystem(route_id={route_id}).shutdown() TOTAL:"
-            f" {_time.monotonic() - _t0:.3f}s",
-            flush=True,
-        )
-        # subst ドライブの解除はアプリ終了時のみ（app.py の main() / main.py の main() で実施）。
+            # subst ドライブの解除はアプリ終了時のみ（app.py の main() / main.py の main() で実施）。
+        finally:
+            # 内部状態をリセット（次回 start() が呼べるように）
+            # 仕様書 §リスク 1: リセット漏れがあると次回 start() が即 IDLE に落ちる
+            self._stop_event = threading.Event()  # 新しい Event を生成（前の Event は set 済み）
+            self._loop = None
+            self._stop_event_async = None
+            self._capture_thread = None
+            self._capture_stream = None
+            self._set_state(RouteState.IDLE)
+
+    def shutdown(self) -> None:
+        """後方互換: stop() の thin wrapper。"""
+        self.stop()
 
     def _ensure_verbose_log_path(self) -> Path:
         """verbose ログファイルパスを遅延生成。translate ログと同じ N を使う。"""
