@@ -27,26 +27,22 @@ import app  # noqa: E402
 class TestRouteLabels:
     """GUI 上の系統名が正しいことを定数・ソース検索で確認する。"""
 
-    def test_route_a_label_contains_aitehitomi(self):
-        """経路A のラベルに「相手→自分」または「聞き取り字幕」が含まれること。
-
-        _build_gui() の add_text 呼び出し部分を文字列検索で確認する。
-        """
+    def test_route_a_label_contains_keitou1(self):
+        """系統1 のラベルに「系統1」または「相手→自分」または「聞き取り字幕」が含まれること。"""
         import inspect
         source = inspect.getsource(app._build_gui)
-        # 「相手→自分」または「聞き取り字幕」の表記が含まれること
-        has_aitehitomi = "相手→自分" in source or "相手" in source
-        assert has_aitehitomi, (
-            "_build_gui に「相手→自分」や「相手」の系統名が含まれていない"
+        has_keitou1 = "系統1" in source or "相手→自分" in source or "聞き取り字幕" in source
+        assert has_keitou1, (
+            "_build_gui に「系統1」「相手→自分」「聞き取り字幕」の系統名が含まれていない"
         )
 
-    def test_route_b_label_contains_jibunkaraate(self):
-        """経路B のラベルに「自分→相手」または「同時通訳」が含まれること。"""
+    def test_route_b_label_contains_keitou2(self):
+        """系統2 のラベルに「系統2」または「自分→相手」または「同時通訳」が含まれること。"""
         import inspect
         source = inspect.getsource(app._build_gui)
-        has_jibunkaraate = "自分→相手" in source or "同時通訳" in source
-        assert has_jibunkaraate, (
-            "_build_gui に「自分→相手」や「同時通訳」の系統名が含まれていない"
+        has_keitou2 = "系統2" in source or "自分→相手" in source or "同時通訳" in source
+        assert has_keitou2, (
+            "_build_gui に「系統2」「自分→相手」「同時通訳」の系統名が含まれていない"
         )
 
     def test_route_a_old_label_not_in_build_gui(self):
@@ -272,8 +268,8 @@ class TestRouteCallbackPrefixes:
 
         return captured.get("on_result_a"), captured.get("on_result_b")
 
-    def test_on_result_route_a_uses_aite_prefix(self):
-        """on_result_route_a が「[相手]」プレフィックスを使うこと。"""
+    def test_on_result_route_a_uses_keitou1_prefix(self):
+        """on_result_route_a が「[系統1 入力]」「[系統1 出力]」プレフィックスを使うこと。"""
         on_result_a, _ = self._get_on_result_callbacks()
         assert on_result_a is not None, "on_result_a が MultiCaptionSystem に渡されていない"
 
@@ -282,15 +278,15 @@ class TestRouteCallbackPrefixes:
             on_result_a("Hello", "こんにちは")
 
         assert len(enqueued) == 1
-        assert "[相手]" in enqueued[0].get("original", ""), (
-            f"on_result_a の original が「[相手]」プレフィックスでない: {enqueued[0]}"
+        assert "[系統1 入力]" in enqueued[0].get("original", ""), (
+            f"on_result_a の original が「[系統1 入力]」プレフィックスでない: {enqueued[0]}"
         )
-        assert "[相手]" in enqueued[0].get("translated", ""), (
-            f"on_result_a の translated が「[相手]」プレフィックスでない: {enqueued[0]}"
+        assert "[系統1 出力]" in enqueued[0].get("translated", ""), (
+            f"on_result_a の translated が「[系統1 出力]」プレフィックスでない: {enqueued[0]}"
         )
 
-    def test_on_result_route_b_uses_jibun_prefix(self):
-        """on_result_route_b が「[自分]」プレフィックスを使うこと。"""
+    def test_on_result_route_b_uses_keitou2_prefix(self):
+        """on_result_route_b が「[系統2 入力]」「[系統2 出力]」プレフィックスを使うこと。"""
         _, on_result_b = self._get_on_result_callbacks()
         assert on_result_b is not None, "on_result_b が MultiCaptionSystem に渡されていない"
 
@@ -299,11 +295,11 @@ class TestRouteCallbackPrefixes:
             on_result_b("I speak", "翻訳結果")
 
         assert len(enqueued) == 1
-        assert "[自分]" in enqueued[0].get("original", ""), (
-            f"on_result_b の original が「[自分]」プレフィックスでない: {enqueued[0]}"
+        assert "[系統2 入力]" in enqueued[0].get("original", ""), (
+            f"on_result_b の original が「[系統2 入力]」プレフィックスでない: {enqueued[0]}"
         )
-        assert "[自分]" in enqueued[0].get("translated", ""), (
-            f"on_result_b の translated が「[自分]」プレフィックスでない: {enqueued[0]}"
+        assert "[系統2 出力]" in enqueued[0].get("translated", ""), (
+            f"on_result_b の translated が「[系統2 出力]」プレフィックスでない: {enqueued[0]}"
         )
 
     def test_on_result_route_a_old_prefix_not_used(self):
@@ -571,3 +567,152 @@ def _make_widget_values(route_a_device_label: str, route_b_device_label: str) ->
         app.TAG_ROUTE_A_ENABLE: True,
         app.TAG_ROUTE_B_ENABLE: True,
     }
+
+
+# ---------------------------------------------------------------------------
+# Issue #46: スライダー callback 検証
+# ---------------------------------------------------------------------------
+
+class TestSliderCallbacks:
+    """経路A/B のゲイン・音量スライダーに callback が設定されていること。"""
+
+    def _get_build_gui_source(self) -> str:
+        import inspect
+        return inspect.getsource(app._build_gui)
+
+    def test_route_a_gain_slider_has_callback(self):
+        """経路A ゲイン倍率スライダーに callback が設定されていること。"""
+        source = self._get_build_gui_source()
+        # TAG_ROUTE_A_GAIN_SLIDER の add_slider_float に callback= が含まれること
+        # TAG_ROUTE_A_GAIN_SLIDER の定義ブロックに callback= キーワードが存在する
+        assert "_on_route_a_gain_change" in source, (
+            "_build_gui に _on_route_a_gain_change callback が含まれていない"
+        )
+
+    def test_route_b_gain_slider_has_callback(self):
+        """経路B ゲイン倍率スライダーに callback が設定されていること。"""
+        source = self._get_build_gui_source()
+        assert "_on_route_b_gain_change" in source, (
+            "_build_gui に _on_route_b_gain_change callback が含まれていない"
+        )
+
+    def test_route_a_volume_slider_has_callback(self):
+        """経路A 出力音量スライダーに callback が設定されていること。"""
+        source = self._get_build_gui_source()
+        assert "_on_route_a_volume_change" in source, (
+            "_build_gui に _on_route_a_volume_change callback が含まれていない"
+        )
+
+    def test_route_b_volume_slider_has_callback(self):
+        """経路B 出力音量スライダーに callback が設定されていること。"""
+        source = self._get_build_gui_source()
+        assert "_on_route_b_volume_change" in source, (
+            "_build_gui に _on_route_b_volume_change callback が含まれていない"
+        )
+
+    def test_route_a_gain_mode_has_callback(self):
+        """経路A ゲインモードコンボに callback が設定されていること。"""
+        source = self._get_build_gui_source()
+        assert "_on_route_a_gain_mode_change" in source, (
+            "_build_gui に _on_route_a_gain_mode_change callback が含まれていない"
+        )
+
+    def test_route_b_gain_mode_has_callback(self):
+        """経路B ゲインモードコンボに callback が設定されていること。"""
+        source = self._get_build_gui_source()
+        assert "_on_route_b_gain_mode_change" in source, (
+            "_build_gui に _on_route_b_gain_mode_change callback が含まれていない"
+        )
+
+
+class TestSliderCallbackFunctions:
+    """スライダー callback 関数が _konnyaku_system に正しく委譲すること。"""
+
+    def test_on_route_a_gain_change_sets_manual_gain(self):
+        """_on_route_a_gain_change が route_a_system.manual_gain を更新すること。"""
+        mock_system = MagicMock()
+        mock_route_a = MagicMock()
+        mock_system.route_a_system = mock_route_a
+
+        with patch.object(app, "_konnyaku_system", mock_system):
+            app._on_route_a_gain_change(None, 3.5, None)
+
+        assert mock_route_a.manual_gain == 3.5, (
+            f"manual_gain が 3.5 に設定されていない: {mock_route_a.manual_gain}"
+        )
+
+    def test_on_route_b_gain_change_sets_manual_gain(self):
+        """_on_route_b_gain_change が route_b_system.manual_gain を更新すること。"""
+        mock_system = MagicMock()
+        mock_route_b = MagicMock()
+        mock_system.route_b_system = mock_route_b
+
+        with patch.object(app, "_konnyaku_system", mock_system):
+            app._on_route_b_gain_change(None, 2.0, None)
+
+        assert mock_route_b.manual_gain == 2.0, (
+            f"manual_gain が 2.0 に設定されていない: {mock_route_b.manual_gain}"
+        )
+
+    def test_on_route_a_volume_change_sets_output_volume(self):
+        """_on_route_a_volume_change が route_a_system.output_volume を更新すること。"""
+        mock_system = MagicMock()
+        mock_route_a = MagicMock()
+        mock_system.route_a_system = mock_route_a
+
+        with patch.object(app, "_konnyaku_system", mock_system):
+            app._on_route_a_volume_change(None, 0.8, None)
+
+        assert mock_route_a.output_volume == 0.8, (
+            f"output_volume が 0.8 に設定されていない: {mock_route_a.output_volume}"
+        )
+
+    def test_on_route_b_volume_change_sets_output_volume(self):
+        """_on_route_b_volume_change が route_b_system.output_volume を更新すること。"""
+        mock_system = MagicMock()
+        mock_route_b = MagicMock()
+        mock_system.route_b_system = mock_route_b
+
+        with patch.object(app, "_konnyaku_system", mock_system):
+            app._on_route_b_volume_change(None, 1.5, None)
+
+        assert mock_route_b.output_volume == 1.5, (
+            f"output_volume が 1.5 に設定されていない: {mock_route_b.output_volume}"
+        )
+
+    def test_on_route_a_gain_mode_change_sets_gain_mode(self):
+        """_on_route_a_gain_mode_change が route_a_system.gain_mode を更新すること。"""
+        mock_system = MagicMock()
+        mock_route_a = MagicMock()
+        mock_system.route_a_system = mock_route_a
+
+        with patch.object(app, "_konnyaku_system", mock_system):
+            app._on_route_a_gain_mode_change(None, "manual", None)
+
+        assert mock_route_a.gain_mode == "manual", (
+            f"gain_mode が 'manual' に設定されていない: {mock_route_a.gain_mode}"
+        )
+
+    def test_on_route_b_gain_mode_change_sets_gain_mode(self):
+        """_on_route_b_gain_mode_change が route_b_system.gain_mode を更新すること。"""
+        mock_system = MagicMock()
+        mock_route_b = MagicMock()
+        mock_system.route_b_system = mock_route_b
+
+        with patch.object(app, "_konnyaku_system", mock_system):
+            app._on_route_b_gain_mode_change(None, "auto", None)
+
+        assert mock_route_b.gain_mode == "auto", (
+            f"gain_mode が 'auto' に設定されていない: {mock_route_b.gain_mode}"
+        )
+
+    def test_callbacks_do_nothing_when_konnyaku_system_is_none(self):
+        """_konnyaku_system が None のとき全 callback が例外を出さないこと。"""
+        with patch.object(app, "_konnyaku_system", None):
+            # 例外が出なければ OK
+            app._on_route_a_gain_change(None, 2.0, None)
+            app._on_route_b_gain_change(None, 2.0, None)
+            app._on_route_a_volume_change(None, 1.0, None)
+            app._on_route_b_volume_change(None, 1.0, None)
+            app._on_route_a_gain_mode_change(None, "manual", None)
+            app._on_route_b_gain_mode_change(None, "auto", None)

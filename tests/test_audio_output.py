@@ -687,3 +687,83 @@ class TestAudioOutputStreamStereoDetection:
         assert len(out_samples) == 4, (
             f"mono→mono 変換なしで 4 サンプルのはず、実際: {len(out_samples)}"
         )
+
+
+@pytest.mark.skipif(not _MODULE_AVAILABLE, reason="audio_output モジュール未実装")
+class TestAudioOutputStreamSetVolume:
+    """Issue #46: set_volume() によるリアルタイム音量変更のテスト。"""
+
+    def test_set_volume_method_exists(self):
+        """set_volume() メソッドが存在すること。"""
+        assert hasattr(AudioOutputStream, "set_volume"), (
+            "AudioOutputStream に set_volume メソッドが存在しない"
+        )
+
+    def test_set_volume_clamps_to_range(self):
+        """set_volume() に範囲外の値を渡しても 0.0〜2.0 にクランプされること。"""
+        mock_pa = MagicMock()
+        mock_pa.open.return_value = MagicMock()
+        stream = AudioOutputStream(pyaudio_instance=mock_pa)
+
+        stream.set_volume(5.0)
+        assert stream.volume == 2.0, (
+            f"5.0 は 2.0 にクランプされるはず、実際: {stream.volume}"
+        )
+
+        stream.set_volume(-1.0)
+        assert stream.volume == 0.0, (
+            f"-1.0 は 0.0 にクランプされるはず、実際: {stream.volume}"
+        )
+
+        stream.set_volume(0.5)
+        assert stream.volume == 0.5, (
+            f"0.5 は変更なしのはず、実際: {stream.volume}"
+        )
+
+    def test_set_volume_is_thread_safe(self):
+        """set_volume() を別スレッドから同時に呼んでも例外が出ないこと。"""
+        import numpy as np
+
+        mock_pa = MagicMock()
+        mock_pa.open.return_value = MagicMock()
+        stream = AudioOutputStream(pyaudio_instance=mock_pa)
+
+        errors = []
+
+        def setter_thread():
+            try:
+                for v in [0.1, 0.5, 1.0, 1.5, 2.0] * 100:
+                    stream.set_volume(v)
+            except Exception as e:
+                errors.append(e)
+
+        threads = [threading.Thread(target=setter_thread) for _ in range(5)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=5.0)
+
+        assert not errors, f"スレッド間で例外が発生した: {errors}"
+        # 最終的に volume が 0.0〜2.0 の範囲に収まっていること
+        assert 0.0 <= stream.volume <= 2.0
+
+    def test_volume_change_takes_effect_in_next_write(self):
+        """set_volume(0.5) した直後の write() で PCM が約半分の振幅になること。"""
+        import numpy as np
+
+        mock_pa = MagicMock()
+        mock_pa.open.return_value = MagicMock()
+        stream = AudioOutputStream(pyaudio_instance=mock_pa, volume=1.0)
+
+        # volume を 0.5 に変更
+        stream.set_volume(0.5)
+
+        # write() で PCM を処理（volume 適用は write() 内で行われる）
+        samples_in = np.ones(4, dtype=np.int16) * 10000
+        stream.write(samples_in.tobytes())
+
+        # audio_peak_now で反映後の peak を確認（volume 適用後の値）
+        # volume=0.5 → peak は約 5000
+        assert stream.audio_peak_now == 5000, (
+            f"volume=0.5 適用後の peak は 5000 のはず、実際: {stream.audio_peak_now}"
+        )
