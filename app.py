@@ -63,11 +63,13 @@ os.environ.setdefault("TORCH_HOME", str(_ascii_models / "torch"))
 # main.py の重複セットアップ/重複ログを抑制するマーカー
 os.environ["RC_MODELS_CONFIGURED"] = "1"
 
+import argparse
 import asyncio
 import io
 import json
 import queue
 import threading
+import time
 from datetime import datetime
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
@@ -2022,11 +2024,58 @@ def _update_konnyaku_level_meters():
 
 
 # ---------------------------------------------------------------------------
+# CLI 自動操作モード
+# ---------------------------------------------------------------------------
+
+def _auto_konnyaku_runner(duration: int) -> None:
+    """別スレッドで実行される自動操作（--auto-konnyaku 用）。
+
+    AI が Bash 経由でアプリを実行 → ログ取得 → クラッシュ原因解析 → 修正のループを
+    自律的に回せるようにするためのヘルパー。
+    """
+    try:
+        print(f"[AUTO] Phase 1/5: モデルロード待機 (5s)...", flush=True)
+        time.sleep(5)
+
+        print(f"[AUTO] Phase 2/5: プリセットボタン押下", flush=True)
+        _on_konnyaku_preset_click()
+        time.sleep(1)
+
+        print(f"[AUTO] Phase 3/5: こんにゃく開始ボタン押下", flush=True)
+        _on_konnyaku_start_stop_click()
+
+        print(f"[AUTO] Phase 4/5: {duration}秒間動作中...", flush=True)
+        time.sleep(duration)
+
+        print(f"[AUTO] Phase 5/5: こんにゃく停止ボタン押下", flush=True)
+        _on_konnyaku_start_stop_click()
+        time.sleep(3)  # shutdown 完了待ち
+
+        print(f"[AUTO] アプリ終了", flush=True)
+        dpg.stop_dearpygui()
+    except Exception as e:
+        import traceback
+        print(f"[AUTO ERROR] {e}", flush=True)
+        print(traceback.format_exc(), flush=True)
+        try:
+            dpg.stop_dearpygui()
+        except Exception:
+            pass
+
+
+# ---------------------------------------------------------------------------
 # メインループ
 # ---------------------------------------------------------------------------
 
 def main():
     global _config, _devices
+
+    parser = argparse.ArgumentParser(description="Realtime Caption")
+    parser.add_argument(
+        "--auto-konnyaku", type=int, default=None,
+        help="Auto-test konnyaku mode for N seconds then exit (for AI debugging)",
+    )
+    args = parser.parse_args()
 
     _config = load_config("config.yaml")
     _host_api = _config.get("audio", {}).get("host_api", "wasapi")
@@ -2049,6 +2098,16 @@ def main():
 
     # プリロード機能は一時無効化（RealtimeSTT のスレッド問題調査中）
     # threading.Thread(target=_trigger_preload, daemon=True).start()
+
+    # CLI 自動操作モード: --auto-konnyaku=N 指定時はバックグラウンドスレッドで操作を自動実行
+    if args.auto_konnyaku is not None:
+        print(f"[AUTO] auto-konnyaku モード開始 (duration={args.auto_konnyaku}s)", flush=True)
+        threading.Thread(
+            target=_auto_konnyaku_runner,
+            args=(args.auto_konnyaku,),
+            daemon=True,
+            name="AutoKonnyakuRunner",
+        ).start()
 
     frame_count = 0
     while dpg.is_dearpygui_running():
