@@ -119,11 +119,14 @@ class RealtimeTranslator:
     # 公開インターフェース
     # ------------------------------------------------------------------
 
-    def start(self, loop: asyncio.AbstractEventLoop) -> None:
+    def connect(self, loop: asyncio.AbstractEventLoop) -> None:
         """
+        WS 接続を確立する。
+
         asyncio イベントループでWS接続タスクを起動する。
         main.py の CaptionSystem.run() の中で呼ぶ。
         ループが別スレッドで動いている場合は、そのループにタスクを投入する。
+        disconnect() 後に再度呼んでも安全（内部状態を再初期化する）。
         """
         self._loop = loop
 
@@ -142,6 +145,32 @@ class RealtimeTranslator:
             self._thread = threading.Thread(target=_bootstrap, daemon=True)
             self._thread.start()
 
+    def disconnect(self) -> None:
+        """
+        WS 接続を切断する。
+
+        接続を切断してタスクをキャンセルする（idempotent）。
+        次回 connect() が呼べるように内部状態（_stop_event, _task, _future, _audio_queue）を
+        None リセットする。
+        """
+        if self._loop is not None:
+            if self._stop_event is not None and self._loop.is_running():
+                self._loop.call_soon_threadsafe(self._stop_event.set)
+            if self._task is not None and self._loop.is_running():
+                self._loop.call_soon_threadsafe(self._task.cancel)
+            if self._future is not None and not self._future.done():
+                self._future.cancel()
+
+        # 次回 connect() で再初期化できるように内部状態をリセット
+        self._stop_event = None
+        self._task = None
+        self._future = None
+        self._audio_queue = None
+
+    def start(self, loop: asyncio.AbstractEventLoop) -> None:
+        """後方互換: connect(loop) の thin wrapper。"""
+        self.connect(loop)
+
     def feed_audio(self, pcm16_bytes: bytes) -> None:
         """
         24kHz PCM16 bytes を受け取り、WS 送信キューに積む。
@@ -154,15 +183,8 @@ class RealtimeTranslator:
         self._loop.call_soon_threadsafe(self._audio_queue.put_nowait, pcm16_bytes)
 
     def stop(self) -> None:
-        """WS 接続を切断してタスクをキャンセルする（idempotent）。"""
-        if self._loop is None:
-            return
-        if self._stop_event is not None and self._loop.is_running():
-            self._loop.call_soon_threadsafe(self._stop_event.set)
-        if self._task is not None and self._loop.is_running():
-            self._loop.call_soon_threadsafe(self._task.cancel)
-        if self._future is not None and not self._future.done():
-            self._future.cancel()
+        """後方互換: disconnect() の thin wrapper。"""
+        self.disconnect()
 
     # ------------------------------------------------------------------
     # 内部: ループ起動時の初期化
@@ -177,7 +199,7 @@ class RealtimeTranslator:
     async def _connect_loop_async(self):
         """接続・再接続ループ本体。"""
         attempt = 0
-        while not self._stop_event.is_set():
+        while self._stop_event is not None and not self._stop_event.is_set():
             try:
                 await self._run_session()
                 # 正常終了なら停止
@@ -198,7 +220,7 @@ class RealtimeTranslator:
                     self._fire_error(f"再試行も失敗: {e2}")
                 break
             except Exception as e:
-                if self._stop_event.is_set():
+                if self._stop_event is None or self._stop_event.is_set():
                     break
                 if attempt >= self._reconnect_max_attempts:
                     self._fire_error(f"最大再接続回数に達しました（{attempt}回）: {e}")
@@ -325,7 +347,7 @@ class RealtimeTranslator:
 
         try:
             async for raw in ws:
-                if self._stop_event.is_set():
+                if self._stop_event is None or self._stop_event.is_set():
                     break
                 try:
                     msg = json.loads(raw)
@@ -454,7 +476,7 @@ class RealtimeTranslator:
 
     async def _send_loop(self, ws):
         """送信ループ: キューから PCM bytes を取り出して base64 エンコードして送信。"""
-        while not self._stop_event.is_set():
+        while self._stop_event is not None and not self._stop_event.is_set():
             try:
                 pcm_bytes = await asyncio.wait_for(
                     self._audio_queue.get(), timeout=1.0
