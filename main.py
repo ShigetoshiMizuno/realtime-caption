@@ -1096,7 +1096,9 @@ class CaptionSystem:
         # shutdown() から stop_stream() を呼べるようにインスタンス変数に保存する
         self._capture_stream = stream
 
-        print(f"[INFO] ループバックキャプチャ開始: {src_rate}Hz, {channels}ch -> {target_rate}Hz mono", flush=True)
+        print(f"[INFO] キャプチャ開始: route={getattr(self, '_route_id', '?')} "
+              f"device_index={device_index} name='{self._device_info.get('name', '?')}' "
+              f"{src_rate}Hz, {channels}ch -> {target_rate}Hz mono", flush=True)
 
         # デバッグ用: 1秒ごとに音量レベルを出力
         import time as _time

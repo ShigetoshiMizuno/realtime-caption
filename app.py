@@ -219,6 +219,10 @@ _verbose_state: bool = False
 _pending_cost_warnings: list[float] = []
 _cost_warning_lock = threading.Lock()
 
+# dpg コンテキスト初期化済みフラグ
+# _build_gui() で True にする。テスト環境では False のまま。
+_dpg_ready: bool = False
+
 
 def _resolve_settings_visibility(trans_key: str) -> dict[str, bool]:
     """
@@ -264,6 +268,9 @@ def _load_settings() -> dict:
 
 
 def _save_settings():
+    # dpg コンテキストが初期化されていない場合（テスト環境など）は何もしない
+    if not _dpg_ready:
+        return
     try:
         # 翻訳エンジンは表示ラベルではなく内部キーで保存する
         # TAG_TRANS_COMBO は _build_gui から削除済み（単独モード廃止）のため does_item_exist で安全化
@@ -275,6 +282,16 @@ def _save_settings():
         output_device = ""
         if dpg.does_item_exist(TAG_OUTPUT_DEVICE_COMBO):
             output_device = dpg.get_value(TAG_OUTPUT_DEVICE_COMBO)
+
+        # ヘルパー: ウィジェットの値を安全に取得
+        def _get(tag, default=None):
+            if dpg.does_item_exist(tag):
+                try:
+                    return dpg.get_value(tag)
+                except Exception:
+                    return default
+            return default
+
         data = {
             "device": dpg.get_value(TAG_DEVICE_COMBO) if dpg.does_item_exist(TAG_DEVICE_COMBO) else "",
             "model": dpg.get_value(TAG_MODEL_COMBO) if dpg.does_item_exist(TAG_MODEL_COMBO) else "",
@@ -285,6 +302,23 @@ def _save_settings():
             "gain_value": dpg.get_value(TAG_GAIN_SLIDER) if dpg.does_item_exist(TAG_GAIN_SLIDER) else GAIN_DEFAULT_VALUE,
             "verbose": _verbose_state,
             "output_device": output_device,
+            "host_api": _get(TAG_HOST_API_COMBO, "wasapi"),
+            "route_a": {
+                "enabled":        _get(TAG_ROUTE_A_ENABLE, True),
+                "device":         _get(TAG_ROUTE_A_DEVICE_COMBO, ""),
+                "lang":           _get(TAG_ROUTE_A_LANG_COMBO, ""),
+                "output_enabled": _get(TAG_ROUTE_A_OUTPUT_ENABLE, False),
+                "output_device":  _get(TAG_ROUTE_A_OUTPUT_DEVICE_COMBO, "(なし)"),
+                "output_volume":  _get(TAG_ROUTE_A_OUTPUT_VOLUME, 1.0),
+            },
+            "route_b": {
+                "enabled":        _get(TAG_ROUTE_B_ENABLE, True),
+                "device":         _get(TAG_ROUTE_B_DEVICE_COMBO, ""),
+                "lang":           _get(TAG_ROUTE_B_LANG_COMBO, ""),
+                "output_enabled": _get(TAG_ROUTE_B_OUTPUT_ENABLE, True),
+                "output_device":  _get(TAG_ROUTE_B_OUTPUT_DEVICE_COMBO, "(なし)"),
+                "output_volume":  _get(TAG_ROUTE_B_OUTPUT_VOLUME, 1.0),
+            },
         }
         with open(_SETTINGS_PATH, "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False, indent=2)
@@ -521,6 +555,7 @@ def _on_gain_value_change(sender, value, user_data):
 def _on_route_a_volume_change(sender, app_data, user_data):
     """経路A 出力音量スライダー変更時。動作中の AudioOutputStream に即反映。"""
     print(f"[USER] 系統1 出力音量変更: {float(app_data):.2f}", flush=True)
+    _save_settings()
     if _konnyaku_system is None or _konnyaku_system.route_a_system is None:
         return
     try:
@@ -532,6 +567,7 @@ def _on_route_a_volume_change(sender, app_data, user_data):
 def _on_route_b_volume_change(sender, app_data, user_data):
     """経路B 出力音量スライダー変更時。動作中の AudioOutputStream に即反映。"""
     print(f"[USER] 系統2 出力音量変更: {float(app_data):.2f}", flush=True)
+    _save_settings()
     if _konnyaku_system is None or _konnyaku_system.route_b_system is None:
         return
     try:
@@ -543,6 +579,7 @@ def _on_route_b_volume_change(sender, app_data, user_data):
 def _on_route_a_output_device_change(sender, app_data, user_data):
     """経路A 出力デバイス変更時。動作中の系統に即反映。"""
     print(f"[USER] 系統1 出力デバイス選択: {app_data!r}", flush=True)
+    _save_settings()
     if _konnyaku_system is None or _konnyaku_system.route_a_system is None:
         return
     label = str(app_data)
@@ -561,6 +598,7 @@ def _on_route_a_output_device_change(sender, app_data, user_data):
 def _on_route_b_output_device_change(sender, app_data, user_data):
     """経路B 出力デバイス変更時。動作中の系統に即反映。"""
     print(f"[USER] 系統2 出力デバイス選択: {app_data!r}", flush=True)
+    _save_settings()
     if _konnyaku_system is None or _konnyaku_system.route_b_system is None:
         return
     label = str(app_data)
@@ -579,6 +617,7 @@ def _on_route_b_output_device_change(sender, app_data, user_data):
 def _on_route_a_output_enable_change(sender, app_data, user_data):
     """経路A 音声出力 ON/OFF 変更時。稼働中なら即反映。"""
     print(f"[USER] 系統1 音声出力 {'ON' if app_data else 'OFF'}", flush=True)
+    _save_settings()
     if _konnyaku_system is None or _konnyaku_system.route_a_system is None:
         return
     enabled = bool(app_data)
@@ -603,6 +642,7 @@ def _on_route_a_output_enable_change(sender, app_data, user_data):
 def _on_route_b_output_enable_change(sender, app_data, user_data):
     """経路B 音声出力 ON/OFF 変更時。稼働中なら即反映。"""
     print(f"[USER] 系統2 音声出力 {'ON' if app_data else 'OFF'}", flush=True)
+    _save_settings()
     if _konnyaku_system is None or _konnyaku_system.route_b_system is None:
         return
     enabled = bool(app_data)
@@ -682,6 +722,7 @@ def _on_both_routes_on(sender=None, app_data=None, user_data=None):
         dpg.set_value(TAG_ROUTE_A_ENABLE, True)
     if dpg.does_item_exist(TAG_ROUTE_B_ENABLE):
         dpg.set_value(TAG_ROUTE_B_ENABLE, True)
+    _save_settings()
 
 
 def _on_both_routes_off(sender=None, app_data=None, user_data=None):
@@ -691,6 +732,7 @@ def _on_both_routes_off(sender=None, app_data=None, user_data=None):
         dpg.set_value(TAG_ROUTE_A_ENABLE, False)
     if dpg.does_item_exist(TAG_ROUTE_B_ENABLE):
         dpg.set_value(TAG_ROUTE_B_ENABLE, False)
+    _save_settings()
 
 
 def _konnyaku_thread_error_handler(route_id: str, exc: Exception, tb: str) -> None:
@@ -835,6 +877,7 @@ def _create_konnyaku_system() -> None:
 def _on_route_a_enable_change(sender, app_data, user_data) -> None:
     """系統1 有効チェック変更時。稼働中なら即時反映（B-14）。"""
     print(f"[USER] 系統1 有効チェック {'ON' if app_data else 'OFF'}", flush=True)
+    _save_settings()
     if _konnyaku_system is None:
         return
     if app_data:
@@ -846,6 +889,7 @@ def _on_route_a_enable_change(sender, app_data, user_data) -> None:
 def _on_route_b_enable_change(sender, app_data, user_data) -> None:
     """系統2 有効チェック変更時。稼働中なら即時反映（B-14）。"""
     print(f"[USER] 系統2 有効チェック {'ON' if app_data else 'OFF'}", flush=True)
+    _save_settings()
     if _konnyaku_system is None:
         return
     if app_data:
@@ -857,6 +901,7 @@ def _on_route_b_enable_change(sender, app_data, user_data) -> None:
 def _on_route_a_device_change(sender, app_data, user_data) -> None:
     """系統1 入力デバイス変更時。稼働中なら新デバイスで再起動（B-15）。"""
     print(f"[USER] 系統1 入力デバイス選択: {app_data!r}", flush=True)
+    _save_settings()
     if _konnyaku_system is None or _konnyaku_system.route_a_system is None:
         return
     new_device = next((d for d in _devices if _device_label(d) == app_data), None)
@@ -876,6 +921,7 @@ def _on_route_a_device_change(sender, app_data, user_data) -> None:
 def _on_route_b_device_change(sender, app_data, user_data) -> None:
     """系統2 入力デバイス変更時。稼働中なら新デバイスで再起動（B-15）。"""
     print(f"[USER] 系統2 入力デバイス選択: {app_data!r}", flush=True)
+    _save_settings()
     if _konnyaku_system is None or _konnyaku_system.route_b_system is None:
         return
     new_device = next((d for d in _devices if _device_label(d) == app_data), None)
@@ -1740,7 +1786,9 @@ def _load_fonts(size: int = 16):
 
 
 def _build_gui():
+    global _dpg_ready
     dpg.create_context()
+    _dpg_ready = True
 
     _load_fonts(16)
     if _font_main:
@@ -1764,6 +1812,8 @@ def _build_gui():
 
     rpc_port = _config.get("rpc", {}).get("port", 8767)
     saved = _load_settings()
+    route_a_saved = saved.get("route_a", {})
+    route_b_saved = saved.get("route_b", {})
 
     # 起動時: config.yaml からデコード済みのキーを input_text の default_value に設定
     # パスワードモードで表示するため、実際のキーを初期表示する（空なら空のまま）
@@ -1917,11 +1967,28 @@ def _build_gui():
             _lang_display_names = get_language_display_names()
 
             # --- 系統1: 相手→自分（聞き取り字幕）経路 ---
+            _route_a_default_loopback = next(
+                (lbl for lbl in device_labels if "[Loopback]" in lbl),
+                device_labels[0] if device_labels else "",
+            )
+            _route_a_saved_device = route_a_saved.get("device", "")
+            _route_a_default_device = (
+                _route_a_saved_device if _route_a_saved_device in device_labels
+                else _route_a_default_loopback
+            )
+            _route_a_default_lang = route_a_saved.get("lang", _lang_display_names[0] if _lang_display_names else "")
+            if _route_a_default_lang not in _lang_display_names:
+                _route_a_default_lang = _lang_display_names[0] if _lang_display_names else ""
+            _route_a_saved_out_dev = route_a_saved.get("output_device", "(なし)")
+            _route_a_default_out_dev = (
+                _route_a_saved_out_dev if _route_a_saved_out_dev in output_device_labels
+                else "(なし)"
+            )
             with dpg.group(horizontal=True):
                 dpg.add_checkbox(
                     tag=TAG_ROUTE_A_ENABLE,
                     label="",
-                    default_value=True,
+                    default_value=bool(route_a_saved.get("enabled", True)),
                     callback=_on_route_a_enable_change,
                 )
                 dpg.add_text("【系統1】相手→自分（聞き取り字幕）  You speak, I hear")
@@ -1930,11 +1997,9 @@ def _build_gui():
                 dpg.add_combo(
                     tag=TAG_ROUTE_A_DEVICE_COMBO,
                     items=device_labels,
-                    default_value=next(
-                        (lbl for lbl in device_labels if "[Loopback]" in lbl),
-                        device_labels[0] if device_labels else "",
-                    ),
+                    default_value=_route_a_default_device,
                     width=360,
+                    callback=_on_route_a_device_change,
                 )
             with dpg.group(horizontal=True):
                 dpg.add_text("入力レベル:")
@@ -1948,15 +2013,16 @@ def _build_gui():
                 dpg.add_combo(
                     tag=TAG_ROUTE_A_LANG_COMBO,
                     items=_lang_display_names,
-                    default_value=_lang_display_names[0] if _lang_display_names else "",
+                    default_value=_route_a_default_lang,
                     width=120,
+                    callback=lambda s, a, u: _save_settings(),
                 )
             with dpg.group(horizontal=True):
                 dpg.add_text("音声出力:")
                 dpg.add_checkbox(
                     tag=TAG_ROUTE_A_OUTPUT_ENABLE,
                     label="有効",
-                    default_value=False,
+                    default_value=bool(route_a_saved.get("output_enabled", False)),
                     callback=_on_route_a_output_enable_change,
                 )
             with dpg.group(horizontal=True):
@@ -1964,7 +2030,7 @@ def _build_gui():
                 dpg.add_combo(
                     tag=TAG_ROUTE_A_OUTPUT_DEVICE_COMBO,
                     items=output_device_labels,
-                    default_value="(なし)",
+                    default_value=_route_a_default_out_dev,
                     width=300,
                     callback=_on_route_a_output_device_change,
                 )
@@ -1972,7 +2038,7 @@ def _build_gui():
                 dpg.add_text("出力音量:")
                 dpg.add_slider_float(
                     tag=TAG_ROUTE_A_OUTPUT_VOLUME,
-                    default_value=1.0,
+                    default_value=float(route_a_saved.get("output_volume", 1.0)),
                     min_value=0.0, max_value=2.0,
                     width=200, format="%.2f",
                     callback=_on_route_a_volume_change,
@@ -1988,11 +2054,32 @@ def _build_gui():
             dpg.add_separator()
 
             # --- 系統2: 自分→相手（同時通訳）経路 ---
+            _route_b_default_non_loopback = next(
+                (lbl for lbl in device_labels if "[Loopback]" not in lbl),
+                device_labels[0] if device_labels else "",
+            )
+            _route_b_saved_device = route_b_saved.get("device", "")
+            _route_b_default_device = (
+                _route_b_saved_device if _route_b_saved_device in device_labels
+                else _route_b_default_non_loopback
+            )
+            _route_b_default_lang = route_b_saved.get("lang", _lang_display_names[-1] if _lang_display_names else "")
+            if _route_b_default_lang not in _lang_display_names:
+                _route_b_default_lang = _lang_display_names[-1] if _lang_display_names else ""
+            _route_b_default_cable = next(
+                (lbl for lbl in output_device_labels if "cable input" in lbl.lower()),
+                "(なし)",
+            )
+            _route_b_saved_out_dev = route_b_saved.get("output_device", "")
+            _route_b_default_out_dev = (
+                _route_b_saved_out_dev if _route_b_saved_out_dev in output_device_labels
+                else _route_b_default_cable
+            )
             with dpg.group(horizontal=True):
                 dpg.add_checkbox(
                     tag=TAG_ROUTE_B_ENABLE,
                     label="",
-                    default_value=True,
+                    default_value=bool(route_b_saved.get("enabled", True)),
                     callback=_on_route_b_enable_change,
                 )
                 dpg.add_text("【系統2】自分→相手（同時通訳）  I speak, they hear")
@@ -2001,11 +2088,9 @@ def _build_gui():
                 dpg.add_combo(
                     tag=TAG_ROUTE_B_DEVICE_COMBO,
                     items=device_labels,
-                    default_value=next(
-                        (lbl for lbl in device_labels if "[Loopback]" not in lbl),
-                        device_labels[0] if device_labels else "",
-                    ),
+                    default_value=_route_b_default_device,
                     width=360,
+                    callback=_on_route_b_device_change,
                 )
             with dpg.group(horizontal=True):
                 dpg.add_text("入力レベル:")
@@ -2019,15 +2104,16 @@ def _build_gui():
                 dpg.add_combo(
                     tag=TAG_ROUTE_B_LANG_COMBO,
                     items=_lang_display_names,
-                    default_value=_lang_display_names[-1] if _lang_display_names else "",
+                    default_value=_route_b_default_lang,
                     width=120,
+                    callback=lambda s, a, u: _save_settings(),
                 )
             with dpg.group(horizontal=True):
                 dpg.add_text("音声出力:")
                 dpg.add_checkbox(
                     tag=TAG_ROUTE_B_OUTPUT_ENABLE,
                     label="有効",
-                    default_value=True,
+                    default_value=bool(route_b_saved.get("output_enabled", True)),
                     callback=_on_route_b_output_enable_change,
                 )
             with dpg.group(horizontal=True):
@@ -2035,10 +2121,7 @@ def _build_gui():
                 dpg.add_combo(
                     tag=TAG_ROUTE_B_OUTPUT_DEVICE_COMBO,
                     items=output_device_labels,
-                    default_value=next(
-                        (lbl for lbl in output_device_labels if "cable input" in lbl.lower()),
-                        "(なし)",
-                    ),
+                    default_value=_route_b_default_out_dev,
                     width=300,
                     callback=_on_route_b_output_device_change,
                 )
@@ -2046,7 +2129,7 @@ def _build_gui():
                 dpg.add_text("出力音量:")
                 dpg.add_slider_float(
                     tag=TAG_ROUTE_B_OUTPUT_VOLUME,
-                    default_value=1.0,
+                    default_value=float(route_b_saved.get("output_volume", 1.0)),
                     min_value=0.0, max_value=2.0,
                     width=200, format="%.2f",
                     callback=_on_route_b_volume_change,
