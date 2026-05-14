@@ -16,7 +16,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from main import AudioStats, CaptionSystem, MultiCaptionSystem, RouteConfig
+from main import AudioStats, CaptionSystem, MultiCaptionSystem, RouteConfig, RouteState
 
 
 # ---------------------------------------------------------------------------
@@ -67,11 +67,17 @@ def _make_minimal_caption_system() -> CaptionSystem:
     cs._stop_event = threading.Event()
     cs._realtime_translator = None
     cs._cost_monitor = None
-    # shutdown() が参照するフィールドをすべて初期化
+    # shutdown()/stop() が参照するフィールドをすべて初期化
     cs._recorder = None
     cs._loop = None
     cs._stop_event_async = None
     cs._audio_stream = None
+    cs._capture_stream = None
+    cs._capture_thread = None
+    cs._route_id = "test"
+    # PR-1: RouteState 管理フィールド
+    cs._state = RouteState.IDLE
+    cs._state_lock = threading.Lock()
     return cs
 
 
@@ -135,16 +141,24 @@ class TestMultiCaptionSystemShutdown:
     """shutdown() 呼び出し時の動作テスト。"""
 
     def test_multi_caption_system_shutdown_stops_both(self):
-        """shutdown() を呼ぶと両系統の stop_event がセットされること。"""
+        """shutdown() を呼ぶと両系統が IDLE 状態になること。
+
+        PR-1 変更: stop() は _stop_event をリセット（新しい Event を再生成）するため、
+        shutdown() 後の _stop_event.is_set() は False になる。
+        代わりに RouteState.IDLE への遷移で「停止処理が完了した」ことを確認する。
+        """
         mcs = _make_multi_caption_system_minimal()
 
-        assert not mcs._route_a._stop_event.is_set()
-        assert not mcs._route_b._stop_event.is_set()
+        assert mcs._route_a.state == RouteState.IDLE
+        assert mcs._route_b.state == RouteState.IDLE
 
         mcs.shutdown()
 
-        assert mcs._route_a._stop_event.is_set(), "route_a の stop_event がセットされていない"
-        assert mcs._route_b._stop_event.is_set(), "route_b の stop_event がセットされていない"
+        assert mcs._route_a.state == RouteState.IDLE, "route_a が IDLE 状態になっていない"
+        assert mcs._route_b.state == RouteState.IDLE, "route_b が IDLE 状態になっていない"
+        # stop() 後は _stop_event が新しいインスタンスに置き換えられ未セット状態（再起動可能）
+        assert not mcs._route_a._stop_event.is_set(), "route_a の _stop_event がリセットされていない"
+        assert not mcs._route_b._stop_event.is_set(), "route_b の _stop_event がリセットされていない"
 
 
 # ---------------------------------------------------------------------------
@@ -271,17 +285,38 @@ class TestMultiCaptionSystemPhase4:
         # start() が内部スレッドを立てて asyncio ループを回すことを確認する。
         # CaptionSystem.run() の WebSocket 起動・音声デバイスオープンをモックする。
         # patch.object でクラスメソッドを置換する際は self を受け取る必要がある。
+        #
+        # PR-1 変更: stop() は _stop_event.set() 後に _stop_event を新しい Event に
+        # 置き換えるため、asyncio ループ側の脱出には run 開始イベント (_started_a/b) を
+        # 使い、起動確認後に shutdown() を呼ぶことでレースコンディションを回避する。
+        _started_a = threading.Event()
+        _started_b = threading.Event()
+
         async def _fake_run_a(self_ignored):
             mcs.route_a_system._loop = asyncio.get_running_loop()
             mcs.route_a_system._stop_event_async = asyncio.Event()
-            # shutdown() で stop_event が set されるまで待機
-            while not mcs.route_a_system._stop_event.is_set():
+            # 起動時点の _stop_event への参照をキャプチャしてから started を通知
+            stop_ev = mcs.route_a_system._stop_event
+            _started_a.set()
+            # stop() が _stop_event.set() を呼ぶまで待機
+            # stop() が置き換えた新しい _stop_event と参照が変わった場合も脱出
+            while True:
+                if stop_ev.is_set():
+                    break
+                if mcs.route_a_system._stop_event is not stop_ev:
+                    break
                 await asyncio.sleep(0.05)
 
         async def _fake_run_b(self_ignored):
             mcs.route_b_system._loop = asyncio.get_running_loop()
             mcs.route_b_system._stop_event_async = asyncio.Event()
-            while not mcs.route_b_system._stop_event.is_set():
+            stop_ev = mcs.route_b_system._stop_event
+            _started_b.set()
+            while True:
+                if stop_ev.is_set():
+                    break
+                if mcs.route_b_system._stop_event is not stop_ev:
+                    break
                 await asyncio.sleep(0.05)
 
         with (
@@ -294,6 +329,11 @@ class TestMultiCaptionSystemPhase4:
                 "route_a のスレッドが起動していない"
             assert mcs._thread_b is not None and mcs._thread_b.is_alive(), \
                 "route_b のスレッドが起動していない"
+
+            # _fake_run_a/_fake_run_b が stop_ev をキャプチャするまで待ってから shutdown
+            # これで "stop() が _stop_event を置き換える前に参照をキャプチャ済み" を保証
+            _started_a.wait(timeout=5.0)
+            _started_b.wait(timeout=5.0)
 
             # shutdown して両スレッドが終了するか確認
             mcs.shutdown()
