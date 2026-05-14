@@ -1251,17 +1251,42 @@ class MultiCaptionSystem:
         self._thread_b.start()
 
     def shutdown(self) -> None:
-        """両系統を停止し、共有 PyAudio インスタンスを terminate する。"""
+        """両系統を停止し、capture スレッド終了を待ってから共有 PyAudio を terminate する。
+
+        修正理由（Issue #38）:
+          capture スレッドが pyaudiowpatch.read() を実行中に pa.terminate() を呼ぶと
+          PortAudio が access violation でクラッシュする（実機ログ確認済み）。
+          _route_a.shutdown() / _route_b.shutdown() で stop_event をセットした後、
+          asyncio.run() を実行している _thread_a / _thread_b が終了するまで join してから
+          共有 PyAudio を terminate することでクラッシュを防ぐ。
+        """
+        # 1. 各 CaptionSystem の stop_event をセット（capture ループ脱出シグナル）
         self._route_a.shutdown()
         self._route_b.shutdown()
-        # 共有 PyAudio を terminate（各 CaptionSystem は owns_pa=False なので terminate しない）
-        # getattr: object.__new__ で作られた minimal インスタンスには _pa が存在しない場合がある
+
+        # 2. asyncio.run() スレッドが終了するまで待つ（join with timeout）
+        #    _thread_a/_thread_b は start() で生成される。start() 前に shutdown() を呼んだ場合は
+        #    None なのでスキップする。
+        thread_a = getattr(self, "_thread_a", None)
+        if thread_a is not None and thread_a.is_alive():
+            thread_a.join(timeout=5.0)
+            if thread_a.is_alive():
+                print("[WARN] route_a thread did not exit in 5 seconds", flush=True)
+
+        thread_b = getattr(self, "_thread_b", None)
+        if thread_b is not None and thread_b.is_alive():
+            thread_b.join(timeout=5.0)
+            if thread_b.is_alive():
+                print("[WARN] route_b thread did not exit in 5 seconds", flush=True)
+
+        # 3. すべてのスレッドが exit してから共有 PyAudio を terminate
+        #    getattr: object.__new__ で作られた minimal インスタンスには _pa が存在しない場合がある
         pa = getattr(self, "_pa", None)
         if pa is not None:
             try:
                 pa.terminate()
-            except Exception:
-                pass
+            except Exception as e:
+                print(f"[WARN] PyAudio terminate failed: {e}", flush=True)
             self._pa = None
 
     @property
