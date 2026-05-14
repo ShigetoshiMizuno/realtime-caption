@@ -63,18 +63,24 @@ os.environ.setdefault("TORCH_HOME", str(_ascii_models / "torch"))
 # main.py の重複セットアップ/重複ログを抑制するマーカー
 os.environ["RC_MODELS_CONFIGURED"] = "1"
 
+import argparse
 import asyncio
 import io
 import json
 import queue
 import threading
+import time
 from datetime import datetime
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
 import dearpygui.dearpygui as dpg
 
-from main import CaptionSystem, list_audio_devices, find_device_by_name, load_config
+from main import (
+    CaptionSystem, MultiCaptionSystem, RouteConfig,
+    list_audio_devices, find_device_by_name, load_config,
+)
 from config_utils import decode_api_key, encode_api_key
+from constants import get_language_display_names, get_language_codes
 
 # Windows コンソールの文字化け対策
 if sys.stdout.encoding != "utf-8":
@@ -94,6 +100,10 @@ _system: CaptionSystem | None = None
 _system_thread: threading.Thread | None = None
 _is_running = False
 _rpc_server: HTTPServer | None = None
+
+# 翻訳こんにゃくモード用
+_konnyaku_system: MultiCaptionSystem | None = None
+_konnyaku_running: bool = False
 
 # プリロードキャッシュ
 _preloaded_system: CaptionSystem | None = None
@@ -137,6 +147,43 @@ TAG_OUTPUT_DEVICE_COMBO = "output_device_combo"
 TAG_ZOOM_PRESET_BTN = "zoom_preset_btn"
 TAG_STATUS_COST = "status_cost"
 TAG_HOST_API_COMBO = "host_api_combo"
+
+# ---------------------------------------------------------------------------
+# 翻訳こんにゃくモード GUI タグ (Issue #38 Phase 4)
+# ---------------------------------------------------------------------------
+
+# こんにゃくモードプリセットボタン
+TAG_KONNYAKU_PRESET_BTN = "konnyaku_preset_btn"
+
+# 経路A レベルメーター（入力・出力）
+TAG_LEVEL_METER_A_IN = "level_meter_a_in"
+TAG_LEVEL_METER_A_OUT = "level_meter_a_out"
+
+# 経路B レベルメーター（入力・出力）
+TAG_LEVEL_METER_B_IN = "level_meter_b_in"
+TAG_LEVEL_METER_B_OUT = "level_meter_b_out"
+
+# 経路A 設定タグ
+TAG_ROUTE_A_DEVICE_COMBO = "route_a_device_combo"
+TAG_ROUTE_A_GAIN_MODE = "route_a_gain_mode"
+TAG_ROUTE_A_GAIN_SLIDER = "route_a_gain_slider"
+TAG_ROUTE_A_LANG_COMBO = "route_a_lang_combo"
+TAG_ROUTE_A_OUTPUT_ENABLE = "route_a_output_enable"
+TAG_ROUTE_A_OUTPUT_DEVICE_COMBO = "route_a_output_device_combo"
+TAG_ROUTE_A_OUTPUT_VOLUME = "route_a_output_volume"
+
+# 経路B 設定タグ
+TAG_ROUTE_B_DEVICE_COMBO = "route_b_device_combo"
+TAG_ROUTE_B_GAIN_MODE = "route_b_gain_mode"
+TAG_ROUTE_B_GAIN_SLIDER = "route_b_gain_slider"
+TAG_ROUTE_B_LANG_COMBO = "route_b_lang_combo"
+TAG_ROUTE_B_OUTPUT_ENABLE = "route_b_output_enable"
+TAG_ROUTE_B_OUTPUT_DEVICE_COMBO = "route_b_output_device_combo"
+TAG_ROUTE_B_OUTPUT_VOLUME = "route_b_output_volume"
+
+# こんにゃくモード コンテナ
+TAG_KONNYAKU_SECTION = "konnyaku_section"
+TAG_KONNYAKU_START_BTN = "konnyaku_start_btn"
 
 VAD_DEFAULT_SENSITIVITY = 0.4
 # 0.6 秒: 自然な息継ぎ程度の沈黙では文を切らず、文末の本格的な無音で確定する。
@@ -486,6 +533,296 @@ def _on_zoom_preset_click():
             print("[INFO] CABLE Input デバイスが見つかりませんでした。VB-CABLE をインストールしてください。")
 
     _save_settings()
+
+
+def _on_konnyaku_preset_click():
+    """翻訳こんにゃくモードプリセットボタン押下。
+
+    デフォルト設定を一括適用する:
+      経路A: 入力 = WASAPI loopback / 出力 = OFF / 翻訳先 = ja
+      経路B: 入力 = マイク / 出力 = CABLE Input / 翻訳先 = en
+    設定を適用するのみ。起動はしない。
+    """
+    # 経路A: 最初の Loopback デバイスを選択
+    if dpg.does_item_exist(TAG_ROUTE_A_DEVICE_COMBO):
+        items_a = dpg.get_item_configuration(TAG_ROUTE_A_DEVICE_COMBO).get("items", [])
+        loopback_a = next((it for it in items_a if "[Loopback]" in it), None)
+        if loopback_a:
+            dpg.set_value(TAG_ROUTE_A_DEVICE_COMBO, loopback_a)
+
+    # 経路A: 翻訳先 = ja
+    if dpg.does_item_exist(TAG_ROUTE_A_LANG_COMBO):
+        lang_names = get_language_display_names()
+        lang_codes = get_language_codes()
+        if "ja" in lang_codes:
+            ja_name = lang_names[lang_codes.index("ja")]
+            dpg.set_value(TAG_ROUTE_A_LANG_COMBO, ja_name)
+
+    # 経路A: 音声出力 = OFF
+    if dpg.does_item_exist(TAG_ROUTE_A_OUTPUT_ENABLE):
+        dpg.set_value(TAG_ROUTE_A_OUTPUT_ENABLE, False)
+
+    # 経路B: 最初のマイク（非 Loopback）デバイスを選択
+    if dpg.does_item_exist(TAG_ROUTE_B_DEVICE_COMBO):
+        items_b = dpg.get_item_configuration(TAG_ROUTE_B_DEVICE_COMBO).get("items", [])
+        mic_b = next((it for it in items_b if "[Loopback]" not in it), None)
+        if mic_b:
+            dpg.set_value(TAG_ROUTE_B_DEVICE_COMBO, mic_b)
+
+    # 経路B: 翻訳先 = en
+    if dpg.does_item_exist(TAG_ROUTE_B_LANG_COMBO):
+        lang_names = get_language_display_names()
+        lang_codes = get_language_codes()
+        if "en" in lang_codes:
+            en_name = lang_names[lang_codes.index("en")]
+            dpg.set_value(TAG_ROUTE_B_LANG_COMBO, en_name)
+
+    # 経路B: 音声出力 = ON、出力先 = CABLE Input
+    if dpg.does_item_exist(TAG_ROUTE_B_OUTPUT_ENABLE):
+        dpg.set_value(TAG_ROUTE_B_OUTPUT_ENABLE, True)
+    if dpg.does_item_exist(TAG_ROUTE_B_OUTPUT_DEVICE_COMBO):
+        items_out = dpg.get_item_configuration(TAG_ROUTE_B_OUTPUT_DEVICE_COMBO).get("items", [])
+        cable_item = next((it for it in items_out if "cable input" in it.lower()), None)
+        if cable_item:
+            dpg.set_value(TAG_ROUTE_B_OUTPUT_DEVICE_COMBO, cable_item)
+
+
+def _konnyaku_thread_error_handler(route_id: str, exc: Exception, tb: str) -> None:
+    """MultiCaptionSystem のバックグラウンドスレッドが例外で終了したときに呼ばれるコールバック。
+
+    GUI スレッドからではなく daemon スレッドから呼ばれるため、
+    dpg への書き込みは _gui_queue 経由が安全だが、ステータスバーへの単発 set_value は
+    DearPyGui の仕様上 GUI スレッド以外からでも概ね動作する（最悪ドロップされる）。
+    """
+    msg = f"こんにゃく route-{route_id} スレッド異常終了: {type(exc).__name__}: {exc}"
+    print(f"[ERROR] {msg}", flush=True)
+    if dpg.does_item_exist(TAG_STATUS_STATE):
+        dpg.set_value(TAG_STATUS_STATE, msg)
+
+
+def _on_konnyaku_start_stop_click():
+    """翻訳こんにゃくモードの開始/停止ボタン。"""
+    global _konnyaku_system, _konnyaku_running
+
+    if _konnyaku_running:
+        # 停止ボタン押下: すぐにボタンを「停止中...」+ disabled に切り替え、
+        # shutdown はバックグラウンドスレッドで実行して GUI がフリーズしないようにする。
+        if dpg.does_item_exist(TAG_KONNYAKU_START_BTN):
+            dpg.configure_item(TAG_KONNYAKU_START_BTN, label="停止中...", enabled=False)
+        if dpg.does_item_exist(TAG_STATUS_STATE):
+            dpg.set_value(TAG_STATUS_STATE, "翻訳こんにゃくモード停止中...")
+
+        def _shutdown_in_background():
+            global _konnyaku_system, _konnyaku_running
+            try:
+                if _konnyaku_system is not None:
+                    _konnyaku_system.shutdown()
+                    _konnyaku_system = None
+                _konnyaku_running = False
+            except Exception as e:
+                print(f"[ERROR] こんにゃく停止失敗: {e}", flush=True)
+            finally:
+                if dpg.does_item_exist(TAG_KONNYAKU_START_BTN):
+                    try:
+                        dpg.configure_item(TAG_KONNYAKU_START_BTN, label="開始", enabled=True)
+                    except Exception:
+                        pass
+                if dpg.does_item_exist(TAG_STATUS_STATE):
+                    try:
+                        dpg.set_value(TAG_STATUS_STATE, "停止しました")
+                    except Exception:
+                        pass
+
+        threading.Thread(
+            target=_shutdown_in_background,
+            daemon=True,
+            name="KonnyakuShutdown",
+        ).start()
+        return
+
+    # ポート競合チェック: 既存の単独モードが稼働中なら起動を拒否
+    if _system is not None:
+        dpg.set_value(TAG_STATUS_STATE, "既存モード停止後に翻訳こんにゃくモードを開始してください")
+        return
+
+    try:
+        # 開始: GUI から設定を読み取って MultiCaptionSystem を起動
+        # 経路A デバイス
+        route_a_device_label = (
+            dpg.get_value(TAG_ROUTE_A_DEVICE_COMBO)
+            if dpg.does_item_exist(TAG_ROUTE_A_DEVICE_COMBO) else ""
+        )
+        route_a_device = next(
+            (d for d in _devices if _device_label(d) == route_a_device_label), None
+        )
+        if route_a_device is None:
+            return
+
+        # 経路B デバイス
+        route_b_device_label = (
+            dpg.get_value(TAG_ROUTE_B_DEVICE_COMBO)
+            if dpg.does_item_exist(TAG_ROUTE_B_DEVICE_COMBO) else ""
+        )
+        route_b_device = next(
+            (d for d in _devices if _device_label(d) == route_b_device_label), None
+        )
+        if route_b_device is None:
+            return
+
+        # 経路A 言語コード
+        lang_names = get_language_display_names()
+        lang_codes = get_language_codes()
+        route_a_lang_name = (
+            dpg.get_value(TAG_ROUTE_A_LANG_COMBO)
+            if dpg.does_item_exist(TAG_ROUTE_A_LANG_COMBO) else lang_names[0]
+        )
+        route_a_lang_code = (
+            lang_codes[lang_names.index(route_a_lang_name)]
+            if route_a_lang_name in lang_names else lang_codes[0]
+        )
+
+        # 経路B 言語コード
+        route_b_lang_name = (
+            dpg.get_value(TAG_ROUTE_B_LANG_COMBO)
+            if dpg.does_item_exist(TAG_ROUTE_B_LANG_COMBO) else lang_names[-1]
+        )
+        route_b_lang_code = (
+            lang_codes[lang_names.index(route_b_lang_name)]
+            if route_b_lang_name in lang_names else lang_codes[-1]
+        )
+
+        # 経路A 音声出力
+        route_a_output_enabled = (
+            bool(dpg.get_value(TAG_ROUTE_A_OUTPUT_ENABLE))
+            if dpg.does_item_exist(TAG_ROUTE_A_OUTPUT_ENABLE) else False
+        )
+        route_a_output_index: int | None = None
+        if route_a_output_enabled and dpg.does_item_exist(TAG_ROUTE_A_OUTPUT_DEVICE_COMBO):
+            a_out_label = dpg.get_value(TAG_ROUTE_A_OUTPUT_DEVICE_COMBO)
+            if a_out_label and a_out_label != "(なし)":
+                a_out_devices = list_audio_devices(device_type="output")
+                a_out_matched = find_device_by_name(a_out_label, a_out_devices)
+                if a_out_matched:
+                    route_a_output_index = a_out_matched["index"]
+
+        # 経路B 音声出力
+        route_b_output_enabled = (
+            bool(dpg.get_value(TAG_ROUTE_B_OUTPUT_ENABLE))
+            if dpg.does_item_exist(TAG_ROUTE_B_OUTPUT_ENABLE) else False
+        )
+        route_b_output_index: int | None = None
+        if route_b_output_enabled and dpg.does_item_exist(TAG_ROUTE_B_OUTPUT_DEVICE_COMBO):
+            b_out_label = dpg.get_value(TAG_ROUTE_B_OUTPUT_DEVICE_COMBO)
+            if b_out_label and b_out_label != "(なし)":
+                b_out_devices = list_audio_devices(device_type="output")
+                b_out_matched = find_device_by_name(b_out_label, b_out_devices)
+                if b_out_matched:
+                    route_b_output_index = b_out_matched["index"]
+
+        # 経路A 出力音量
+        route_a_volume = float(
+            dpg.get_value(TAG_ROUTE_A_OUTPUT_VOLUME)
+            if dpg.does_item_exist(TAG_ROUTE_A_OUTPUT_VOLUME) else 1.0
+        )
+        # 経路B 出力音量
+        route_b_volume = float(
+            dpg.get_value(TAG_ROUTE_B_OUTPUT_VOLUME)
+            if dpg.does_item_exist(TAG_ROUTE_B_OUTPUT_VOLUME) else 1.0
+        )
+
+        cfg = {**_config}
+        cfg.setdefault("translation", {})["translation_model"] = "openai-realtime"
+
+        route_a_cfg = RouteConfig(
+            route_id="a",
+            input_device_info=route_a_device,
+            target_language_code=route_a_lang_code,
+            audio_output_enabled=route_a_output_enabled,
+            output_device_index=route_a_output_index,
+            output_volume=route_a_volume,
+        )
+        route_b_cfg = RouteConfig(
+            route_id="b",
+            input_device_info=route_b_device,
+            target_language_code=route_b_lang_code,
+            audio_output_enabled=route_b_output_enabled,
+            output_device_index=route_b_output_index,
+            output_volume=route_b_volume,
+        )
+
+        # GUI ログに翻訳結果を出力するコールバック（経路 A / B 別）
+        def _on_result_route_a(original: str, translated: str) -> None:
+            """相手→自分 経路の翻訳結果を GUI ログに追加。"""
+            ts = datetime.now().strftime("%H:%M:%S")
+            _log_entries.append({
+                "ts": ts,
+                "original": (f"[相手] {original}" if original else ""),
+                "translated": (f"[相手] {translated}" if translated else ""),
+                "route": "a",
+            })
+            if len(_log_entries) > 200:
+                _log_entries.pop(0)
+            _enqueue(
+                "append_log",
+                ts=ts,
+                original=(f"[相手] {original}" if original else ""),
+                translated=(f"[相手] {translated}" if translated else ""),
+            )
+
+        def _on_result_route_b(original: str, translated: str) -> None:
+            """自分→相手 経路の翻訳結果を GUI ログに追加。"""
+            ts = datetime.now().strftime("%H:%M:%S")
+            _log_entries.append({
+                "ts": ts,
+                "original": (f"[自分] {original}" if original else ""),
+                "translated": (f"[自分] {translated}" if translated else ""),
+                "route": "b",
+            })
+            if len(_log_entries) > 200:
+                _log_entries.pop(0)
+            _enqueue(
+                "append_log",
+                ts=ts,
+                original=(f"[自分] {original}" if original else ""),
+                translated=(f"[自分] {translated}" if translated else ""),
+            )
+
+        _konnyaku_system = MultiCaptionSystem(
+            config=cfg,
+            route_a=route_a_cfg,
+            route_b=route_b_cfg,
+            on_result_a=_on_result_route_a,
+            on_result_b=_on_result_route_b,
+            on_thread_error=_konnyaku_thread_error_handler,
+        )
+        _konnyaku_system.start()
+        _konnyaku_running = True
+
+        if dpg.does_item_exist(TAG_KONNYAKU_START_BTN):
+            dpg.configure_item(TAG_KONNYAKU_START_BTN, label="停止")
+
+    except Exception as e:
+        import traceback
+        tb = traceback.format_exc()
+        print(f"[ERROR] こんにゃくモード起動失敗: {e}", flush=True)
+        print(tb, flush=True)
+        if dpg.does_item_exist(TAG_STATUS_STATE):
+            dpg.set_value(TAG_STATUS_STATE, f"こんにゃく起動失敗: {type(e).__name__}: {e}")
+        try:
+            from datetime import datetime as _dt
+            log_path = _Path(_config.get("output", {}).get("log_dir", ".")) / \
+                       f"crash_konnyaku_{_dt.now().strftime('%Y%m%d-%H%M%S')}.log"
+            log_path.write_text(f"Exception: {e}\n\n{tb}\n", encoding="utf-8")
+            print(f"[ERROR] 詳細ログ: {log_path}", flush=True)
+        except Exception:
+            pass
+        if _konnyaku_system is not None:
+            try:
+                _konnyaku_system.shutdown()
+            except Exception:
+                pass
+        _konnyaku_system = None
+        _konnyaku_running = False
 
 
 def _on_verbose_toggle():
@@ -1250,8 +1587,10 @@ def _build_gui():
     with dpg.window(tag="main_window", no_title_bar=True, no_resize=True,
                     no_move=True, no_scrollbar=True):
 
-        # --- ツールバー 1行目: デバイス + Start ---
-        with dpg.group(horizontal=True):
+        # --- ツールバー 1行目: 単独モード（非表示） ---
+        # こんにゃくモードに統合したため show=False で非表示化。
+        # 内部参照（_do_start / RPC サーバー）のためタグは保持する。
+        with dpg.group(horizontal=True, show=False):
             dpg.add_text("音声入力:")
             dpg.add_combo(
                 tag=TAG_DEVICE_COMBO,
@@ -1264,8 +1603,9 @@ def _build_gui():
                            callback=_on_start_stop_click,
                            enabled=bool(trans_models))
 
-        # --- ツールバー 2行目: 入力ゲイン + レベルメーター + Clear log ---
-        with dpg.group(horizontal=True):
+        # --- ツールバー 2行目: 単独モード入力ゲイン（非表示） + ログクリア・Verbose ---
+        # 単独モード用の入力ゲイン・レベルメーターはこんにゃくモードの各経路メーターに統合。
+        with dpg.group(horizontal=True, show=False):
             dpg.add_text("入力ゲイン:")
             dpg.add_combo(
                 tag=TAG_GAIN_MODE,
@@ -1287,6 +1627,8 @@ def _build_gui():
             dpg.add_text("  音量:")
             dpg.add_progress_bar(tag=TAG_LEVEL_METER, default_value=0.0,
                                  width=180, overlay="0%")
+        # ログクリア・Verbose ボタンは常時表示
+        with dpg.group(horizontal=True):
             dpg.add_button(label="ログクリア", width=100, callback=_clear_log)
             dpg.add_button(
                 tag=TAG_VERBOSE_BTN,
@@ -1297,8 +1639,10 @@ def _build_gui():
         # --- 詳細設定（初期状態は折りたたみ） ---
         with dpg.collapsing_header(label="詳細設定", default_open=False):
 
-            # --- 翻訳エンジン選択（全モード共通） ---
-            with dpg.group(horizontal=True):
+            # --- 翻訳エンジン選択（単独モード用・非表示） ---
+            # こんにゃくモードでは openai-realtime 固定のため非表示化。
+            # タグは _save_settings / _do_start から参照されるため残す。
+            with dpg.group(horizontal=True, show=False):
                 dpg.add_text("翻訳エンジン:")
                 dpg.add_combo(
                     tag=TAG_TRANS_COMBO,
@@ -1438,6 +1782,185 @@ def _build_gui():
 
         dpg.add_separator()
 
+        # --- 翻訳こんにゃくモード（メインコンテンツ） ---
+        # 旧: collapsing_header（折りたたみ）→ 常時展開に昇格（Issue #38 GUI 統一）
+        dpg.add_text("双方向同時翻訳  [相手] You speak, I hear  /  [自分] I speak, they hear")
+        with dpg.group(tag=TAG_KONNYAKU_SECTION):
+            # プリセットボタン + 開始ボタン
+            with dpg.group(horizontal=True):
+                dpg.add_button(
+                    tag=TAG_KONNYAKU_PRESET_BTN,
+                    label="翻訳こんにゃくモードプリセット",
+                    width=230,
+                    callback=_on_konnyaku_preset_click,
+                )
+                dpg.add_button(
+                    tag=TAG_KONNYAKU_START_BTN,
+                    label="開始",
+                    width=130,
+                    callback=_on_konnyaku_start_stop_click,
+                    enabled=bool(trans_models),
+                )
+
+            dpg.add_separator()
+
+            _lang_display_names = get_language_display_names()
+
+            # --- 相手→自分（聞き取り字幕）経路 ---
+            dpg.add_text("相手→自分（聞き取り字幕）  [相手] You speak, I hear")
+            with dpg.group(horizontal=True):
+                dpg.add_text("入力デバイス:")
+                dpg.add_combo(
+                    tag=TAG_ROUTE_A_DEVICE_COMBO,
+                    items=device_labels,
+                    default_value=next(
+                        (lbl for lbl in device_labels if "[Loopback]" in lbl),
+                        device_labels[0] if device_labels else "",
+                    ),
+                    width=360,
+                )
+            with dpg.group(horizontal=True):
+                dpg.add_text("入力ゲイン:")
+                dpg.add_combo(
+                    tag=TAG_ROUTE_A_GAIN_MODE,
+                    items=["off", "manual", "auto"],
+                    default_value="off",
+                    width=90,
+                )
+                dpg.add_text("  倍率:")
+                dpg.add_slider_float(
+                    tag=TAG_ROUTE_A_GAIN_SLIDER,
+                    default_value=1.0,
+                    min_value=1.0, max_value=20.0,
+                    width=160, format="%.2f",
+                )
+            with dpg.group(horizontal=True):
+                dpg.add_text("入力レベル:")
+                dpg.add_progress_bar(
+                    tag=TAG_LEVEL_METER_A_IN,
+                    default_value=0.0,
+                    width=200, overlay="0%",
+                )
+            with dpg.group(horizontal=True):
+                dpg.add_text("翻訳先言語:")
+                dpg.add_combo(
+                    tag=TAG_ROUTE_A_LANG_COMBO,
+                    items=_lang_display_names,
+                    default_value=_lang_display_names[0] if _lang_display_names else "",
+                    width=120,
+                )
+            with dpg.group(horizontal=True):
+                dpg.add_text("音声出力:")
+                dpg.add_checkbox(
+                    tag=TAG_ROUTE_A_OUTPUT_ENABLE,
+                    label="有効",
+                    default_value=False,
+                )
+            with dpg.group(horizontal=True):
+                dpg.add_text("出力デバイス:")
+                dpg.add_combo(
+                    tag=TAG_ROUTE_A_OUTPUT_DEVICE_COMBO,
+                    items=output_device_labels,
+                    default_value="(なし)",
+                    width=300,
+                )
+            with dpg.group(horizontal=True):
+                dpg.add_text("出力音量:")
+                dpg.add_slider_float(
+                    tag=TAG_ROUTE_A_OUTPUT_VOLUME,
+                    default_value=1.0,
+                    min_value=0.0, max_value=2.0,
+                    width=200, format="%.2f",
+                )
+            with dpg.group(horizontal=True):
+                dpg.add_text("出力レベル:")
+                dpg.add_progress_bar(
+                    tag=TAG_LEVEL_METER_A_OUT,
+                    default_value=0.0,
+                    width=200, overlay="0%",
+                )
+
+            dpg.add_separator()
+
+            # --- 自分→相手（同時通訳）経路 ---
+            dpg.add_text("自分→相手（同時通訳）  [自分] I speak, they hear")
+            with dpg.group(horizontal=True):
+                dpg.add_text("入力デバイス:")
+                dpg.add_combo(
+                    tag=TAG_ROUTE_B_DEVICE_COMBO,
+                    items=device_labels,
+                    default_value=next(
+                        (lbl for lbl in device_labels if "[Loopback]" not in lbl),
+                        device_labels[0] if device_labels else "",
+                    ),
+                    width=360,
+                )
+            with dpg.group(horizontal=True):
+                dpg.add_text("入力ゲイン:")
+                dpg.add_combo(
+                    tag=TAG_ROUTE_B_GAIN_MODE,
+                    items=["off", "manual", "auto"],
+                    default_value="off",
+                    width=90,
+                )
+                dpg.add_text("  倍率:")
+                dpg.add_slider_float(
+                    tag=TAG_ROUTE_B_GAIN_SLIDER,
+                    default_value=1.0,
+                    min_value=1.0, max_value=20.0,
+                    width=160, format="%.2f",
+                )
+            with dpg.group(horizontal=True):
+                dpg.add_text("入力レベル:")
+                dpg.add_progress_bar(
+                    tag=TAG_LEVEL_METER_B_IN,
+                    default_value=0.0,
+                    width=200, overlay="0%",
+                )
+            with dpg.group(horizontal=True):
+                dpg.add_text("翻訳先言語:")
+                dpg.add_combo(
+                    tag=TAG_ROUTE_B_LANG_COMBO,
+                    items=_lang_display_names,
+                    default_value=_lang_display_names[-1] if _lang_display_names else "",
+                    width=120,
+                )
+            with dpg.group(horizontal=True):
+                dpg.add_text("音声出力:")
+                dpg.add_checkbox(
+                    tag=TAG_ROUTE_B_OUTPUT_ENABLE,
+                    label="有効",
+                    default_value=True,
+                )
+            with dpg.group(horizontal=True):
+                dpg.add_text("出力デバイス:")
+                dpg.add_combo(
+                    tag=TAG_ROUTE_B_OUTPUT_DEVICE_COMBO,
+                    items=output_device_labels,
+                    default_value=next(
+                        (lbl for lbl in output_device_labels if "cable input" in lbl.lower()),
+                        "(なし)",
+                    ),
+                    width=300,
+                )
+            with dpg.group(horizontal=True):
+                dpg.add_text("出力音量:")
+                dpg.add_slider_float(
+                    tag=TAG_ROUTE_B_OUTPUT_VOLUME,
+                    default_value=1.0,
+                    min_value=0.0, max_value=2.0,
+                    width=200, format="%.2f",
+                )
+            with dpg.group(horizontal=True):
+                dpg.add_text("出力レベル:")
+                dpg.add_progress_bar(
+                    tag=TAG_LEVEL_METER_B_OUT,
+                    default_value=0.0,
+                    width=200, overlay="0%",
+                )
+
+        dpg.add_separator()
+
         # --- ログエリア（ウィンドウ高さに追従） ---
         # height=-60 はステータスバー + プログレスバー + separator 分の余白
         with dpg.child_window(tag=TAG_LOG_SCROLL, height=-60, border=True,
@@ -1526,12 +2049,142 @@ def _update_level_meter():
         dpg.bind_item_theme(TAG_LEVEL_METER, theme)
 
 
+def _update_konnyaku_level_meters():
+    """翻訳こんにゃくモードの入力・出力レベルメーターを更新する。
+
+    _konnyaku_system が None のときは何もしない（単独モード稼働中 / 未起動 時に安全）。
+    入力レベル: CaptionSystem.audio_peak_now（capture スレッドが毎チャンク更新）
+    出力レベル: AudioOutputStream.audio_peak_now（write 時に更新）
+    """
+    if _konnyaku_system is None:
+        return
+
+    route_a = _konnyaku_system.route_a_system
+    route_b = _konnyaku_system.route_b_system
+
+    # 経路A 入力レベル
+    peak_a_in = route_a.audio_peak_now
+    level_a_in = min(1.0, peak_a_in / 32767.0)
+    if dpg.does_item_exist(TAG_LEVEL_METER_A_IN):
+        dpg.set_value(TAG_LEVEL_METER_A_IN, level_a_in)
+        dpg.configure_item(TAG_LEVEL_METER_A_IN, overlay=f"{int(level_a_in * 100)}%")
+
+    # 経路B 入力レベル
+    peak_b_in = route_b.audio_peak_now
+    level_b_in = min(1.0, peak_b_in / 32767.0)
+    if dpg.does_item_exist(TAG_LEVEL_METER_B_IN):
+        dpg.set_value(TAG_LEVEL_METER_B_IN, level_b_in)
+        dpg.configure_item(TAG_LEVEL_METER_B_IN, overlay=f"{int(level_b_in * 100)}%")
+
+    # 経路A 出力レベル（AudioOutputStream が起動していれば peak 取得）
+    stream_a = getattr(route_a, "_audio_stream", None)
+    peak_a_out = stream_a.audio_peak_now if stream_a is not None else 0
+    level_a_out = min(1.0, peak_a_out / 32767.0)
+    if dpg.does_item_exist(TAG_LEVEL_METER_A_OUT):
+        dpg.set_value(TAG_LEVEL_METER_A_OUT, level_a_out)
+        dpg.configure_item(TAG_LEVEL_METER_A_OUT, overlay=f"{int(level_a_out * 100)}%")
+
+    # 経路B 出力レベル
+    stream_b = getattr(route_b, "_audio_stream", None)
+    peak_b_out = stream_b.audio_peak_now if stream_b is not None else 0
+    level_b_out = min(1.0, peak_b_out / 32767.0)
+    if dpg.does_item_exist(TAG_LEVEL_METER_B_OUT):
+        dpg.set_value(TAG_LEVEL_METER_B_OUT, level_b_out)
+        dpg.configure_item(TAG_LEVEL_METER_B_OUT, overlay=f"{int(level_b_out * 100)}%")
+
+
+# ---------------------------------------------------------------------------
+# CLI 自動操作モード
+# ---------------------------------------------------------------------------
+
+def _inject_test_transcripts() -> None:
+    """偽の transcript を route_a / route_b の RealtimeTranslator コールバックに注入する。
+
+    実音声なしで _realtime_broadcast → broadcaster.broadcast を発火させる。
+    AI 自動デバッグで Issue #42（overlay 字幕表示）を検証するため。
+    """
+    if _konnyaku_system is None:
+        print("[INJECT] _konnyaku_system is None, skip", flush=True)
+        return
+    route_a = _konnyaku_system.route_a_system
+    route_b = _konnyaku_system.route_b_system
+    print("[INJECT] route_a: source 'Hello from A'", flush=True)
+    route_a._on_realtime_source_transcript("Hello from A")
+    time.sleep(0.3)
+    print("[INJECT] route_a: translated '経路Aテスト翻訳'", flush=True)
+    route_a._on_realtime_transcript("経路Aテスト翻訳")
+    time.sleep(0.3)
+    print("[INJECT] route_b: source 'こんにちは経路B'", flush=True)
+    route_b._on_realtime_source_transcript("こんにちは経路B")
+    time.sleep(0.3)
+    print("[INJECT] route_b: translated 'Test from B'", flush=True)
+    route_b._on_realtime_transcript("Test from B")
+
+
+def _auto_konnyaku_runner(duration: int, inject_test: bool = False) -> None:
+    """別スレッドで実行される自動操作（--auto-konnyaku 用）。
+
+    AI が Bash 経由でアプリを実行 → ログ取得 → クラッシュ原因解析 → 修正のループを
+    自律的に回せるようにするためのヘルパー。
+    """
+    try:
+        print(f"[AUTO] Phase 1/5: モデルロード待機 (5s)...", flush=True)
+        time.sleep(5)
+
+        print(f"[AUTO] Phase 2/5: プリセットボタン押下", flush=True)
+        _on_konnyaku_preset_click()
+        time.sleep(1)
+
+        print(f"[AUTO] Phase 3/5: こんにゃく開始ボタン押下", flush=True)
+        _on_konnyaku_start_stop_click()
+
+        print(f"[AUTO] Phase 4/5: {duration}秒間動作中...", flush=True)
+        if inject_test:
+            # WS サーバー起動 + クライアント接続待ち
+            time.sleep(3)
+            print("[AUTO] 偽 transcript を注入してbroadcast 経路を検証", flush=True)
+            _inject_test_transcripts()
+            time.sleep(max(0, duration - 3))
+        else:
+            time.sleep(duration)
+
+        print(f"[AUTO] Phase 5/5: こんにゃく停止ボタン押下", flush=True)
+        _on_konnyaku_start_stop_click()
+
+        # バックグラウンド shutdown スレッドの完了を待つ（最大15秒）
+        deadline = time.monotonic() + 15.0
+        while _konnyaku_running and time.monotonic() < deadline:
+            time.sleep(0.2)
+
+        print(f"[AUTO] アプリ終了", flush=True)
+        dpg.stop_dearpygui()
+    except Exception as e:
+        import traceback
+        print(f"[AUTO ERROR] {e}", flush=True)
+        print(traceback.format_exc(), flush=True)
+        try:
+            dpg.stop_dearpygui()
+        except Exception:
+            pass
+
+
 # ---------------------------------------------------------------------------
 # メインループ
 # ---------------------------------------------------------------------------
 
 def main():
     global _config, _devices
+
+    parser = argparse.ArgumentParser(description="Realtime Caption")
+    parser.add_argument(
+        "--auto-konnyaku", type=int, default=None,
+        help="Auto-test konnyaku mode for N seconds then exit (for AI debugging)",
+    )
+    parser.add_argument(
+        "--inject-test-transcripts", action="store_true",
+        help="Inject fake transcripts to verify broadcast path (use with --auto-konnyaku)",
+    )
+    args = parser.parse_args()
 
     _config = load_config("config.yaml")
     _host_api = _config.get("audio", {}).get("host_api", "wasapi")
@@ -1555,6 +2208,20 @@ def main():
     # プリロード機能は一時無効化（RealtimeSTT のスレッド問題調査中）
     # threading.Thread(target=_trigger_preload, daemon=True).start()
 
+    # CLI 自動操作モード: --auto-konnyaku=N 指定時はバックグラウンドスレッドで操作を自動実行
+    if args.auto_konnyaku is not None:
+        print(
+            f"[AUTO] auto-konnyaku モード開始 (duration={args.auto_konnyaku}s,"
+            f" inject_test={args.inject_test_transcripts})",
+            flush=True,
+        )
+        threading.Thread(
+            target=_auto_konnyaku_runner,
+            args=(args.auto_konnyaku, args.inject_test_transcripts),
+            daemon=True,
+            name="AutoKonnyakuRunner",
+        ).start()
+
     frame_count = 0
     while dpg.is_dearpygui_running():
         _drain_queue()
@@ -1562,6 +2229,7 @@ def main():
         # レベルメーター: 毎 2 フレーム（~30Hz）で更新
         if frame_count % 2 == 0:
             _update_level_meter()
+            _update_konnyaku_level_meters()
 
         # 1秒ごと（約60fps想定で60フレームごと）に WS クライアント数・コストを更新
         frame_count += 1
@@ -1583,6 +2251,8 @@ def main():
     _save_settings()
     if _system is not None:
         _system.shutdown()
+    if _konnyaku_system is not None:
+        _konnyaku_system.shutdown()
 
     _release_subst(_subst_letter)
     dpg.destroy_context()

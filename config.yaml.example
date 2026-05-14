@@ -49,3 +49,23 @@ openai_realtime:                          # openai-realtime モード専用設�
     enabled: false                       # true: 仮想マイクへの音声出力を有効化（VB-CABLE 等）
     output_device: "CABLE Input"         # 出力デバイス名（部分一致。VB-CABLE インストール後に有効）
     sample_rate: 24000                   # 出力サンプルレート（gpt-realtime-translate は 24000Hz）
+
+# 翻訳こんにゃくモード設定（Issue #38）
+# 自分↔相手の双方向同時翻訳。経路A（相手の声→自分の字幕）+ 経路B（自分の声→相手のマイク）を並列実行。
+# 各経路で独立した入出力デバイス・翻訳先言語・出力音量を設定可能。
+# GUI の「翻訳こんにゃくモード」プリセットボタンで自動入力されます。
+translation_konnyaku:
+  route_a:
+    # 相手の音声を取り込み、自分の母語に翻訳して字幕表示する経路
+    input_device_keyword: ""        # 入力デバイス名キーワード（例: "Loopback"）。空欄なら GUI で選択
+    target_language_code: "ja"      # 翻訳先言語コード（BCP-47: ja/en、将来 zh/ko/es 拡張）
+    audio_output_enabled: false     # 翻訳音声の出力を有効化する場合は true
+    output_device_keyword: ""       # 出力デバイス名キーワード
+    output_volume: 1.0              # 出力音量倍率（0.0〜2.0）
+  route_b:
+    # 自分の音声を取り込み、相手の言語に翻訳して仮想マイクへ出力する経路
+    input_device_keyword: ""        # マイクデバイス名キーワード
+    target_language_code: "en"      # 翻訳先言語コード
+    audio_output_enabled: true      # 仮想マイク出力のため true 推奨
+    output_device_keyword: "CABLE Input"   # VB-CABLE 仮想マイク（VB-CABLE インストール後に有効）
+    output_volume: 1.0

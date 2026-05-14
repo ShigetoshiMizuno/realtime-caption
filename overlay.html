@@ -19,9 +19,8 @@
       font-family: "Noto Sans JP", "Hiragino Kaku Gothic ProN", "Meiryo", sans-serif;
     }
 
-    #subtitle-container {
+    .route-container {
       position: absolute;
-      bottom: 60px;
       left: 0;
       right: 0;
       display: flex;
@@ -33,8 +32,18 @@
       transition: opacity 0.4s ease-in-out;
     }
 
-    #subtitle-container.visible {
+    .route-container.visible {
       opacity: 1;
+    }
+
+    /* 経路A: 相手の発言。下から2段目に配置 */
+    #route-a-container {
+      bottom: 240px;
+    }
+
+    /* 経路B: 自分の発言確認用。最下部に配置 */
+    #route-b-container {
+      bottom: 60px;
     }
 
     .subtitle-box {
@@ -45,16 +54,35 @@
       text-align: center;
     }
 
-    #original-text {
+    .route-label {
+      display: inline-block;
+      font-size: 13px;
+      font-weight: 600;
+      color: rgba(255, 255, 255, 0.5);
+      letter-spacing: 0.05em;
+      margin-bottom: 2px;
+    }
+
+    .original-text {
       color: #cccccc;
       font-size: 22px;
       line-height: 1.4;
       font-weight: 400;
     }
 
-    #translated-text {
+    /* 経路A: 相手の発言を読むため大きめ（既存と同程度）*/
+    #route-a-container .translated-text {
       color: #ffffff;
       font-size: 36px;
+      line-height: 1.4;
+      font-weight: 700;
+      text-shadow: 1px 1px 3px rgba(0, 0, 0, 0.8);
+    }
+
+    /* 経路B: 自分の確認用なので中程度 */
+    #route-b-container .translated-text {
+      color: #e8e8e8;
+      font-size: 30px;
       line-height: 1.4;
       font-weight: 700;
       text-shadow: 1px 1px 3px rgba(0, 0, 0, 0.8);
@@ -78,12 +106,25 @@
 <body>
   <div id="status"></div>
 
-  <div id="subtitle-container">
+  <!-- 経路A: 相手の発言（下から2段目） -->
+  <div id="route-a-container" class="route-container">
     <div class="subtitle-box">
-      <div id="original-text"></div>
+      <div class="route-label">[相手]</div>
+      <div class="original-text" id="route-a-original"></div>
     </div>
     <div class="subtitle-box">
-      <div id="translated-text"></div>
+      <div class="translated-text" id="route-a-translated"></div>
+    </div>
+  </div>
+
+  <!-- 経路B: 自分の発言確認用（最下部） -->
+  <div id="route-b-container" class="route-container">
+    <div class="subtitle-box">
+      <div class="route-label">[自分]</div>
+      <div class="original-text" id="route-b-original"></div>
+    </div>
+    <div class="subtitle-box">
+      <div class="translated-text" id="route-b-translated"></div>
     </div>
   </div>
 
@@ -92,52 +133,87 @@
     const WS_URL = "ws://localhost:8765";
     const FADE_OUT_DELAY = 5000;
 
-    const container = document.getElementById("subtitle-container");
-    const originalText = document.getElementById("original-text");
-    const translatedText = document.getElementById("translated-text");
+    const routeAContainer = document.getElementById("route-a-container");
+    const routeAOriginal = document.getElementById("route-a-original");
+    const routeATranslated = document.getElementById("route-a-translated");
+
+    const routeBContainer = document.getElementById("route-b-container");
+    const routeBOriginal = document.getElementById("route-b-original");
+    const routeBTranslated = document.getElementById("route-b-translated");
+
     const statusIndicator = document.getElementById("status");
 
-    let fadeOutTimer = null;
+    // フェードアウトタイマーは経路A・B それぞれ独立して管理
+    let fadeOutTimerA = null;
+    let fadeOutTimerB = null;
 
-    function showSubtitle(original, translated) {
+    const routeAElements = {
+      container: routeAContainer,
+      originalText: routeAOriginal,
+      translatedText: routeATranslated,
+    };
+
+    const routeBElements = {
+      container: routeBContainer,
+      originalText: routeBOriginal,
+      translatedText: routeBTranslated,
+    };
+
+    function showSubtitle(route, original, translated) {
+      console.log(`[overlay] showSubtitle route=${route}`);  // デバッグ
       // OpenAI Realtime は原文と翻訳を独立したストリームで送るため、
       // 片方だけが入った payload が来る。空文字側は前回値を維持する。
+      const elements = route === "b" ? routeBElements : routeAElements;
+
       let updated = false;
       if (original) {
-        originalText.textContent = original;
+        elements.originalText.textContent = original;
         updated = true;
       }
       if (translated) {
-        translatedText.textContent = translated;
+        elements.translatedText.textContent = translated;
         updated = true;
       }
       if (!updated) {
         return;
       }
 
-      container.classList.add("visible");
+      elements.container.classList.add("visible");
 
-      if (fadeOutTimer) {
-        clearTimeout(fadeOutTimer);
+      // 経路ごとに独立したタイマーをリセット
+      if (route === "b") {
+        if (fadeOutTimerB) {
+          clearTimeout(fadeOutTimerB);
+        }
+        fadeOutTimerB = setTimeout(() => {
+          elements.container.classList.remove("visible");
+        }, FADE_OUT_DELAY);
+      } else {
+        if (fadeOutTimerA) {
+          clearTimeout(fadeOutTimerA);
+        }
+        fadeOutTimerA = setTimeout(() => {
+          elements.container.classList.remove("visible");
+        }, FADE_OUT_DELAY);
       }
-
-      fadeOutTimer = setTimeout(() => {
-        container.classList.remove("visible");
-      }, FADE_OUT_DELAY);
     }
 
     function connect() {
       const ws = new WebSocket(WS_URL);
 
       ws.addEventListener("open", () => {
+        console.log("[overlay] WebSocket connected");
         statusIndicator.classList.add("connected");
       });
 
       ws.addEventListener("message", (event) => {
         try {
           const data = JSON.parse(event.data);
+          console.log("[overlay] msg received:", data);  // デバッグ
+          // 後方互換: route フィールドがない既存メッセージは経路A として扱う
+          const route = data.route ?? "a";
           if (data.original !== undefined && data.translated !== undefined) {
-            showSubtitle(data.original, data.translated);
+            showSubtitle(route, data.original, data.translated);
           }
         } catch (e) {
           console.error("メッセージのパースに失敗:", e);
@@ -145,11 +221,13 @@
       });
 
       ws.addEventListener("close", () => {
+        console.log("[overlay] WebSocket closed");
         statusIndicator.classList.remove("connected");
         setTimeout(connect, 3000);
       });
 
-      ws.addEventListener("error", () => {
+      ws.addEventListener("error", (e) => {
+        console.error("[overlay] WebSocket error:", e);
         ws.close();
       });
     }

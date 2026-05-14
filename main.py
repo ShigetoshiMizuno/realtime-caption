@@ -61,6 +61,7 @@ import io
 import json
 import sys
 import threading
+from collections.abc import Callable
 from dataclasses import dataclass, replace
 from datetime import datetime
 from pathlib import Path
@@ -272,19 +273,25 @@ def select_whisper_model(default: str) -> str:
 
 
 class SubtitleBroadcaster:
-    """WebSocket サーバーで接続中の全クライアントに字幕を配信する。"""
+    """WebSocket サーバーで接続中の全クライアントに字幕を配信する。
+
+    threading.Lock を使用することで、複数の asyncio.run() スレッド（MultiCaptionSystem の
+    route_a / route_b）から同時に broadcast() を呼び出しても安全に動作する。
+    asyncio.Lock は _LoopBoundMixin を継承し初回 acquire 時にイベントループに束縛されるため、
+    異なるループから呼び出すと RuntimeError が発生する（Issue #38 Critical 1 修正）。
+    """
 
     def __init__(self):
         self._clients: set = set()
-        self._lock = asyncio.Lock()
+        self._lock = threading.Lock()
 
     async def register(self, websocket):
-        async with self._lock:
+        with self._lock:
             self._clients.add(websocket)
         try:
             await websocket.wait_closed()
         finally:
-            async with self._lock:
+            with self._lock:
                 self._clients.discard(websocket)
 
     @property
@@ -292,13 +299,25 @@ class SubtitleBroadcaster:
         return len(self._clients)
 
     async def broadcast(self, message: str):
-        async with self._lock:
+        with self._lock:
             targets = set(self._clients)
-        if targets:
-            await asyncio.gather(
-                *[ws.send(message) for ws in targets],
-                return_exceptions=True,
+
+        # デバッグ: クライアント数と message の最初の 100 文字を出力（最初の 5 回だけ）
+        if not hasattr(self, "_broadcast_log_count"):
+            self._broadcast_log_count = 0
+        if self._broadcast_log_count < 5:
+            print(
+                f"[Broadcaster] broadcast to {len(targets)} clients: {message[:100]}",
+                flush=True,
             )
+            self._broadcast_log_count += 1
+
+        if not targets:
+            return
+        await asyncio.gather(
+            *[ws.send(message) for ws in targets],
+            return_exceptions=True,
+        )
 
 
 # DeepL ターゲット言語マップ。キーは config.yaml の translation.target_language の値。
@@ -393,7 +412,11 @@ class CaptionSystem:
     def __init__(self, config: dict, device_info: dict, model_name: str,
                  on_result=None, on_ready=None,
                  on_whisper_busy=None, on_trans_busy=None,
-                 output_device_index: int | None = None):
+                 output_device_index: int | None = None,
+                 output_volume: float = 1.0,
+                 route_id: str = "a",
+                 shared_broadcaster: "SubtitleBroadcaster | None" = None,
+                 pa_instance: "pyaudio.PyAudio | None" = None):
         self._config = config
         self._device_info = device_info
         self._model_name = model_name
@@ -409,6 +432,7 @@ class CaptionSystem:
         # 音声出力モード: 出力デバイスが指定されていれば有効
         self._audio_output_mode: bool = output_device_index is not None
         self._output_device_index: int | None = output_device_index
+        self._output_volume: float = output_volume
         self._audio_stream = None  # AudioOutputStream インスタンス（起動時に生成）
 
         if not self._realtime_mode:
@@ -449,7 +473,17 @@ class CaptionSystem:
                 on_warning=self._on_cost_warning,
             )
 
-        self._broadcaster = SubtitleBroadcaster()
+        self._route_id: str = route_id
+        # 注入された共有 PyAudio インスタンス（None なら各スレッドが自前で生成）
+        # MultiCaptionSystem が共有 PyAudio を管理し、PortAudio 二重初期化を防ぐ
+        self._pa_instance: "pyaudio.PyAudio | None" = pa_instance
+        # shared_broadcaster が注入された場合は WebSocket サーバーを自前で起動しない
+        if shared_broadcaster is not None:
+            self._broadcaster = shared_broadcaster
+            self._owns_broadcaster = False
+        else:
+            self._broadcaster = SubtitleBroadcaster()
+            self._owns_broadcaster = True
         self._loop: asyncio.AbstractEventLoop | None = None
         self._recorder: AudioToTextRecorder | None = None
         self._stop_event = threading.Event()
@@ -463,6 +497,8 @@ class CaptionSystem:
         # AGC の内部状態（capture スレッド内のみ使用、共有なし）
         self._agc_gain: float = 1.0
         self._agc_envelope: float = 0.0  # 直近の peak 追従値（減衰付き）
+        # _capture_thread_body が開いた PyAudio ストリーム（shutdown から stop_stream() で解除）
+        self._capture_stream = None
         # Verbose ログ（STT 結果・翻訳リクエスト・成功失敗を時系列で別ファイルに残す）
         self.verbose: bool = False
         self._verbose_log_path: Path | None = None
@@ -517,39 +553,99 @@ class CaptionSystem:
         self._update_audio_stats(manual_gain=value)
 
     def shutdown(self):
+        import time as _time
+        _t0 = _time.monotonic()
+        route_id = getattr(self, "_route_id", "?")
+
         # idempotent ガード: 二重 shutdown を防止（WinError 6 対策）
         if self._stop_event.is_set():
             return
         self._stop_event.set()
+        # capture stream を即座に停止して read() のブロックを解除する。
+        # pyaudio.Stream.read() はブロッキング呼び出しのため stop_event だけでは抜けられない。
+        # stop_stream() が呼ばれると read() が OSError を投げ、capture loop が脱出できる。
+        cs = getattr(self, "_capture_stream", None)
+        if cs is not None:
+            _t1 = _time.monotonic()
+            try:
+                cs.stop_stream()
+            except Exception as e:
+                print(f"[WARN] capture stream stop_stream failed: {e}", flush=True)
+            print(
+                f"[TIMING] CaptionSystem(route_id={route_id}).stop_stream():"
+                f" {_time.monotonic() - _t1:.3f}s",
+                flush=True,
+            )
         # capture スレッドを先に停止させて、feed_audio が止まってから recorder.stop() を呼ぶ
         cap = getattr(self, "_capture_thread", None)
         if cap is not None and cap.is_alive():
-            cap.join(timeout=1.0)
+            _t1 = _time.monotonic()
+            cap.join(timeout=5.0)
+            print(
+                f"[TIMING] CaptionSystem(route_id={route_id})._capture_thread.join():"
+                f" {_time.monotonic() - _t1:.3f}s",
+                flush=True,
+            )
+            if cap.is_alive():
+                print(
+                    f"[WARN] capture thread (route_id={route_id})"
+                    f" did not exit in 5 seconds",
+                    flush=True,
+                )
         if self._recorder:
+            _t1 = _time.monotonic()
             try:
                 self._recorder.stop()
             except Exception:
                 pass
+            print(
+                f"[TIMING] CaptionSystem(route_id={route_id})._recorder.stop():"
+                f" {_time.monotonic() - _t1:.3f}s",
+                flush=True,
+            )
         if self._loop and self._stop_event_async:
             self._loop.call_soon_threadsafe(self._stop_event_async.set)
         # Realtime モードの WebSocket 接続を停止
         if getattr(self, "_realtime_translator", None) is not None:
+            _t1 = _time.monotonic()
             try:
                 self._realtime_translator.stop()
             except Exception:
                 pass
+            print(
+                f"[TIMING] CaptionSystem(route_id={route_id})._realtime_translator.stop():"
+                f" {_time.monotonic() - _t1:.3f}s",
+                flush=True,
+            )
         # 音声出力ストリームを停止
         if getattr(self, "_audio_stream", None) is not None:
+            _t1 = _time.monotonic()
             try:
                 self._audio_stream.stop()
             except Exception:
                 pass
+            print(
+                f"[TIMING] CaptionSystem(route_id={route_id})._audio_stream.stop():"
+                f" {_time.monotonic() - _t1:.3f}s",
+                flush=True,
+            )
         # コストモニターを停止
         if getattr(self, "_cost_monitor", None) is not None:
+            _t1 = _time.monotonic()
             try:
                 self._cost_monitor.stop()
             except Exception:
                 pass
+            print(
+                f"[TIMING] CaptionSystem(route_id={route_id})._cost_monitor.stop():"
+                f" {_time.monotonic() - _t1:.3f}s",
+                flush=True,
+            )
+        print(
+            f"[TIMING] CaptionSystem(route_id={route_id}).shutdown() TOTAL:"
+            f" {_time.monotonic() - _t0:.3f}s",
+            flush=True,
+        )
         # subst ドライブの解除はアプリ終了時のみ（app.py の main() / main.py の main() で実施）。
 
     def _ensure_verbose_log_path(self) -> Path:
@@ -606,7 +702,7 @@ class CaptionSystem:
         self._latest_translation = text
         if self._loop and not self._loop.is_closed():
             asyncio.run_coroutine_threadsafe(
-                self._realtime_broadcast("", text), self._loop
+                self._realtime_broadcast("", text, self._route_id), self._loop
             )
 
     def _on_realtime_source_transcript(self, text: str):
@@ -620,7 +716,7 @@ class CaptionSystem:
         self._latest_source = text
         if self._loop and not self._loop.is_closed():
             asyncio.run_coroutine_threadsafe(
-                self._realtime_broadcast(text, ""), self._loop
+                self._realtime_broadcast(text, "", self._route_id), self._loop
             )
 
     def _on_realtime_error(self, msg: str):
@@ -646,8 +742,14 @@ class CaptionSystem:
         if getattr(self, "_on_cost_warning_cb", None) is not None:
             self._on_cost_warning_cb(threshold)
 
-    async def _realtime_broadcast(self, original: str, translated: str):
-        """Realtime 原文・翻訳テキストを WebSocket とログに配信する。"""
+    async def _realtime_broadcast(self, original: str, translated: str, route: str = "a"):
+        """Realtime 原文・翻訳テキストを WebSocket とログに配信する。
+
+        Args:
+            original: 原文テキスト
+            translated: 翻訳テキスト
+            route: 経路識別子 ("a" | "b")。既存片方向モードはデフォルト "a"。
+        """
         self._log_verbose("RT_BROADCAST", original=original, translated=translated)
         if original:
             print(f"\n[原文(RT)] {original}")
@@ -670,7 +772,13 @@ class CaptionSystem:
         if self._on_result:
             self._on_result(original, translated)
 
-        payload = json.dumps({"original": original, "translated": translated}, ensure_ascii=False)
+        payload = json.dumps(
+            {"original": original, "translated": translated, "route": route},
+            ensure_ascii=False,
+        )
+        # デバッグログ: verbose モード時は payload の最初の 200 文字を出力
+        if self.verbose:
+            self._log_verbose("RT_WS_SEND", route=route, payload=payload[:200])
         await self._broadcaster.broadcast(payload)
 
     def _on_transcription(self, text: str):
@@ -751,7 +859,13 @@ class CaptionSystem:
         up = target_rate // g
         down = src_rate // g
 
-        pa = pyaudio.PyAudio()
+        # 注入された共有 PyAudio があればそれを使い、なければローカル生成
+        if self._pa_instance is not None:
+            pa = self._pa_instance
+            owns_pa = False
+        else:
+            pa = pyaudio.PyAudio()
+            owns_pa = True
         try:
             stream = pa.open(
                 format=pyaudio.paInt16,
@@ -763,8 +877,12 @@ class CaptionSystem:
             )
         except Exception as e:
             print(f"[ERROR] ループバックストリームのオープンに失敗しました: {e}")
-            pa.terminate()
+            if owns_pa:
+                pa.terminate()
             return
+
+        # shutdown() から stop_stream() を呼べるようにインスタンス変数に保存する
+        self._capture_stream = stream
 
         print(f"[INFO] ループバックキャプチャ開始: {src_rate}Hz, {channels}ch -> {target_rate}Hz mono", flush=True)
 
@@ -777,7 +895,13 @@ class CaptionSystem:
 
         try:
             while not self._stop_event.is_set():
-                raw = stream.read(chunk_size, exception_on_overflow=False)
+                try:
+                    raw = stream.read(chunk_size, exception_on_overflow=False)
+                except OSError:
+                    # stream が close/terminate された場合（shutdown 中）は静かに抜ける
+                    if self._stop_event.is_set():
+                        break
+                    raise
 
                 # bytes -> numpy int16 配列
                 audio = np.frombuffer(raw, dtype=np.int16)
@@ -859,6 +983,8 @@ class CaptionSystem:
         except Exception as e:
             print(f"[ERROR] ループバックキャプチャ中にエラーが発生しました: {e}")
         finally:
+            # インスタンス変数を先に None に戻す（shutdown の二重 stop_stream を防ぐ）
+            self._capture_stream = None
             try:
                 stream.stop_stream()
             except Exception:
@@ -867,7 +993,9 @@ class CaptionSystem:
                 stream.close()
             except Exception:
                 pass
-            pa.terminate()
+            # 共有インスタンスは MultiCaptionSystem が shutdown() で terminate するため呼ばない
+            if owns_pa:
+                pa.terminate()
 
     def prepare(self):
         """Whisper モデルをロードして recorder を初期化する。
@@ -969,10 +1097,20 @@ class CaptionSystem:
             from audio_output import AudioOutputStream
             ao_cfg = self._config.get("openai_realtime", {}).get("audio_output", {})
             sample_rate = ao_cfg.get("sample_rate", 24000)
+            # 共有 PyAudio があればそれを使い（owns_pa=False で terminate しない）、
+            # なければ新規生成（owns_pa=True で AudioOutputStream.stop() が terminate する）
+            if self._pa_instance is not None:
+                pa_for_output = self._pa_instance
+                owns_pa = False
+            else:
+                pa_for_output = pyaudio.PyAudio()
+                owns_pa = True
             self._audio_stream = AudioOutputStream(
-                pyaudio_instance=pyaudio.PyAudio(),
+                pyaudio_instance=pa_for_output,
                 device_index=self._output_device_index,
                 sample_rate=sample_rate,
+                volume=self._output_volume,
+                owns_pa=owns_pa,
             )
             self._audio_stream.start()
             print(f"[INFO] 音声出力ストリーム開始: device_index={self._output_device_index}", flush=True)
@@ -990,11 +1128,17 @@ class CaptionSystem:
         recorder_thread = threading.Thread(target=self._start_recorder, daemon=True)
         recorder_thread.start()
 
-        print(f"[INFO] WebSocket サーバーを起動中: ws://{ws_host}:{ws_port}")
         print(f"[INFO] ログファイル: {self._log_path}")
 
         try:
-            async with websockets.serve(self._broadcaster.register, ws_host, ws_port):
+            if self._owns_broadcaster:
+                # WebSocket サーバーを自前で起動（単体起動 / MultiCaptionSystem の route_a）
+                print(f"[INFO] WebSocket サーバーを起動中: ws://{ws_host}:{ws_port}")
+                async with websockets.serve(self._broadcaster.register, ws_host, ws_port):
+                    await self._stop_event_async.wait()
+            else:
+                # shared_broadcaster を持つ系統はサーバー起動をスキップし、stop_event を待つだけ
+                # WebSocket サーバーは broadcaster owner（route_a）が管理する
                 await self._stop_event_async.wait()
         except asyncio.CancelledError:
             # asyncio 中断時のみ shutdown 必要（Stop ボタン経由の正常終了は呼び出し側が責務）
@@ -1064,6 +1208,246 @@ def main():
         pass
     finally:
         _release_subst(_subst_letter)
+
+
+# ---------------------------------------------------------------------------
+# 翻訳こんにゃくモード: MultiCaptionSystem / RouteConfig (Issue #38 Phase 2)
+# ---------------------------------------------------------------------------
+
+@dataclass
+class RouteConfig:
+    """MultiCaptionSystem の1経路分の設定。"""
+
+    route_id: str                       # "a" | "b"
+    input_device_info: dict
+    target_language_code: str           # "ja" | "en"（constants.SUPPORTED_LANGUAGES から選択）
+    audio_output_enabled: bool
+    output_device_index: int | None
+    output_volume: float                # 0.0〜2.0
+
+
+class MultiCaptionSystem:
+    """2 系統の CaptionSystem を並列管理するオーケストレーター。
+
+    経路A・Bそれぞれが独立した CaptionSystem インスタンスを持ち、
+    1 本の SubtitleBroadcaster を共有して overlay.html へ配信する。
+
+    仕様: Issue #38 §1 (翻訳こんにゃくモード Phase 2)
+
+    スレッド設計:
+      - route_a: _thread_a がスレッドを立て asyncio.run(route_a.run()) を実行
+        → route_a._owns_broadcaster=True なので WebSocket サーバーも起動
+      - route_b: _thread_b がスレッドを立て asyncio.run(route_b.run()) を実行
+        → route_b._owns_broadcaster=False なので WS サーバー起動をスキップ
+      - 2スレッドは独立した asyncio イベントループを持つ（ループ競合なし）
+    """
+
+    def __init__(
+        self,
+        config: dict,
+        route_a: RouteConfig,
+        route_b: RouteConfig,
+        on_result_a: Callable[[str, str], None] | None = None,
+        on_result_b: Callable[[str, str], None] | None = None,
+        on_ready: Callable[[], None] | None = None,
+        on_thread_error: Callable[[str, Exception, str], None] | None = None,
+    ) -> None:
+        # route_a: shared_broadcaster=None → _owns_broadcaster=True（WS サーバーを自前で起動）
+        # route_b: shared_broadcaster=route_a._broadcaster → _owns_broadcaster=False（WS サーバースキップ）
+        # これにより overlay.html への WebSocket は1本（route_a が管理）で、
+        # 両系統が同一 SubtitleBroadcaster インスタンスを共有する。
+        # 共有 PyAudio インスタンスを1つだけ生成（PortAudio assertion 回避）
+        # 複数の pyaudio.PyAudio() を並列初期化すると WASAPI の状態が破壊され
+        # 'Assertion failed: hostApi->info.defaultOutputDevice < hostApi->info.deviceCount'
+        # でプロセスがクラッシュする。MultiCaptionSystem が責任を持って1つ管理する。
+        self._pa = pyaudio.PyAudio()
+
+        config_a = self._build_route_config_dict(config, route_a)
+        self._route_a = CaptionSystem(
+            config=config_a,
+            device_info=route_a.input_device_info,
+            model_name=config_a.get("stt", {}).get("model", "tiny"),
+            on_result=on_result_a,
+            on_ready=on_ready,
+            output_device_index=route_a.output_device_index if route_a.audio_output_enabled else None,
+            output_volume=route_a.output_volume,
+            route_id=route_a.route_id,
+            shared_broadcaster=None,  # route_a が broadcaster を所有
+            pa_instance=self._pa,     # 共有 PyAudio を注入
+        )
+
+        # route_b: route_a の broadcaster を共有（WS サーバー起動をスキップ）
+        config_b = self._build_route_config_dict(config, route_b)
+        self._route_b = CaptionSystem(
+            config=config_b,
+            device_info=route_b.input_device_info,
+            model_name=config_b.get("stt", {}).get("model", "tiny"),
+            on_result=on_result_b,
+            on_ready=on_ready,
+            output_device_index=route_b.output_device_index if route_b.audio_output_enabled else None,
+            output_volume=route_b.output_volume,
+            route_id=route_b.route_id,
+            shared_broadcaster=self._route_a._broadcaster,  # route_a の broadcaster を共有
+            pa_instance=self._pa,                           # 共有 PyAudio を注入
+        )
+
+        # start() で生成するスレッドへの参照（shutdown/join で利用）
+        self._thread_a: threading.Thread | None = None
+        self._thread_b: threading.Thread | None = None
+        # スレッド例外通知コールバック（route_id, exc, traceback_str）
+        self._on_thread_error = on_thread_error
+
+    @staticmethod
+    def _build_route_config_dict(base_config: dict, route: RouteConfig) -> dict:
+        """base_config を浅くコピーし、RouteConfig の言語設定で上書きした dict を返す。"""
+        import copy
+        cfg = copy.deepcopy(base_config)
+        # openai_realtime.target_language_code を RouteConfig の値で上書き
+        if "openai_realtime" not in cfg:
+            cfg["openai_realtime"] = {}
+        cfg["openai_realtime"]["target_language_code"] = route.target_language_code
+        return cfg
+
+    def start(self) -> None:
+        """両系統をバックグラウンドスレッドで並列起動する。
+
+        各スレッドは独立した asyncio イベントループを持つ（R1 asyncio ループ競合を回避）。
+        route_a: WebSocket サーバーを起動（_owns_broadcaster=True）
+        route_b: WebSocket サーバーをスキップ（shared_broadcaster を注入済み）
+        """
+        def _run_route(system: CaptionSystem):
+            try:
+                asyncio.run(system.run())
+            except Exception as e:
+                import traceback
+                tb = traceback.format_exc()
+                print(f"[ERROR] route {system._route_id} thread crashed: {e}", flush=True)
+                print(tb, flush=True)
+                if self._on_thread_error is not None:
+                    try:
+                        self._on_thread_error(system._route_id, e, tb)
+                    except Exception:
+                        pass
+
+        self._thread_a = threading.Thread(
+            target=_run_route, args=(self._route_a,), daemon=True, name="MultiCapSys-route-a"
+        )
+        self._thread_b = threading.Thread(
+            target=_run_route, args=(self._route_b,), daemon=True, name="MultiCapSys-route-b"
+        )
+        self._thread_a.start()
+        self._thread_b.start()
+
+    def shutdown(self) -> None:
+        """両系統を停止し、capture スレッド終了を待ってから共有 PyAudio を terminate する。
+
+        修正理由（Issue #38）:
+          capture スレッドが pyaudiowpatch.read() を実行中に pa.terminate() を呼ぶと
+          PortAudio が access violation でクラッシュする（実機ログ確認済み）。
+          _route_a.shutdown() / _route_b.shutdown() で stop_event をセットした後、
+          asyncio.run() を実行している _thread_a / _thread_b が終了するまで join してから
+          共有 PyAudio を terminate することでクラッシュを防ぐ。
+        """
+        import time as _time
+        _t0 = _time.monotonic()
+
+        # 1. 各 CaptionSystem の stop_event をセット（capture ループ脱出シグナル）
+        _t1 = _time.monotonic()
+        self._route_a.shutdown()
+        print(f"[TIMING] MultiCaptionSystem._route_a.shutdown(): {_time.monotonic() - _t1:.3f}s", flush=True)
+
+        _t1 = _time.monotonic()
+        self._route_b.shutdown()
+        print(f"[TIMING] MultiCaptionSystem._route_b.shutdown(): {_time.monotonic() - _t1:.3f}s", flush=True)
+
+        # 2. asyncio.run() スレッドが終了するまで待つ（join with timeout）
+        #    _thread_a/_thread_b は start() で生成される。start() 前に shutdown() を呼んだ場合は
+        #    None なのでスキップする。
+        thread_a = getattr(self, "_thread_a", None)
+        if thread_a is not None and thread_a.is_alive():
+            _t1 = _time.monotonic()
+            thread_a.join(timeout=5.0)
+            print(f"[TIMING] MultiCaptionSystem._thread_a.join(): {_time.monotonic() - _t1:.3f}s", flush=True)
+            if thread_a.is_alive():
+                print("[WARN] route_a thread did not exit in 5 seconds", flush=True)
+
+        thread_b = getattr(self, "_thread_b", None)
+        if thread_b is not None and thread_b.is_alive():
+            _t1 = _time.monotonic()
+            thread_b.join(timeout=5.0)
+            print(f"[TIMING] MultiCaptionSystem._thread_b.join(): {_time.monotonic() - _t1:.3f}s", flush=True)
+            if thread_b.is_alive():
+                print("[WARN] route_b thread did not exit in 5 seconds", flush=True)
+
+        # 3. capture スレッドが確実に exit するまで待つ（pa.terminate() の前に必須）
+        #    CaptionSystem.shutdown() で既に join 試行済みだが、pa.read() のブロック対策で
+        #    ここでもう一度 join。timeout 10 秒で安全マージン。
+        cap_a = getattr(self._route_a, "_capture_thread", None)
+        if cap_a is not None and cap_a.is_alive():
+            print("[INFO] waiting for route_a capture thread to exit...", flush=True)
+            _t1 = _time.monotonic()
+            cap_a.join(timeout=10.0)
+            print(f"[TIMING] MultiCaptionSystem.cap_a.join(): {_time.monotonic() - _t1:.3f}s", flush=True)
+            if cap_a.is_alive():
+                print(
+                    "[ERROR] route_a capture thread STILL ALIVE after 10s join."
+                    " terminate may crash.",
+                    flush=True,
+                )
+        cap_b = getattr(self._route_b, "_capture_thread", None)
+        if cap_b is not None and cap_b.is_alive():
+            print("[INFO] waiting for route_b capture thread to exit...", flush=True)
+            _t1 = _time.monotonic()
+            cap_b.join(timeout=10.0)
+            print(f"[TIMING] MultiCaptionSystem.cap_b.join(): {_time.monotonic() - _t1:.3f}s", flush=True)
+            if cap_b.is_alive():
+                print(
+                    "[ERROR] route_b capture thread STILL ALIVE after 10s join."
+                    " terminate may crash.",
+                    flush=True,
+                )
+
+        # 5. すべてのスレッドが exit してから共有 PyAudio を terminate
+        #    getattr: object.__new__ で作られた minimal インスタンスには _pa が存在しない場合がある
+        pa = getattr(self, "_pa", None)
+        if pa is not None:
+            _t1 = _time.monotonic()
+            try:
+                pa.terminate()
+            except Exception as e:
+                print(f"[WARN] PyAudio terminate failed: {e}", flush=True)
+            print(f"[TIMING] MultiCaptionSystem.PyAudio.terminate(): {_time.monotonic() - _t1:.3f}s", flush=True)
+            self._pa = None
+
+        print(f"[TIMING] MultiCaptionSystem.shutdown() TOTAL: {_time.monotonic() - _t0:.3f}s", flush=True)
+
+    @property
+    def route_a_system(self) -> CaptionSystem:
+        """経路Aの CaptionSystem インスタンス。"""
+        return self._route_a
+
+    @property
+    def route_b_system(self) -> CaptionSystem:
+        """経路Bの CaptionSystem インスタンス。"""
+        return self._route_b
+
+    @property
+    def total_estimated_cost_usd(self) -> float:
+        """両系統の CostMonitor の合算コスト（USD）を返す。
+
+        仕様書 §4: CostMonitor 自体は変更せず、呼び出し側で2インスタンス管理。
+        """
+        cost_a = (
+            self._route_a._cost_monitor.estimated_cost_usd()
+            if self._route_a._cost_monitor is not None
+            else 0.0
+        )
+        cost_b = (
+            self._route_b._cost_monitor.estimated_cost_usd()
+            if self._route_b._cost_monitor is not None
+            else 0.0
+        )
+        return cost_a + cost_b
 
 
 if __name__ == "__main__":

@@ -147,6 +147,11 @@ The level meter should light up while audio is playing. If it stays at 0%, the a
 | `rpc.port` | Local HTTP RPC port (status / remote start-stop) | `8767` |
 | `output.log_dir` | Directory for per-session translation logs | `.` |
 | `openai_realtime.max_session_minutes` | Auto-stop after N minutes of Realtime usage (0 = unlimited) | `60` |
+| `translation_konnyaku.route_a.target_language_code` | Route A target language (BCP-47: `ja`, `en`, …) | `ja` |
+| `translation_konnyaku.route_a.audio_output_enabled` | Enable audio output on Route A | `false` |
+| `translation_konnyaku.route_b.target_language_code` | Route B target language (BCP-47: `ja`, `en`, …) | `en` |
+| `translation_konnyaku.route_b.audio_output_enabled` | Enable audio output on Route B (recommended for virtual mic) | `true` |
+| `translation_konnyaku.route_b.output_device_keyword` | Route B output device name (partial match) | `CABLE Input` |
 
 GUI-side overrides (device / model / engine / gain / VAD sliders) are persisted to `settings.json` and override the `config.yaml` values at runtime.
 
@@ -182,6 +187,16 @@ For external tooling / automation, a small JSON API listens on `localhost:8767`.
 | GET | `/api/devices` | list of available audio devices |
 | POST | `/api/start` | `{"device_index": N, "model": "small"}` (both optional) |
 | POST | `/api/stop` | stop capture |
+
+### Operating Modes
+
+| Mode | Use case | Input | Output |
+|------|----------|-------|--------|
+| OBS caption mode | Subtitle overlay for OBS streaming | WASAPI loopback | overlay.html |
+| Zoom simultaneous interpretation (one-way) | Send your voice to the meeting in the other language | Microphone | CABLE Input + overlay.html |
+| **Translation Konnyaku Mode (bidirectional, Issue #38)** | Real-time two-way translation between you and a remote participant | Microphone + WASAPI loopback | CABLE Input + overlay.html |
+
+---
 
 ### Zoom simultaneous interpretation via VB-CABLE
 
@@ -219,6 +234,63 @@ Or configure manually:
 4. When interpretation is active, Zoom will broadcast audio from CABLE Output on the interpreter channel
 
 > **Note:** Interpreted audio reaches Zoom listeners with ~1-3 second delay (realtime API latency).
+
+---
+
+### Translation Konnyaku Mode setup (bidirectional)
+
+Translation Konnyaku Mode runs **two simultaneous translation sessions**:
+
+- **Route A** — Captures the remote participant's audio (via WASAPI loopback), translates to your language, and displays subtitles.
+- **Route B** — Captures your microphone audio, translates to the remote participant's language, and outputs to a virtual microphone (VB-CABLE).
+
+#### Prerequisites
+
+- [VB-CABLE Virtual Audio Device](https://vb-audio.com/Cable/) (free) — see the VB-CABLE install section above
+- OpenAI API key with `gpt-realtime-translate` access
+
+#### 1. Windows sound settings
+
+After installing VB-CABLE:
+
+1. Open **Sound Settings → Recording** and verify **CABLE Output** is enabled.
+2. Open **Sound Settings → Playback** and verify **CABLE Input** is present.
+
+#### 2. Launch the app and select Translation Konnyaku Mode
+
+1. Double-click `start.bat` to open the GUI.
+2. Open **詳細設定 (Advanced)** and click **「翻訳こんにゃくモード」** preset button.
+   - Route A input: WASAPI loopback device (selects automatically)
+   - Route B input: physical microphone
+   - Route B output: `CABLE Input` (set by preset)
+   - Route A target language: `ja` (Japanese) — change as needed
+   - Route B target language: `en` (English) — change as needed
+3. Click **開始** to start both routes simultaneously.
+
+#### 3. Configure Zoom
+
+1. Go to **Settings → Audio** → Microphone: select **CABLE Output (VB-Audio Virtual Cable)**.
+2. Speaker: keep your normal output device.
+
+With this setup, the remote participant hears your translated English voice, and their speech is displayed as Japanese subtitles on your screen via overlay.html.
+
+#### Cost estimate
+
+`gpt-realtime-translate` × 2 sessions ≈ **$0.068 / minute** (~$4 / 1-hour meeting, ~¥600).
+The existing maximum session time guard (`openai_realtime.max_session_minutes`) applies independently to each route.
+
+#### Adding languages in the future
+
+Add one line to `SUPPORTED_LANGUAGES` in `constants.py` — the GUI language combo will reflect it automatically.
+Language codes must conform to BCP-47 as supported by OpenAI Realtime Translate.
+
+#### Troubleshooting (Konnyaku Mode)
+
+| Symptom | Action |
+|---------|--------|
+| CABLE Input not selectable | Confirm VB-CABLE is installed and restart the app |
+| Only one route works | Check device selection and level meter for the failing route in the GUI |
+| Cost higher than expected | Check the `cost_monitor` log; confirm it correlates with actual meeting duration |
 
 ---
 
@@ -431,6 +503,11 @@ GUI では **API キーが入っているエンジンのみ選択可能** にな
 | `rpc.port` | ローカル HTTP RPC のポート（状態取得・遠隔制御） | `8767` |
 | `output.log_dir` | 翻訳ログ保存先 | `.` |
 | `openai_realtime.max_session_minutes` | Realtime モードの自動停止時間（分）。0 で無制限 | `60` |
+| `translation_konnyaku.route_a.target_language_code` | 経路A 翻訳先言語（BCP-47: `ja`, `en`, …） | `ja` |
+| `translation_konnyaku.route_a.audio_output_enabled` | 経路A 音声出力を有効化 | `false` |
+| `translation_konnyaku.route_b.target_language_code` | 経路B 翻訳先言語（BCP-47: `ja`, `en`, …） | `en` |
+| `translation_konnyaku.route_b.audio_output_enabled` | 経路B 音声出力を有効化（仮想マイク推奨） | `true` |
+| `translation_konnyaku.route_b.output_device_keyword` | 経路B 出力デバイス名（部分一致） | `CABLE Input` |
 
 GUI 側で変更した設定（デバイス / モデル / 翻訳エンジン / ゲイン / VAD）は `settings.json` に保存され、次回起動時に復元されます（`config.yaml` の値より優先）。
 
@@ -466,6 +543,16 @@ GUI で録音を開始した状態で OBS をプレビューすると字幕が�
 | GET | `/api/devices` | 入力デバイス一覧 |
 | POST | `/api/start` | `{"device_index": N, "model": "small"}`（両方省略可） |
 | POST | `/api/stop` | 録音停止 |
+
+### 動作モード
+
+| モード | 用途 | 入力 | 出力 |
+|--------|------|------|------|
+| OBS 字幕モード | OBS 配信に字幕オーバーレイ | WASAPI loopback | overlay.html |
+| Zoom 同時通訳モード（片方向） | 自分の声を相手の言語で Zoom に流す | マイク | CABLE Input + overlay.html |
+| **翻訳こんにゃくモード（双方向・Issue #38）** | 自分↔相手の双方向同時翻訳 | マイク + WASAPI loopback | CABLE Input + overlay.html |
+
+---
 
 ### VB-CABLE を使った Zoom 同時通訳
 
@@ -505,6 +592,63 @@ GUI を開いて「詳細設定」を展開し：
 4. 通訳が有効になると、CABLE Output の音声が Zoom のインタープリターチャンネルで配信されます
 
 > **注意:** 翻訳音声は Realtime API のレイテンシにより 1〜3 秒程度の遅延が生じます。
+
+---
+
+### 翻訳こんにゃくモードのセットアップ（双方向同時翻訳）
+
+翻訳こんにゃくモードは **2つの翻訳セッションを同時に実行**します：
+
+- **経路A** — 相手の音声（WASAPI loopback 経由）を取り込み、自分の言語に翻訳して字幕表示
+- **経路B** — 自分のマイク音声を取り込み、相手の言語に翻訳して仮想マイク（VB-CABLE）へ出力
+
+#### 前提条件
+
+- [VB-CABLE Virtual Audio Device](https://vb-audio.com/Cable/)（無料）— 上記の VB-CABLE インストール手順を参照
+- `gpt-realtime-translate` が使える OpenAI API キー
+
+#### 手順 1: Windows サウンド設定
+
+VB-CABLE インストール後：
+
+1. **サウンド設定 → 録音** タブで **CABLE Output** が有効になっていることを確認。
+2. **サウンド設定 → 再生** タブで **CABLE Input** が表示されていることを確認。
+
+#### 手順 2: アプリ起動 → 翻訳こんにゃくモード
+
+1. `start.bat` をダブルクリックして GUI を起動。
+2. **「詳細設定」** を展開し、**「翻訳こんにゃくモード」** プリセットボタンをクリック。
+   - 経路A 入力: WASAPI loopback デバイス（自動選択）
+   - 経路B 入力: 物理マイク
+   - 経路B 出力: `CABLE Input`（プリセットで自動設定）
+   - 経路A 翻訳先: `ja`（日本語）— 必要に応じて変更
+   - 経路B 翻訳先: `en`（English）— 必要に応じて変更
+3. **「開始」** ボタンで2経路を同時起動。
+
+#### 手順 3: Zoom の設定
+
+1. Zoom の **設定 → オーディオ** → マイク を **「CABLE Output (VB-Audio Virtual Cable)」** に変更。
+2. スピーカーは通常のデバイスのまま。
+
+これで相手には自分の英語音声が届き、相手の英語は自分側で日本語字幕として表示されます。
+
+#### コスト目安
+
+`gpt-realtime-translate` × 2 セッション = 約 **$0.068 / 分**（1時間のビジネス会議で約 $4 ≈ 600 円）。
+既存の `openai_realtime.max_session_minutes` による自動停止は各経路に独立して適用されます。
+
+#### 言語の追加（将来）
+
+`constants.py` の `SUPPORTED_LANGUAGES` リストに1行追加するだけで GUI のコンボに反映されます。
+言語コードは OpenAI Realtime Translate の BCP-47 サポート言語に準拠してください。
+
+#### トラブルシューティング（翻訳こんにゃくモード）
+
+| 症状 | 対処 |
+|------|------|
+| CABLE Input が選べない | VB-CABLE インストールを確認してアプリを再起動 |
+| 片方の経路だけ動かない | GUI のデバイス選択とレベルメーターで原因を切り分け |
+| コストが想定より高い | `cost_monitor` のログを確認し、Zoom 会議時間と一致するか確認 |
 
 ---
 
@@ -563,6 +707,12 @@ start.bat --cli
 
 **停止時に `WinError 6` がログに出る**
 - RealtimeSTT 側の既知レース（[#4](../../issues/4)）。機能には影響ありません。
+
+**翻訳こんにゃくモードで「CABLE Input が選べない」**
+- VB-CABLE がインストールされているか確認し、アプリを再起動してください。
+
+**翻訳こんにゃくモードで片方の経路だけ動かない**
+- GUI のデバイス選択と各経路のレベルメーターで原因を切り分けてください。
 
 ---
 
