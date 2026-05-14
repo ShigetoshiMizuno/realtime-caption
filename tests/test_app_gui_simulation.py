@@ -291,9 +291,15 @@ class TestKonnyakuStartFlow:
         mock_mcs.assert_not_called()
 
     def test_stop_shuts_down_system(self):
-        """停止ボタン押下時に _konnyaku_system.shutdown() が呼ばれること。"""
+        """停止ボタン押下時に _konnyaku_system.shutdown() が別スレッドで呼ばれること。"""
         mock_dpg = _make_dpg_mock()
         mock_instance = MagicMock()
+        shutdown_called = threading.Event()
+
+        def fake_shutdown():
+            shutdown_called.set()
+
+        mock_instance.shutdown.side_effect = fake_shutdown
 
         with (
             patch.object(app, "dpg", mock_dpg),
@@ -301,10 +307,101 @@ class TestKonnyakuStartFlow:
             patch.object(app, "_konnyaku_system", mock_instance),
         ):
             app._on_konnyaku_start_stop_click()
+            # バックグラウンドスレッドの完了を待つ（最大3秒）
+            shutdown_called.wait(timeout=3.0)
 
         mock_instance.shutdown.assert_called_once()
         assert app._konnyaku_system is None
         assert app._konnyaku_running is False
+
+    def test_stop_shows_stopping_label_immediately(self):
+        """停止ボタン押下直後にボタンラベルが「停止中...」になり disabled になること。"""
+        configure_item_calls: list[dict] = []
+        mock_dpg = _make_dpg_mock()
+        mock_dpg.configure_item.side_effect = lambda tag, **kwargs: configure_item_calls.append(
+            {"tag": tag, **kwargs}
+        )
+
+        shutdown_start = threading.Event()
+        shutdown_done = threading.Event()
+        mock_instance = MagicMock()
+
+        def fake_shutdown():
+            # shutdown 開始を通知してから少し待つ（GUI が更新される前に完了しないよう）
+            shutdown_start.set()
+            shutdown_done.wait(timeout=3.0)
+
+        mock_instance.shutdown.side_effect = fake_shutdown
+
+        with (
+            patch.object(app, "dpg", mock_dpg),
+            patch.object(app, "_konnyaku_running", True),
+            patch.object(app, "_konnyaku_system", mock_instance),
+        ):
+            app._on_konnyaku_start_stop_click()
+            # shutdown が始まる前（直後）のボタン状態を確認
+            shutdown_start.wait(timeout=3.0)
+
+        # 最初の configure_item 呼び出しで「停止中...」+ enabled=False になっていること
+        stopping_calls = [
+            c for c in configure_item_calls
+            if c.get("tag") == app.TAG_KONNYAKU_START_BTN and c.get("label") == "停止中..."
+        ]
+        assert len(stopping_calls) >= 1, (
+            f"「停止中...」ラベルへの configure_item が呼ばれていない: {configure_item_calls}"
+        )
+        assert stopping_calls[0].get("enabled") is False, (
+            f"「停止中...」時に enabled=False になっていない: {stopping_calls[0]}"
+        )
+        # shutdown スレッドを解放
+        shutdown_done.set()
+
+    def test_stop_restores_button_after_shutdown_complete(self):
+        """シャットダウン完了後にボタンラベルが「こんにゃく開始」に戻り enabled になること。"""
+        configure_item_calls: list[dict] = []
+        mock_dpg = _make_dpg_mock()
+        mock_dpg.configure_item.side_effect = lambda tag, **kwargs: configure_item_calls.append(
+            {"tag": tag, **kwargs}
+        )
+
+        shutdown_done = threading.Event()
+        mock_instance = MagicMock()
+
+        def fake_shutdown():
+            pass  # 即完了
+
+        mock_instance.shutdown.side_effect = fake_shutdown
+
+        with (
+            patch.object(app, "dpg", mock_dpg),
+            patch.object(app, "_konnyaku_running", True),
+            patch.object(app, "_konnyaku_system", mock_instance),
+        ):
+            app._on_konnyaku_start_stop_click()
+            # バックグラウンドスレッドが完了するまで少し待つ
+            import time as _time
+            deadline = _time.monotonic() + 3.0
+            while _time.monotonic() < deadline:
+                restored = [
+                    c for c in configure_item_calls
+                    if c.get("tag") == app.TAG_KONNYAKU_START_BTN
+                    and c.get("label") == "こんにゃく開始"
+                    and c.get("enabled") is True
+                ]
+                if restored:
+                    break
+                _time.sleep(0.05)
+
+        # shutdown 完了後に「こんにゃく開始」+ enabled=True に戻ること
+        restored_calls = [
+            c for c in configure_item_calls
+            if c.get("tag") == app.TAG_KONNYAKU_START_BTN
+            and c.get("label") == "こんにゃく開始"
+            and c.get("enabled") is True
+        ]
+        assert len(restored_calls) >= 1, (
+            f"shutdown 後にボタンラベルが「こんにゃく開始」に戻っていない: {configure_item_calls}"
+        )
 
     def test_thread_error_callback_called_on_thread_crash(self):
         """
@@ -485,7 +582,8 @@ class TestAutoKonnyakuRunner:
         - 5秒 (モデルロード待機)
         - 1秒 (GUI 反映待機)
         - N秒 (duration)
-        - 3秒 (shutdown 完了待機)
+        shutdown 完了待ちはループ（time.sleep(0.2) × 複数回）に変更されたため
+        固定値 3 は含まれないこと。
         """
         sleep_args: list[float] = []
 
@@ -494,18 +592,61 @@ class TestAutoKonnyakuRunner:
         with (
             patch.object(app, "_on_konnyaku_preset_click", MagicMock()),
             patch.object(app, "_on_konnyaku_start_stop_click", MagicMock()),
+            patch.object(app, "_konnyaku_running", False),
             patch.object(app, "dpg", mock_dpg),
             patch("app.time") as mock_time,
         ):
             def record_sleep(n):
                 sleep_args.append(n)
             mock_time.sleep = record_sleep
+            mock_time.monotonic = __import__("time").monotonic
             app._auto_konnyaku_runner(duration=10)
 
-        # 順番に 5, 1, 10, 3 が記録されること
-        assert sleep_args == [5, 1, 10, 3], (
+        # 5, 1, 10 が含まれていること（shutdown 完了待ちは _konnyaku_running=False で即抜ける）
+        assert sleep_args[:3] == [5, 1, 10], (
             f"sleep の呼び出しシーケンスが期待と異なる: {sleep_args}"
         )
+        # 固定値 3 の sleep が含まれていないこと（ループ待機に変更されたため）
+        assert 3 not in sleep_args, (
+            f"固定 sleep(3) が残っている（ループ待機に変更されたはず）: {sleep_args}"
+        )
+
+    def test_auto_konnyaku_runner_waits_for_konnyaku_running_false(self):
+        """
+        _auto_konnyaku_runner の停止ボタン押下後、_konnyaku_running が False になるまで
+        ループ待機すること（固定 sleep(3) ではなく）。
+        """
+        # _konnyaku_running が途中で True → False に変わるシナリオ
+        running_flag = [True]
+        call_count = [0]
+
+        def fake_start_stop():
+            call_count[0] += 1
+            # 2回目の呼び出し（停止ボタン）で _konnyaku_running を False に設定
+            if call_count[0] >= 2:
+                running_flag[0] = False
+
+        mock_dpg = MagicMock()
+
+        with (
+            patch.object(app, "_on_konnyaku_preset_click", MagicMock()),
+            patch.object(app, "_on_konnyaku_start_stop_click", fake_start_stop),
+            patch.object(app, "dpg", mock_dpg),
+            patch("app.time") as mock_time,
+        ):
+            mock_time.sleep = MagicMock()
+            mock_time.monotonic = __import__("time").monotonic
+            # _konnyaku_running を running_flag[0] で管理
+            with patch.object(app, "_konnyaku_running", new_callable=lambda: type(
+                "_Prop", (), {
+                    "__get__": lambda self, obj, cls: running_flag[0],
+                    "__set__": lambda self, obj, val: running_flag.__setitem__(0, val),
+                }
+            )()):
+                app._auto_konnyaku_runner(duration=0)
+
+        # dpg.stop_dearpygui が呼ばれること（ループ抜け後）
+        mock_dpg.stop_dearpygui.assert_called_once()
 
     def test_auto_konnyaku_runner_calls_stop_dearpygui_on_exception(self):
         """
