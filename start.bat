@@ -58,17 +58,25 @@ if exist "%PYTHON_DIR%\python.exe" (
 )
 
 :: --- launch ---
+:: コンソール出力をファイルにもキャプチャ。faulthandler でセグフォも記録。
+for /f "tokens=2 delims==" %%a in ('wmic OS Get localdatetime /value') do set DT=%%a
+set CONSOLE_LOG=console_%DT:~0,8%-%DT:~8,6%.log
+set PYTHONFAULTHANDLER=1
+set PYTHONUNBUFFERED=1
 echo Starting...
 echo   (Please wait 10-30 seconds for the GUI to appear.)
+echo   Console output -^> %CONSOLE_LOG%
 echo.
 if "%1"=="--cli" (
-    %PYTHON_DIR%\python.exe main.py
+    %PYTHON_DIR%\python.exe -X faulthandler main.py > "%CONSOLE_LOG%" 2>&1
 ) else (
-    %PYTHON_DIR%\python.exe app.py
+    %PYTHON_DIR%\python.exe -X faulthandler app.py > "%CONSOLE_LOG%" 2>&1
 )
 if %ERRORLEVEL% neq 0 (
     echo.
     echo [ERROR] Exit code: %ERRORLEVEL%
+    echo [ERROR] Console log: %CONSOLE_LOG%
+    type "%CONSOLE_LOG%"
     pause
 )
 endlocal
