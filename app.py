@@ -494,6 +494,7 @@ def _on_gain_value_change(sender, value, user_data):
 
 def _on_route_a_gain_change(sender, app_data, user_data):
     """経路A 入力ゲイン倍率スライダー変更時。動作中の系統に即反映。"""
+    print(f"[USER] 系統1 入力ゲイン倍率変更: {float(app_data):.2f}", flush=True)
     if _konnyaku_system is None or _konnyaku_system.route_a_system is None:
         return
     try:
@@ -504,6 +505,7 @@ def _on_route_a_gain_change(sender, app_data, user_data):
 
 def _on_route_b_gain_change(sender, app_data, user_data):
     """経路B 入力ゲイン倍率スライダー変更時。動作中の系統に即反映。"""
+    print(f"[USER] 系統2 入力ゲイン倍率変更: {float(app_data):.2f}", flush=True)
     if _konnyaku_system is None or _konnyaku_system.route_b_system is None:
         return
     try:
@@ -514,6 +516,7 @@ def _on_route_b_gain_change(sender, app_data, user_data):
 
 def _on_route_a_volume_change(sender, app_data, user_data):
     """経路A 出力音量スライダー変更時。動作中の AudioOutputStream に即反映。"""
+    print(f"[USER] 系統1 出力音量変更: {float(app_data):.2f}", flush=True)
     if _konnyaku_system is None or _konnyaku_system.route_a_system is None:
         return
     try:
@@ -524,6 +527,7 @@ def _on_route_a_volume_change(sender, app_data, user_data):
 
 def _on_route_b_volume_change(sender, app_data, user_data):
     """経路B 出力音量スライダー変更時。動作中の AudioOutputStream に即反映。"""
+    print(f"[USER] 系統2 出力音量変更: {float(app_data):.2f}", flush=True)
     if _konnyaku_system is None or _konnyaku_system.route_b_system is None:
         return
     try:
@@ -534,6 +538,7 @@ def _on_route_b_volume_change(sender, app_data, user_data):
 
 def _on_route_a_output_device_change(sender, app_data, user_data):
     """経路A 出力デバイス変更時。動作中の系統に即反映。"""
+    print(f"[USER] 系統1 出力デバイス選択: {app_data!r}", flush=True)
     if _konnyaku_system is None or _konnyaku_system.route_a_system is None:
         return
     label = str(app_data)
@@ -551,6 +556,7 @@ def _on_route_a_output_device_change(sender, app_data, user_data):
 
 def _on_route_b_output_device_change(sender, app_data, user_data):
     """経路B 出力デバイス変更時。動作中の系統に即反映。"""
+    print(f"[USER] 系統2 出力デバイス選択: {app_data!r}", flush=True)
     if _konnyaku_system is None or _konnyaku_system.route_b_system is None:
         return
     label = str(app_data)
@@ -568,6 +574,7 @@ def _on_route_b_output_device_change(sender, app_data, user_data):
 
 def _on_route_a_output_enable_change(sender, app_data, user_data):
     """経路A 音声出力 ON/OFF 変更時。稼働中なら即反映。"""
+    print(f"[USER] 系統1 音声出力 {'ON' if app_data else 'OFF'}", flush=True)
     if _konnyaku_system is None or _konnyaku_system.route_a_system is None:
         return
     enabled = bool(app_data)
@@ -591,6 +598,7 @@ def _on_route_a_output_enable_change(sender, app_data, user_data):
 
 def _on_route_b_output_enable_change(sender, app_data, user_data):
     """経路B 音声出力 ON/OFF 変更時。稼働中なら即反映。"""
+    print(f"[USER] 系統2 音声出力 {'ON' if app_data else 'OFF'}", flush=True)
     if _konnyaku_system is None or _konnyaku_system.route_b_system is None:
         return
     enabled = bool(app_data)
@@ -614,6 +622,7 @@ def _on_route_b_output_enable_change(sender, app_data, user_data):
 
 def _on_route_a_gain_mode_change(sender, app_data, user_data):
     """経路A ゲインモード（off/manual/auto）コンボ変更時。動作中の系統に即反映。"""
+    print(f"[USER] 系統1 入力ゲインモード変更: {app_data!r}", flush=True)
     if _konnyaku_system is None or _konnyaku_system.route_a_system is None:
         return
     try:
@@ -624,6 +633,7 @@ def _on_route_a_gain_mode_change(sender, app_data, user_data):
 
 def _on_route_b_gain_mode_change(sender, app_data, user_data):
     """経路B ゲインモード（off/manual/auto）コンボ変更時。動作中の系統に即反映。"""
+    print(f"[USER] 系統2 入力ゲインモード変更: {app_data!r}", flush=True)
     if _konnyaku_system is None or _konnyaku_system.route_b_system is None:
         return
     try:
@@ -685,6 +695,7 @@ def _on_zoom_preset_click():
 
 def _on_both_routes_on(sender=None, app_data=None, user_data=None):
     """系統1・系統2 を両方とも有効化（一括 ON）。"""
+    print("[USER] 両方 ON ボタン押下", flush=True)
     if dpg.does_item_exist(TAG_ROUTE_A_ENABLE):
         dpg.set_value(TAG_ROUTE_A_ENABLE, True)
     if dpg.does_item_exist(TAG_ROUTE_B_ENABLE):
@@ -693,6 +704,7 @@ def _on_both_routes_on(sender=None, app_data=None, user_data=None):
 
 def _on_both_routes_off(sender=None, app_data=None, user_data=None):
     """系統1・系統2 を両方とも無効化（一括 OFF）。"""
+    print("[USER] 両方 OFF ボタン押下", flush=True)
     if dpg.does_item_exist(TAG_ROUTE_A_ENABLE):
         dpg.set_value(TAG_ROUTE_A_ENABLE, False)
     if dpg.does_item_exist(TAG_ROUTE_B_ENABLE):
@@ -707,6 +719,7 @@ def _on_konnyaku_preset_click():
       経路B: 入力 = マイク / 出力 = CABLE Input / 翻訳先 = en
     設定を適用するのみ。起動はしない。
     """
+    print("[USER] 翻訳こんにゃくモードプリセットボタン押下", flush=True)
     # 経路A: 最初の Loopback デバイスを選択
     if dpg.does_item_exist(TAG_ROUTE_A_DEVICE_COMBO):
         items_a = dpg.get_item_configuration(TAG_ROUTE_A_DEVICE_COMBO).get("items", [])
@@ -789,6 +802,12 @@ def _on_realtime_error_handler(route_id: str, category: str, display_text: str) 
 def _on_konnyaku_start_stop_click():
     """翻訳こんにゃくモードの開始/停止ボタン。"""
     global _konnyaku_system, _konnyaku_running
+
+    print(
+        f"[USER] {'停止' if _konnyaku_running else '開始'}ボタン押下"
+        f" (running={_konnyaku_running})",
+        flush=True,
+    )
 
     if _konnyaku_running:
         # 停止ボタン押下: すぐにボタンを「停止中...」+ disabled に切り替え、
@@ -1914,6 +1933,8 @@ def _build_gui():
                     tag=TAG_ROUTE_A_ENABLE,
                     label="",
                     default_value=True,
+                    callback=lambda s, a, u: print(
+                        f"[USER] 系統1 有効チェック {'ON' if a else 'OFF'}", flush=True),
                 )
                 dpg.add_text("【系統1】相手→自分（聞き取り字幕）  You speak, I hear")
             with dpg.group(horizontal=True):
@@ -2001,6 +2022,8 @@ def _build_gui():
                     tag=TAG_ROUTE_B_ENABLE,
                     label="",
                     default_value=True,
+                    callback=lambda s, a, u: print(
+                        f"[USER] 系統2 有効チェック {'ON' if a else 'OFF'}", flush=True),
                 )
                 dpg.add_text("【系統2】自分→相手（同時通訳）  I speak, they hear")
             with dpg.group(horizontal=True):
@@ -2190,31 +2213,53 @@ def _update_konnyaku_level_meters():
     route_a = _konnyaku_system.route_a_system
     route_b = _konnyaku_system.route_b_system
 
-    # 経路A 入力レベル
-    peak_a_in = route_a.audio_peak_now
+    # 各系統の有効/無効を読む（稼働中に OFF されたら見かけ上停止して見せる）
+    route_a_enabled = (
+        bool(dpg.get_value(TAG_ROUTE_A_ENABLE))
+        if dpg.does_item_exist(TAG_ROUTE_A_ENABLE) else True
+    )
+    route_b_enabled = (
+        bool(dpg.get_value(TAG_ROUTE_B_ENABLE))
+        if dpg.does_item_exist(TAG_ROUTE_B_ENABLE) else True
+    )
+
+    # 経路A 入力レベル（route_a が None または Enable=OFF なら 0）
+    if route_a is not None and route_a_enabled:
+        peak_a_in = route_a.audio_peak_now
+    else:
+        peak_a_in = 0
     level_a_in = min(1.0, peak_a_in / 32767.0)
     if dpg.does_item_exist(TAG_LEVEL_METER_A_IN):
         dpg.set_value(TAG_LEVEL_METER_A_IN, level_a_in)
         dpg.configure_item(TAG_LEVEL_METER_A_IN, overlay=f"{int(level_a_in * 100)}%")
 
     # 経路B 入力レベル
-    peak_b_in = route_b.audio_peak_now
+    if route_b is not None and route_b_enabled:
+        peak_b_in = route_b.audio_peak_now
+    else:
+        peak_b_in = 0
     level_b_in = min(1.0, peak_b_in / 32767.0)
     if dpg.does_item_exist(TAG_LEVEL_METER_B_IN):
         dpg.set_value(TAG_LEVEL_METER_B_IN, level_b_in)
         dpg.configure_item(TAG_LEVEL_METER_B_IN, overlay=f"{int(level_b_in * 100)}%")
 
     # 経路A 出力レベル（AudioOutputStream が起動していれば peak 取得）
-    stream_a = getattr(route_a, "_audio_stream", None)
-    peak_a_out = stream_a.audio_peak_now if stream_a is not None else 0
+    if route_a is not None and route_a_enabled:
+        stream_a = getattr(route_a, "_audio_stream", None)
+        peak_a_out = stream_a.audio_peak_now if stream_a is not None else 0
+    else:
+        peak_a_out = 0
     level_a_out = min(1.0, peak_a_out / 32767.0)
     if dpg.does_item_exist(TAG_LEVEL_METER_A_OUT):
         dpg.set_value(TAG_LEVEL_METER_A_OUT, level_a_out)
         dpg.configure_item(TAG_LEVEL_METER_A_OUT, overlay=f"{int(level_a_out * 100)}%")
 
     # 経路B 出力レベル
-    stream_b = getattr(route_b, "_audio_stream", None)
-    peak_b_out = stream_b.audio_peak_now if stream_b is not None else 0
+    if route_b is not None and route_b_enabled:
+        stream_b = getattr(route_b, "_audio_stream", None)
+        peak_b_out = stream_b.audio_peak_now if stream_b is not None else 0
+    else:
+        peak_b_out = 0
     level_b_out = min(1.0, peak_b_out / 32767.0)
     if dpg.does_item_exist(TAG_LEVEL_METER_B_OUT):
         dpg.set_value(TAG_LEVEL_METER_B_OUT, level_b_out)
