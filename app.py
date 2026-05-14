@@ -518,28 +518,6 @@ def _on_gain_value_change(sender, value, user_data):
         _system.manual_gain = float(value)
 
 
-def _on_route_a_gain_change(sender, app_data, user_data):
-    """経路A 入力ゲイン倍率スライダー変更時。動作中の系統に即反映。"""
-    print(f"[USER] 系統1 入力ゲイン倍率変更: {float(app_data):.2f}", flush=True)
-    if _konnyaku_system is None or _konnyaku_system.route_a_system is None:
-        return
-    try:
-        _konnyaku_system.route_a_system.manual_gain = float(app_data)
-    except Exception:
-        pass
-
-
-def _on_route_b_gain_change(sender, app_data, user_data):
-    """経路B 入力ゲイン倍率スライダー変更時。動作中の系統に即反映。"""
-    print(f"[USER] 系統2 入力ゲイン倍率変更: {float(app_data):.2f}", flush=True)
-    if _konnyaku_system is None or _konnyaku_system.route_b_system is None:
-        return
-    try:
-        _konnyaku_system.route_b_system.manual_gain = float(app_data)
-    except Exception:
-        pass
-
-
 def _on_route_a_volume_change(sender, app_data, user_data):
     """経路A 出力音量スライダー変更時。動作中の AudioOutputStream に即反映。"""
     print(f"[USER] 系統1 出力音量変更: {float(app_data):.2f}", flush=True)
@@ -646,28 +624,6 @@ def _on_route_b_output_enable_change(sender, app_data, user_data):
             print(f"[ERROR] route_b 出力 OFF 失敗: {e}", flush=True)
 
 
-def _on_route_a_gain_mode_change(sender, app_data, user_data):
-    """経路A ゲインモード（off/manual/auto）コンボ変更時。動作中の系統に即反映。"""
-    print(f"[USER] 系統1 入力ゲインモード変更: {app_data!r}", flush=True)
-    if _konnyaku_system is None or _konnyaku_system.route_a_system is None:
-        return
-    try:
-        _konnyaku_system.route_a_system.gain_mode = str(app_data)
-    except Exception:
-        pass
-
-
-def _on_route_b_gain_mode_change(sender, app_data, user_data):
-    """経路B ゲインモード（off/manual/auto）コンボ変更時。動作中の系統に即反映。"""
-    print(f"[USER] 系統2 入力ゲインモード変更: {app_data!r}", flush=True)
-    if _konnyaku_system is None or _konnyaku_system.route_b_system is None:
-        return
-    try:
-        _konnyaku_system.route_b_system.gain_mode = str(app_data)
-    except Exception:
-        pass
-
-
 def _find_zoom_preset_output(devices: list[dict]) -> int | None:
     """
     デバイスリストから CABLE Input (VB-CABLE) のインデックスを返す純関数。
@@ -735,59 +691,6 @@ def _on_both_routes_off(sender=None, app_data=None, user_data=None):
         dpg.set_value(TAG_ROUTE_A_ENABLE, False)
     if dpg.does_item_exist(TAG_ROUTE_B_ENABLE):
         dpg.set_value(TAG_ROUTE_B_ENABLE, False)
-
-
-def _on_konnyaku_preset_click():
-    """翻訳こんにゃくモードプリセットボタン押下。
-
-    デフォルト設定を一括適用する:
-      経路A: 入力 = WASAPI loopback / 出力 = OFF / 翻訳先 = ja
-      経路B: 入力 = マイク / 出力 = CABLE Input / 翻訳先 = en
-    設定を適用するのみ。起動はしない。
-    """
-    print("[USER] 翻訳こんにゃくモードプリセットボタン押下", flush=True)
-    # 経路A: 最初の Loopback デバイスを選択
-    if dpg.does_item_exist(TAG_ROUTE_A_DEVICE_COMBO):
-        items_a = dpg.get_item_configuration(TAG_ROUTE_A_DEVICE_COMBO).get("items", [])
-        loopback_a = next((it for it in items_a if "[Loopback]" in it), None)
-        if loopback_a:
-            dpg.set_value(TAG_ROUTE_A_DEVICE_COMBO, loopback_a)
-
-    # 経路A: 翻訳先 = ja
-    if dpg.does_item_exist(TAG_ROUTE_A_LANG_COMBO):
-        lang_names = get_language_display_names()
-        lang_codes = get_language_codes()
-        if "ja" in lang_codes:
-            ja_name = lang_names[lang_codes.index("ja")]
-            dpg.set_value(TAG_ROUTE_A_LANG_COMBO, ja_name)
-
-    # 経路A: 音声出力 = OFF
-    if dpg.does_item_exist(TAG_ROUTE_A_OUTPUT_ENABLE):
-        dpg.set_value(TAG_ROUTE_A_OUTPUT_ENABLE, False)
-
-    # 経路B: 最初のマイク（非 Loopback）デバイスを選択
-    if dpg.does_item_exist(TAG_ROUTE_B_DEVICE_COMBO):
-        items_b = dpg.get_item_configuration(TAG_ROUTE_B_DEVICE_COMBO).get("items", [])
-        mic_b = next((it for it in items_b if "[Loopback]" not in it), None)
-        if mic_b:
-            dpg.set_value(TAG_ROUTE_B_DEVICE_COMBO, mic_b)
-
-    # 経路B: 翻訳先 = en
-    if dpg.does_item_exist(TAG_ROUTE_B_LANG_COMBO):
-        lang_names = get_language_display_names()
-        lang_codes = get_language_codes()
-        if "en" in lang_codes:
-            en_name = lang_names[lang_codes.index("en")]
-            dpg.set_value(TAG_ROUTE_B_LANG_COMBO, en_name)
-
-    # 経路B: 音声出力 = ON、出力先 = CABLE Input
-    if dpg.does_item_exist(TAG_ROUTE_B_OUTPUT_ENABLE):
-        dpg.set_value(TAG_ROUTE_B_OUTPUT_ENABLE, True)
-    if dpg.does_item_exist(TAG_ROUTE_B_OUTPUT_DEVICE_COMBO):
-        items_out = dpg.get_item_configuration(TAG_ROUTE_B_OUTPUT_DEVICE_COMBO).get("items", [])
-        cable_item = next((it for it in items_out if "cable input" in it.lower()), None)
-        if cable_item:
-            dpg.set_value(TAG_ROUTE_B_OUTPUT_DEVICE_COMBO, cable_item)
 
 
 def _konnyaku_thread_error_handler(route_id: str, exc: Exception, tb: str) -> None:
@@ -1051,6 +954,11 @@ def _on_konnyaku_start_stop_click():
             on_realtime_error=_on_realtime_error_handler,
             on_thread_error=_konnyaku_thread_error_handler,
         )
+        # ゲインモードは auto 固定（B-12: UI 削除に伴いコードで直接設定）
+        if _konnyaku_system.route_a_system is not None:
+            _konnyaku_system.route_a_system.gain_mode = "auto"
+        if _konnyaku_system.route_b_system is not None:
+            _konnyaku_system.route_b_system.gain_mode = "auto"
         # verbose モードが有効なら各 CaptionSystem に反映
         if _verbose_state:
             if _konnyaku_system.route_a_system is not None:
@@ -1932,14 +1840,8 @@ def _build_gui():
         # 旧: collapsing_header（折りたたみ）→ 常時展開に昇格（Issue #38 GUI 統一）
         dpg.add_text("双方向同時翻訳  [系統1] 相手→自分（聞き取り字幕） / [系統2] 自分→相手（同時通訳）")
         with dpg.group(tag=TAG_KONNYAKU_SECTION):
-            # プリセットボタン + 開始ボタン
+            # 開始/停止ボタン + 系統一括
             with dpg.group(horizontal=True):
-                dpg.add_button(
-                    tag=TAG_KONNYAKU_PRESET_BTN,
-                    label="翻訳こんにゃくモードプリセット",
-                    width=230,
-                    callback=_on_konnyaku_preset_click,
-                )
                 dpg.add_button(
                     tag=TAG_KONNYAKU_START_BTN,
                     label="開始",
@@ -1983,23 +1885,6 @@ def _build_gui():
                         device_labels[0] if device_labels else "",
                     ),
                     width=360,
-                )
-            with dpg.group(horizontal=True):
-                dpg.add_text("入力ゲイン:")
-                dpg.add_combo(
-                    tag=TAG_ROUTE_A_GAIN_MODE,
-                    items=["off", "manual", "auto"],
-                    default_value="off",
-                    width=90,
-                    callback=_on_route_a_gain_mode_change,
-                )
-                dpg.add_text("  倍率:")
-                dpg.add_slider_float(
-                    tag=TAG_ROUTE_A_GAIN_SLIDER,
-                    default_value=1.0,
-                    min_value=1.0, max_value=50.0,
-                    width=160, format="%.2f",
-                    callback=_on_route_a_gain_change,
                 )
             with dpg.group(horizontal=True):
                 dpg.add_text("入力レベル:")
@@ -2072,23 +1957,6 @@ def _build_gui():
                         device_labels[0] if device_labels else "",
                     ),
                     width=360,
-                )
-            with dpg.group(horizontal=True):
-                dpg.add_text("入力ゲイン:")
-                dpg.add_combo(
-                    tag=TAG_ROUTE_B_GAIN_MODE,
-                    items=["off", "manual", "auto"],
-                    default_value="off",
-                    width=90,
-                    callback=_on_route_b_gain_mode_change,
-                )
-                dpg.add_text("  倍率:")
-                dpg.add_slider_float(
-                    tag=TAG_ROUTE_B_GAIN_SLIDER,
-                    default_value=1.0,
-                    min_value=1.0, max_value=50.0,
-                    width=160, format="%.2f",
-                    callback=_on_route_b_gain_change,
                 )
             with dpg.group(horizontal=True):
                 dpg.add_text("入力レベル:")
@@ -2337,17 +2205,13 @@ def _auto_konnyaku_runner(duration: int, inject_test: bool = False) -> None:
     自律的に回せるようにするためのヘルパー。
     """
     try:
-        print(f"[AUTO] Phase 1/5: モデルロード待機 (5s)...", flush=True)
+        print(f"[AUTO] Phase 1/4: モデルロード待機 (5s)...", flush=True)
         time.sleep(5)
 
-        print(f"[AUTO] Phase 2/5: プリセットボタン押下", flush=True)
-        _on_konnyaku_preset_click()
-        time.sleep(1)
-
-        print(f"[AUTO] Phase 3/5: こんにゃく開始ボタン押下", flush=True)
+        print(f"[AUTO] Phase 2/4: こんにゃく開始ボタン押下", flush=True)
         _on_konnyaku_start_stop_click()
 
-        print(f"[AUTO] Phase 4/5: {duration}秒間動作中...", flush=True)
+        print(f"[AUTO] Phase 3/4: {duration}秒間動作中...", flush=True)
         if inject_test:
             # WS サーバー起動 + クライアント接続待ち
             time.sleep(3)
@@ -2357,7 +2221,7 @@ def _auto_konnyaku_runner(duration: int, inject_test: bool = False) -> None:
         else:
             time.sleep(duration)
 
-        print(f"[AUTO] Phase 5/5: こんにゃく停止ボタン押下", flush=True)
+        print(f"[AUTO] Phase 4/4: こんにゃく停止ボタン押下", flush=True)
         _on_konnyaku_start_stop_click()
 
         # バックグラウンド shutdown スレッドの完了を待つ（最大15秒）

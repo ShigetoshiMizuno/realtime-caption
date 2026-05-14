@@ -574,27 +574,15 @@ def _make_widget_values(route_a_device_label: str, route_b_device_label: str) ->
 # ---------------------------------------------------------------------------
 
 class TestSliderCallbacks:
-    """経路A/B のゲイン・音量スライダーに callback が設定されていること。"""
+    """経路A/B の音量スライダーに callback が設定されていること。
+
+    v2 仕様変更 (B-12/B-13): ゲインモードコンボ・ゲイン倍率スライダーは削除済み。
+    音量スライダーは引き続き存在する。
+    """
 
     def _get_build_gui_source(self) -> str:
         import inspect
         return inspect.getsource(app._build_gui)
-
-    def test_route_a_gain_slider_has_callback(self):
-        """経路A ゲイン倍率スライダーに callback が設定されていること。"""
-        source = self._get_build_gui_source()
-        # TAG_ROUTE_A_GAIN_SLIDER の add_slider_float に callback= が含まれること
-        # TAG_ROUTE_A_GAIN_SLIDER の定義ブロックに callback= キーワードが存在する
-        assert "_on_route_a_gain_change" in source, (
-            "_build_gui に _on_route_a_gain_change callback が含まれていない"
-        )
-
-    def test_route_b_gain_slider_has_callback(self):
-        """経路B ゲイン倍率スライダーに callback が設定されていること。"""
-        source = self._get_build_gui_source()
-        assert "_on_route_b_gain_change" in source, (
-            "_build_gui に _on_route_b_gain_change callback が含まれていない"
-        )
 
     def test_route_a_volume_slider_has_callback(self):
         """経路A 出力音量スライダーに callback が設定されていること。"""
@@ -610,18 +598,32 @@ class TestSliderCallbacks:
             "_build_gui に _on_route_b_volume_change callback が含まれていない"
         )
 
-    def test_route_a_gain_mode_has_callback(self):
-        """経路A ゲインモードコンボに callback が設定されていること。"""
+    def test_route_a_gain_slider_not_in_build_gui(self):
+        """v2 仕様: 経路A ゲイン倍率スライダー (B-13) が _build_gui に存在しないこと。"""
         source = self._get_build_gui_source()
-        assert "_on_route_a_gain_mode_change" in source, (
-            "_build_gui に _on_route_a_gain_mode_change callback が含まれていない"
+        assert "_on_route_a_gain_change" not in source, (
+            "_build_gui に _on_route_a_gain_change callback が残っている (B-13 削除済み)"
         )
 
-    def test_route_b_gain_mode_has_callback(self):
-        """経路B ゲインモードコンボに callback が設定されていること。"""
+    def test_route_b_gain_slider_not_in_build_gui(self):
+        """v2 仕様: 経路B ゲイン倍率スライダー (B-13) が _build_gui に存在しないこと。"""
         source = self._get_build_gui_source()
-        assert "_on_route_b_gain_mode_change" in source, (
-            "_build_gui に _on_route_b_gain_mode_change callback が含まれていない"
+        assert "_on_route_b_gain_change" not in source, (
+            "_build_gui に _on_route_b_gain_change callback が残っている (B-13 削除済み)"
+        )
+
+    def test_route_a_gain_mode_not_in_build_gui(self):
+        """v2 仕様: 経路A ゲインモードコンボ (B-12) が _build_gui に存在しないこと。"""
+        source = self._get_build_gui_source()
+        assert "_on_route_a_gain_mode_change" not in source, (
+            "_build_gui に _on_route_a_gain_mode_change callback が残っている (B-12 削除済み)"
+        )
+
+    def test_route_b_gain_mode_not_in_build_gui(self):
+        """v2 仕様: 経路B ゲインモードコンボ (B-12) が _build_gui に存在しないこと。"""
+        source = self._get_build_gui_source()
+        assert "_on_route_b_gain_mode_change" not in source, (
+            "_build_gui に _on_route_b_gain_mode_change callback が残っている (B-12 削除済み)"
         )
 
 
@@ -733,32 +735,36 @@ class TestOnRealtimeErrorHandler:
 
 
 class TestSliderCallbackFunctions:
-    """スライダー callback 関数が _konnyaku_system に正しく委譲すること。"""
+    """スライダー callback 関数が _konnyaku_system に正しく委譲すること。
 
-    def test_on_route_a_gain_change_sets_manual_gain(self):
-        """_on_route_a_gain_change が route_a_system.manual_gain を更新すること。"""
-        mock_system = MagicMock()
-        mock_route_a = MagicMock()
-        mock_system.route_a_system = mock_route_a
+    v2 仕様変更 (B-12/B-13):
+    - _on_route_a/b_gain_change (ゲイン倍率) は削除済み → 関数が存在しないことを確認
+    - _on_route_a/b_gain_mode_change (ゲインモード) は削除済み → 関数が存在しないことを確認
+    - 音量 callback (_on_route_a/b_volume_change) は継続
+    """
 
-        with patch.object(app, "_konnyaku_system", mock_system):
-            app._on_route_a_gain_change(None, 3.5, None)
-
-        assert mock_route_a.manual_gain == 3.5, (
-            f"manual_gain が 3.5 に設定されていない: {mock_route_a.manual_gain}"
+    def test_on_route_a_gain_change_function_deleted(self):
+        """v2 仕様 (B-13): _on_route_a_gain_change 関数が app から削除されていること。"""
+        assert not hasattr(app, "_on_route_a_gain_change"), (
+            "_on_route_a_gain_change がまだ app に存在している (B-13 削除済みのはず)"
         )
 
-    def test_on_route_b_gain_change_sets_manual_gain(self):
-        """_on_route_b_gain_change が route_b_system.manual_gain を更新すること。"""
-        mock_system = MagicMock()
-        mock_route_b = MagicMock()
-        mock_system.route_b_system = mock_route_b
+    def test_on_route_b_gain_change_function_deleted(self):
+        """v2 仕様 (B-13): _on_route_b_gain_change 関数が app から削除されていること。"""
+        assert not hasattr(app, "_on_route_b_gain_change"), (
+            "_on_route_b_gain_change がまだ app に存在している (B-13 削除済みのはず)"
+        )
 
-        with patch.object(app, "_konnyaku_system", mock_system):
-            app._on_route_b_gain_change(None, 2.0, None)
+    def test_on_route_a_gain_mode_change_function_deleted(self):
+        """v2 仕様 (B-12): _on_route_a_gain_mode_change 関数が app から削除されていること。"""
+        assert not hasattr(app, "_on_route_a_gain_mode_change"), (
+            "_on_route_a_gain_mode_change がまだ app に存在している (B-12 削除済みのはず)"
+        )
 
-        assert mock_route_b.manual_gain == 2.0, (
-            f"manual_gain が 2.0 に設定されていない: {mock_route_b.manual_gain}"
+    def test_on_route_b_gain_mode_change_function_deleted(self):
+        """v2 仕様 (B-12): _on_route_b_gain_mode_change 関数が app から削除されていること。"""
+        assert not hasattr(app, "_on_route_b_gain_mode_change"), (
+            "_on_route_b_gain_mode_change がまだ app に存在している (B-12 削除済みのはず)"
         )
 
     def test_on_route_a_volume_change_sets_output_volume(self):
@@ -787,42 +793,12 @@ class TestSliderCallbackFunctions:
             f"output_volume が 1.5 に設定されていない: {mock_route_b.output_volume}"
         )
 
-    def test_on_route_a_gain_mode_change_sets_gain_mode(self):
-        """_on_route_a_gain_mode_change が route_a_system.gain_mode を更新すること。"""
-        mock_system = MagicMock()
-        mock_route_a = MagicMock()
-        mock_system.route_a_system = mock_route_a
-
-        with patch.object(app, "_konnyaku_system", mock_system):
-            app._on_route_a_gain_mode_change(None, "manual", None)
-
-        assert mock_route_a.gain_mode == "manual", (
-            f"gain_mode が 'manual' に設定されていない: {mock_route_a.gain_mode}"
-        )
-
-    def test_on_route_b_gain_mode_change_sets_gain_mode(self):
-        """_on_route_b_gain_mode_change が route_b_system.gain_mode を更新すること。"""
-        mock_system = MagicMock()
-        mock_route_b = MagicMock()
-        mock_system.route_b_system = mock_route_b
-
-        with patch.object(app, "_konnyaku_system", mock_system):
-            app._on_route_b_gain_mode_change(None, "auto", None)
-
-        assert mock_route_b.gain_mode == "auto", (
-            f"gain_mode が 'auto' に設定されていない: {mock_route_b.gain_mode}"
-        )
-
     def test_callbacks_do_nothing_when_konnyaku_system_is_none(self):
-        """_konnyaku_system が None のとき全 callback が例外を出さないこと。"""
+        """_konnyaku_system が None のとき音量 callback が例外を出さないこと。"""
         with patch.object(app, "_konnyaku_system", None):
             # 例外が出なければ OK
-            app._on_route_a_gain_change(None, 2.0, None)
-            app._on_route_b_gain_change(None, 2.0, None)
             app._on_route_a_volume_change(None, 1.0, None)
             app._on_route_b_volume_change(None, 1.0, None)
-            app._on_route_a_gain_mode_change(None, "manual", None)
-            app._on_route_b_gain_mode_change(None, "auto", None)
 
 
 # ---------------------------------------------------------------------------
