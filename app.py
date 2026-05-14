@@ -266,19 +266,23 @@ def _load_settings() -> dict:
 def _save_settings():
     try:
         # 翻訳エンジンは表示ラベルではなく内部キーで保存する
-        trans_label = dpg.get_value(TAG_TRANS_COMBO)
-        trans_key = _trans_label_to_key(trans_label)
+        # TAG_TRANS_COMBO は _build_gui から削除済み（単独モード廃止）のため does_item_exist で安全化
+        if dpg.does_item_exist(TAG_TRANS_COMBO):
+            trans_label = dpg.get_value(TAG_TRANS_COMBO)
+            trans_key = _trans_label_to_key(trans_label)
+        else:
+            trans_key = "openai-realtime"
         output_device = ""
         if dpg.does_item_exist(TAG_OUTPUT_DEVICE_COMBO):
             output_device = dpg.get_value(TAG_OUTPUT_DEVICE_COMBO)
         data = {
-            "device": dpg.get_value(TAG_DEVICE_COMBO),
-            "model": dpg.get_value(TAG_MODEL_COMBO),
+            "device": dpg.get_value(TAG_DEVICE_COMBO) if dpg.does_item_exist(TAG_DEVICE_COMBO) else "",
+            "model": dpg.get_value(TAG_MODEL_COMBO) if dpg.does_item_exist(TAG_MODEL_COMBO) else "",
             "trans": trans_key,
-            "vad_sensitivity": dpg.get_value(TAG_VAD_SENSITIVITY),
-            "vad_silence": dpg.get_value(TAG_VAD_SILENCE),
-            "gain_mode": dpg.get_value(TAG_GAIN_MODE),
-            "gain_value": dpg.get_value(TAG_GAIN_SLIDER),
+            "vad_sensitivity": dpg.get_value(TAG_VAD_SENSITIVITY) if dpg.does_item_exist(TAG_VAD_SENSITIVITY) else VAD_DEFAULT_SENSITIVITY,
+            "vad_silence": dpg.get_value(TAG_VAD_SILENCE) if dpg.does_item_exist(TAG_VAD_SILENCE) else VAD_DEFAULT_SILENCE,
+            "gain_mode": dpg.get_value(TAG_GAIN_MODE) if dpg.does_item_exist(TAG_GAIN_MODE) else GAIN_DEFAULT_MODE,
+            "gain_value": dpg.get_value(TAG_GAIN_SLIDER) if dpg.does_item_exist(TAG_GAIN_SLIDER) else GAIN_DEFAULT_VALUE,
             "verbose": _verbose_state,
             "output_device": output_device,
         }
@@ -1930,6 +1934,10 @@ def _update_cost_status():
 
 def _update_level_meter():
     global _last_level_theme
+    # TAG_LEVEL_METER ウィジェットは _build_gui から削除済み（単独モード廃止）。
+    # _system が稼働中でもウィジェットが存在しない場合は何もしない。
+    if not dpg.does_item_exist(TAG_LEVEL_METER):
+        return
     peak = _system.audio_peak_now if _system else 0
     gain = _system.effective_gain if _system else 1.0
     level = min(1.0, peak / 32767.0)
