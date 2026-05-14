@@ -416,7 +416,8 @@ class CaptionSystem:
                  output_volume: float = 1.0,
                  route_id: str = "a",
                  shared_broadcaster: "SubtitleBroadcaster | None" = None,
-                 pa_instance: "pyaudio.PyAudio | None" = None):
+                 pa_instance: "pyaudio.PyAudio | None" = None,
+                 on_realtime_error_external: "Callable[[str], None] | None" = None):
         self._config = config
         self._device_info = device_info
         self._model_name = model_name
@@ -424,6 +425,7 @@ class CaptionSystem:
         self._on_ready = on_ready            # callable() | None — モデル準備完了時に呼ばれる
         self._on_whisper_busy = on_whisper_busy  # callable(bool) | None
         self._on_trans_busy = on_trans_busy      # callable(bool) | None
+        self._on_realtime_error_external = on_realtime_error_external  # callable(str) | None
 
         # 翻訳モード判定
         trans_model = config.get("translation", {}).get("translation_model", "openai").lower()
@@ -738,6 +740,11 @@ class CaptionSystem:
         """RealtimeTranslator からエラーを受け取るコールバック。"""
         print(f"[RT ERROR] {msg}")
         self._log_verbose("RT_ERROR", message=msg)
+        if self._on_realtime_error_external is not None:
+            try:
+                self._on_realtime_error_external(msg)
+            except Exception:
+                pass
 
     def _on_cost_max_reached(self) -> None:
         """CostMonitor が最大稼働時間に達したときのコールバック。"""
@@ -1229,6 +1236,35 @@ def main():
 # 翻訳こんにゃくモード: MultiCaptionSystem / RouteConfig (Issue #38 Phase 2)
 # ---------------------------------------------------------------------------
 
+
+def _classify_realtime_error(msg: str) -> tuple[str, str]:
+    """RealtimeTranslator からのエラー文字列を分類し、(category, display_text) を返す。
+
+    Parameters
+    ----------
+    msg:
+        RealtimeTranslator から受け取ったエラーメッセージ文字列。
+
+    Returns
+    -------
+    (category, display_text)
+      category: "quota" | "auth" | "rate_limit" | "connection" | "other"
+      display_text: GUI ステータスバーに表示する文言（絵文字付き）
+    """
+    msg_lower = msg.lower()
+    if "insufficient_quota" in msg_lower:
+        return ("quota", "⚠️ OpenAI クォータ超過: https://platform.openai.com/usage で確認")
+    if "invalid_api_key" in msg_lower or "incorrect api key" in msg_lower or "authentication" in msg_lower:
+        return ("auth", "⚠️ OpenAI API キーが無効: 詳細設定で正しいキーを設定してください")
+    if "rate_limit" in msg_lower or "rate limit" in msg_lower or "429" in msg_lower:
+        return ("rate_limit", "⚠️ OpenAI レート制限。少し時間を空けてください")
+    if "connection" in msg_lower or "timeout" in msg_lower or "refused" in msg_lower:
+        return ("connection", "⚠️ OpenAI API に接続できません: ネットワークを確認してください")
+    # 不明なエラーは原文をそのまま（長すぎる場合は 100 文字に切り詰め）
+    truncated = msg[:100] + ("..." if len(msg) > 100 else "")
+    return ("other", f"⚠️ OpenAI API エラー: {truncated}")
+
+
 @dataclass
 class RouteConfig:
     """MultiCaptionSystem の1経路分の設定。"""
@@ -1265,6 +1301,7 @@ class MultiCaptionSystem:
         on_result_a: Callable[[str, str], None] | None = None,
         on_result_b: Callable[[str, str], None] | None = None,
         on_ready: Callable[[], None] | None = None,
+        on_realtime_error: "Callable[[str, str, str], None] | None" = None,
         on_thread_error: Callable[[str, Exception, str], None] | None = None,
     ) -> None:
         if route_a is None and route_b is None:
@@ -1275,6 +1312,17 @@ class MultiCaptionSystem:
         # 'Assertion failed: hostApi->info.defaultOutputDevice < hostApi->info.deviceCount'
         # でプロセスがクラッシュする。MultiCaptionSystem が責任を持って1つ管理する。
         self._pa = pyaudio.PyAudio()
+
+        # on_realtime_error ラッパー: route_id を付与してユーザーコールバックに転送する
+        def _wrap_error(route_id: str):
+            def _handler(msg: str) -> None:
+                if on_realtime_error is not None:
+                    category, display = _classify_realtime_error(msg)
+                    try:
+                        on_realtime_error(route_id, category, display)
+                    except Exception:
+                        pass
+            return _handler
 
         # route_a: 存在すれば生成（shared_broadcaster=None → _owns_broadcaster=True、WS サーバー起動）
         # route_b のみの場合: route_b が broadcaster を所有する（shared_broadcaster=None）
@@ -1291,6 +1339,7 @@ class MultiCaptionSystem:
                 route_id=route_a.route_id,
                 shared_broadcaster=None,  # route_a が broadcaster を所有
                 pa_instance=self._pa,     # 共有 PyAudio を注入
+                on_realtime_error_external=_wrap_error(route_a.route_id),
             )
         else:
             self._route_a = None
@@ -1311,6 +1360,7 @@ class MultiCaptionSystem:
                 route_id=route_b.route_id,
                 shared_broadcaster=shared,  # route_a あれば共有、なければ自前
                 pa_instance=self._pa,       # 共有 PyAudio を注入
+                on_realtime_error_external=_wrap_error(route_b.route_id),
             )
         else:
             self._route_b = None
