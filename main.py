@@ -301,11 +301,23 @@ class SubtitleBroadcaster:
     async def broadcast(self, message: str):
         with self._lock:
             targets = set(self._clients)
-        if targets:
-            await asyncio.gather(
-                *[ws.send(message) for ws in targets],
-                return_exceptions=True,
+
+        # デバッグ: クライアント数と message の最初の 100 文字を出力（最初の 5 回だけ）
+        if not hasattr(self, "_broadcast_log_count"):
+            self._broadcast_log_count = 0
+        if self._broadcast_log_count < 5:
+            print(
+                f"[Broadcaster] broadcast to {len(targets)} clients: {message[:100]}",
+                flush=True,
             )
+            self._broadcast_log_count += 1
+
+        if not targets:
+            return
+        await asyncio.gather(
+            *[ws.send(message) for ws in targets],
+            return_exceptions=True,
+        )
 
 
 # DeepL ターゲット言語マップ。キーは config.yaml の translation.target_language の値。
@@ -764,6 +776,9 @@ class CaptionSystem:
             {"original": original, "translated": translated, "route": route},
             ensure_ascii=False,
         )
+        # デバッグログ: verbose モード時は payload の最初の 200 文字を出力
+        if self.verbose:
+            self._log_verbose("RT_WS_SEND", route=route, payload=payload[:200])
         await self._broadcaster.broadcast(payload)
 
     def _on_transcription(self, text: str):

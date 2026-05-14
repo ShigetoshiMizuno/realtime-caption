@@ -160,6 +160,7 @@
     };
 
     function showSubtitle(route, original, translated) {
+      console.log(`[overlay] showSubtitle route=${route}`);  // デバッグ
       // OpenAI Realtime は原文と翻訳を独立したストリームで送るため、
       // 片方だけが入った payload が来る。空文字側は前回値を維持する。
       const elements = route === "b" ? routeBElements : routeAElements;
@@ -201,12 +202,14 @@
       const ws = new WebSocket(WS_URL);
 
       ws.addEventListener("open", () => {
+        console.log("[overlay] WebSocket connected");
         statusIndicator.classList.add("connected");
       });
 
       ws.addEventListener("message", (event) => {
         try {
           const data = JSON.parse(event.data);
+          console.log("[overlay] msg received:", data);  // デバッグ
           // 後方互換: route フィールドがない既存メッセージは経路A として扱う
           const route = data.route ?? "a";
           if (data.original !== undefined && data.translated !== undefined) {
@@ -218,11 +221,13 @@
       });
 
       ws.addEventListener("close", () => {
+        console.log("[overlay] WebSocket closed");
         statusIndicator.classList.remove("connected");
         setTimeout(connect, 3000);
       });
 
-      ws.addEventListener("error", () => {
+      ws.addEventListener("error", (e) => {
+        console.error("[overlay] WebSocket error:", e);
         ws.close();
       });
     }
