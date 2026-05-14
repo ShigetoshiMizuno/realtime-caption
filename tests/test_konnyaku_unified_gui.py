@@ -823,3 +823,69 @@ class TestSliderCallbackFunctions:
             app._on_route_b_volume_change(None, 1.0, None)
             app._on_route_a_gain_mode_change(None, "manual", None)
             app._on_route_b_gain_mode_change(None, "auto", None)
+
+
+# ---------------------------------------------------------------------------
+# B-11/B-12/B-13: 削除済みUI要素の不在確認 (v2 仕様変更)
+# ---------------------------------------------------------------------------
+
+class TestB11B12B13UIRemoval:
+    """B-11/B-12/B-13 の削除済みUI要素が _build_gui に存在しないこと。
+
+    v2 仕様変更（2026-05-14）:
+    - B-11: プリセットボタン (TAG_KONNYAKU_PRESET_BTN) 削除
+    - B-12: ゲインモードコンボ (TAG_ROUTE_A/B_GAIN_MODE) 削除
+    - B-13: ゲイン倍率スライダー (TAG_ROUTE_A/B_GAIN_SLIDER) 削除
+    """
+
+    def _get_build_gui_source(self) -> str:
+        import inspect
+        return inspect.getsource(app._build_gui)
+
+    # --- B-11: プリセットボタン ---
+
+    def test_konnyaku_preset_btn_not_in_build_gui(self):
+        """TAG_KONNYAKU_PRESET_BTN の add_button が _build_gui から削除されていること。"""
+        source = self._get_build_gui_source()
+        assert "TAG_KONNYAKU_PRESET_BTN" not in source, (
+            "_build_gui に TAG_KONNYAKU_PRESET_BTN の add_button が残っている (B-11)"
+        )
+
+    def test_konnyaku_preset_callback_not_in_build_gui(self):
+        """_on_konnyaku_preset_click コールバックが _build_gui から削除されていること。"""
+        source = self._get_build_gui_source()
+        assert "_on_konnyaku_preset_click" not in source, (
+            "_build_gui に _on_konnyaku_preset_click の参照が残っている (B-11)"
+        )
+
+    # --- B-12: ゲインモードコンボ ---
+
+    def test_route_a_gain_mode_combo_not_in_build_gui(self):
+        """系統1 ゲインモードコンボ (TAG_ROUTE_A_GAIN_MODE) が _build_gui から削除されていること。"""
+        source = self._get_build_gui_source()
+        assert "TAG_ROUTE_A_GAIN_MODE" not in source, (
+            "_build_gui に TAG_ROUTE_A_GAIN_MODE の add_combo が残っている (B-12)"
+        )
+
+    def test_route_b_gain_mode_combo_not_in_build_gui(self):
+        """系統2 ゲインモードコンボ (TAG_ROUTE_B_GAIN_MODE) が _build_gui から削除されていること。"""
+        source = self._get_build_gui_source()
+        assert "TAG_ROUTE_B_GAIN_MODE" not in source, (
+            "_build_gui に TAG_ROUTE_B_GAIN_MODE の add_combo が残っている (B-12)"
+        )
+
+    # --- B-13: ゲイン倍率スライダー ---
+
+    def test_route_a_gain_slider_not_in_build_gui(self):
+        """系統1 ゲイン倍率スライダー (TAG_ROUTE_A_GAIN_SLIDER) が _build_gui から削除されていること。"""
+        source = self._get_build_gui_source()
+        assert "TAG_ROUTE_A_GAIN_SLIDER" not in source, (
+            "_build_gui に TAG_ROUTE_A_GAIN_SLIDER の add_slider_float が残っている (B-13)"
+        )
+
+    def test_route_b_gain_slider_not_in_build_gui(self):
+        """系統2 ゲイン倍率スライダー (TAG_ROUTE_B_GAIN_SLIDER) が _build_gui から削除されていること。"""
+        source = self._get_build_gui_source()
+        assert "TAG_ROUTE_B_GAIN_SLIDER" not in source, (
+            "_build_gui に TAG_ROUTE_B_GAIN_SLIDER の add_slider_float が残っている (B-13)"
+        )
