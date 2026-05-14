@@ -66,6 +66,7 @@ class TestSaveSettingsIncludesRoutes:
         dpg_mock = _make_dpg_mock(widget_values)
 
         with patch.object(_app_module, "dpg", dpg_mock), \
+             patch.object(_app_module, "_dpg_ready", True), \
              patch("builtins.open", fake_open), \
              patch.object(_app_module, "json") as json_mock:
 
