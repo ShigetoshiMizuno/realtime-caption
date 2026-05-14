@@ -811,7 +811,7 @@ def _on_result_route_b_dispatch(original: str, translated: str) -> None:
 def _create_konnyaku_system() -> None:
     """アプリ起動時に MultiCaptionSystem を生成（常駐モデル）。
 
-    デフォルト RouteConfig で生成。GUI 操作時に set_input_device 等で更新される。
+    保存設定 (settings.json) があればそれを使う。なければデフォルト RouteConfig。
     callback はクロージャ経由で遅延バインド。
     """
     global _konnyaku_system
@@ -823,38 +823,69 @@ def _create_konnyaku_system() -> None:
         print("[WARN] 利用可能なデバイスがありません", flush=True)
         return
 
+    # 保存設定をロード
+    saved = _load_settings()
+    route_a_saved = saved.get("route_a", {})
+    route_b_saved = saved.get("route_b", {})
+
     # デフォルトデバイス選択
     device_labels = [_device_label(d) for d in _devices]
     loopback_label = next((lbl for lbl in device_labels if "[Loopback]" in lbl), None)
     non_loopback_label = next((lbl for lbl in device_labels if "[Loopback]" not in lbl), None)
 
-    route_a_device = next(
-        (d for d in _devices if _device_label(d) == (loopback_label or device_labels[0])),
-        _devices[0],
-    )
-    route_b_device = next(
-        (d for d in _devices if _device_label(d) == (non_loopback_label or device_labels[0])),
-        _devices[0],
-    )
+    # 保存値があればそれを優先、なければデフォルト
+    saved_a_label = route_a_saved.get("device", "")
+    if saved_a_label and saved_a_label in device_labels:
+        route_a_device = next((d for d in _devices if _device_label(d) == saved_a_label), None)
+        print(f"[INFO] _create_konnyaku_system: route_a using saved device '{saved_a_label}'", flush=True)
+    else:
+        route_a_device = next(
+            (d for d in _devices if _device_label(d) == (loopback_label or device_labels[0])),
+            _devices[0],
+        )
+        print(f"[INFO] _create_konnyaku_system: route_a using default '{_device_label(route_a_device)}'", flush=True)
+
+    saved_b_label = route_b_saved.get("device", "")
+    if saved_b_label and saved_b_label in device_labels:
+        route_b_device = next((d for d in _devices if _device_label(d) == saved_b_label), None)
+        print(f"[INFO] _create_konnyaku_system: route_b using saved device '{saved_b_label}'", flush=True)
+    else:
+        route_b_device = next(
+            (d for d in _devices if _device_label(d) == (non_loopback_label or device_labels[0])),
+            _devices[0],
+        )
+        print(f"[INFO] _create_konnyaku_system: route_b using default '{_device_label(route_b_device)}'", flush=True)
 
     cfg = {**_config}
     cfg.setdefault("translation", {})["translation_model"] = "openai-realtime"
 
+    # 翻訳先言語（保存値があれば反映）
+    lang_codes = get_language_codes()
+    lang_names = get_language_display_names()
+    saved_a_lang_name = route_a_saved.get("lang", "")
+    a_lang_code = "ja"
+    if saved_a_lang_name in lang_names:
+        a_lang_code = lang_codes[lang_names.index(saved_a_lang_name)]
+    saved_b_lang_name = route_b_saved.get("lang", "")
+    b_lang_code = "en"
+    if saved_b_lang_name in lang_names:
+        b_lang_code = lang_codes[lang_names.index(saved_b_lang_name)]
+
     route_a_cfg = RouteConfig(
         route_id="a",
         input_device_info=route_a_device,
-        target_language_code="ja",
-        audio_output_enabled=False,
+        target_language_code=a_lang_code,
+        audio_output_enabled=bool(route_a_saved.get("output_enabled", False)),
         output_device_index=None,
-        output_volume=1.0,
+        output_volume=float(route_a_saved.get("output_volume", 1.0)),
     )
     route_b_cfg = RouteConfig(
         route_id="b",
         input_device_info=route_b_device,
-        target_language_code="en",
-        audio_output_enabled=True,
+        target_language_code=b_lang_code,
+        audio_output_enabled=bool(route_b_saved.get("output_enabled", True)),
         output_device_index=None,
-        output_volume=1.0,
+        output_volume=float(route_b_saved.get("output_volume", 1.0)),
     )
 
     _konnyaku_system = MultiCaptionSystem(
@@ -1022,6 +1053,21 @@ def _on_konnyaku_start_stop_click():
                 _konnyaku_system.route_a_system.verbose = True
             if _konnyaku_system.route_b_system is not None:
                 _konnyaku_system.route_b_system.verbose = True
+
+        # 開始直前に GUI の最新値で _device_info / target_language を同期
+        # (常駐モデルで GUI 変更がコールバック未経由のとき、ここで確実に反映)
+        if _konnyaku_system.route_a_system is not None:
+            a_label = dpg.get_value(TAG_ROUTE_A_DEVICE_COMBO) if dpg.does_item_exist(TAG_ROUTE_A_DEVICE_COMBO) else ""
+            a_dev = next((d for d in _devices if _device_label(d) == a_label), None)
+            if a_dev is not None:
+                _konnyaku_system.route_a_system._device_info = a_dev
+                print(f"[INFO] route_a device synced from GUI: '{a_label}' (index={a_dev.get('index')})", flush=True)
+        if _konnyaku_system.route_b_system is not None:
+            b_label = dpg.get_value(TAG_ROUTE_B_DEVICE_COMBO) if dpg.does_item_exist(TAG_ROUTE_B_DEVICE_COMBO) else ""
+            b_dev = next((d for d in _devices if _device_label(d) == b_label), None)
+            if b_dev is not None:
+                _konnyaku_system.route_b_system._device_info = b_dev
+                print(f"[INFO] route_b device synced from GUI: '{b_label}' (index={b_dev.get('index')})", flush=True)
 
         # 有効な系統だけ start_route（常駐モデル: start_all でなく個別制御）
         if route_a_enabled and _konnyaku_system.route_a_system is not None:
