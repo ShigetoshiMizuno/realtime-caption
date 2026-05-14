@@ -531,6 +531,9 @@ class TestAutoKonnyakuArgparse:
         """
         main(--auto-konnyaku=N) で _auto_konnyaku_runner を target にしたスレッドが
         起動されること。
+
+        Thread.__init__ をモニタリングして捕捉し、Thread.start はモックして実際には
+        スレッドを起動しない（dpg クラッシュを防ぐため）。
         """
         started_threads: list[threading.Thread] = []
 
@@ -541,9 +544,11 @@ class TestAutoKonnyakuArgparse:
             # AutoKonnyakuRunner スレッドだけ捕捉
             if getattr(self_t, "name", "") == "AutoKonnyakuRunner":
                 started_threads.append(self_t)
+                # start() をノーオペレーションに差し替えてスレッドを実際には起動しない
+                self_t.start = MagicMock()
 
         mock_dpg = MagicMock()
-        # is_dearpygui_running() を1回だけ True にして即終了させる
+        # is_dearpygui_running() を False にして即終了させる
         mock_dpg.is_dearpygui_running.return_value = False
 
         with (
