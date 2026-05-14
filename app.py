@@ -969,14 +969,8 @@ def _on_route_a_device_change(sender, app_data, user_data) -> None:
     if new_device is None:
         return
 
-    from main import RouteState
     route_a = _konnyaku_system.route_a_system
-    was_running = route_a.state == RouteState.RUNNING
-    if was_running:
-        route_a.stop()
-    route_a._device_info = new_device
-    if was_running:
-        route_a.start()
+    route_a.set_input_device(new_device)
 
 
 def _on_route_b_device_change(sender, app_data, user_data) -> None:
@@ -989,14 +983,8 @@ def _on_route_b_device_change(sender, app_data, user_data) -> None:
     if new_device is None:
         return
 
-    from main import RouteState
     route_b = _konnyaku_system.route_b_system
-    was_running = route_b.state == RouteState.RUNNING
-    if was_running:
-        route_b.stop()
-    route_b._device_info = new_device
-    if was_running:
-        route_b.start()
+    route_b.set_input_device(new_device)
 
 
 def _on_konnyaku_start_stop_click():

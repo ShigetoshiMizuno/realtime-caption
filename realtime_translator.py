@@ -150,8 +150,11 @@ class RealtimeTranslator:
         WS 接続を切断する。
 
         接続を切断してタスクをキャンセルする（idempotent）。
-        次回 connect() が呼べるように内部状態（_stop_event, _task, _future, _audio_queue）を
-        None リセットする。
+        次回 connect() が呼べるように内部状態（_stop_event, _task, _future, _audio_queue,
+        _thread）を None リセットする。
+
+        C-2: _future（run_coroutine_threadsafe の戻り値）が未完了なら cancel する。
+        W-3: _thread（別スレッドでループを起動した場合）を join してからリセットする。
         """
         if self._loop is not None:
             if self._stop_event is not None and self._loop.is_running():
@@ -160,6 +163,11 @@ class RealtimeTranslator:
                 self._loop.call_soon_threadsafe(self._task.cancel)
             if self._future is not None and not self._future.done():
                 self._future.cancel()
+
+        # W-3: 別スレッドでループを起動していた場合は join してスレッドの終了を待つ
+        if self._thread is not None and self._thread.is_alive():
+            self._thread.join(timeout=2.0)
+        self._thread = None
 
         # 次回 connect() で再初期化できるように内部状態をリセット
         self._stop_event = None

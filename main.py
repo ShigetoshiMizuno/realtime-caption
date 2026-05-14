@@ -910,6 +910,24 @@ class CaptionSystem:
         self._output_device_index = device_index
         self._audio_output_mode = True
 
+    def set_input_device(self, device_info: dict) -> None:
+        """入力デバイスを動的に変更する (C-4 対応)。
+
+        稼働中なら stop → device 更新 → start で再起動。
+        停止中なら _device_info / _recorder のみ更新。
+
+        Parameters
+        ----------
+        device_info: 新しい入力デバイス情報（list_audio_devices() が返す dict 形式）
+        """
+        was_running = self.state == RouteState.RUNNING
+        if was_running:
+            self.stop()
+        self._device_info = device_info
+        self._recorder = None  # recorder クリア（次回 start() で再生成）
+        if was_running:
+            self.start()
+
     def _on_audio_delta(self, pcm16_bytes: bytes) -> None:
         """RealtimeTranslator から音声出力チャンクを受け取るコールバック。"""
         with self._audio_stream_lock:

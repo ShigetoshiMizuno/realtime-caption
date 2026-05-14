@@ -394,7 +394,11 @@ class TestInputDeviceChangeCallbackB15:
         )
 
     def test_route_a_device_change_restarts_route_when_running(self):
-        """稼働中に系統1 入力デバイス変更で stop() + start() が呼ばれること（B-15）。"""
+        """稼働中に系統1 入力デバイス変更で set_input_device() が呼ばれること（B-15/C-4）。
+
+        C-4 対応: app.py は直接 stop/start を呼ぶのではなく、
+        CaptionSystem.set_input_device() 公開メソッドに委譲する。
+        """
         from main import RouteState
 
         fake_devices = _fake_devices()
@@ -414,11 +418,14 @@ class TestInputDeviceChangeCallbackB15:
                 sender=None, app_data=new_label, user_data=None
             )
 
-        mock_route_a.stop.assert_called_once()
-        mock_route_a.start.assert_called_once()
+        mock_route_a.set_input_device.assert_called_once_with(new_device)
 
     def test_route_a_device_change_updates_device_info(self):
-        """系統1 入力デバイス変更時に _device_info が新しいデバイスに更新されること（B-15）。"""
+        """系統1 入力デバイス変更時に set_input_device() が新しいデバイスで呼ばれること（B-15/C-4）。
+
+        C-4 対応: プライベート属性 _device_info への直書きをやめ、
+        set_input_device() 公開メソッド経由で更新する。
+        """
         from main import RouteState
 
         fake_devices = _fake_devices()
@@ -438,15 +445,18 @@ class TestInputDeviceChangeCallbackB15:
                 sender=None, app_data=new_label, user_data=None
             )
 
-        assert mock_route_a._device_info == new_device, (
-            f"_device_info が新しいデバイスに更新されていない: {mock_route_a._device_info}"
-        )
+        mock_route_a.set_input_device.assert_called_once_with(new_device)
 
     def test_route_a_device_change_no_restart_when_idle(self):
-        """IDLE 状態のとき、デバイス変更で stop/start は呼ばれないこと（デバイス更新のみ）。"""
+        """IDLE 状態のとき、デバイス変更で set_input_device() が呼ばれること（デバイス更新のみ）。
+
+        C-4 対応: 稼働状態を問わず set_input_device() を呼ぶ。
+        内部の stop/start 判定は set_input_device() が担う。
+        """
         from main import RouteState
 
         fake_devices = _fake_devices()
+        new_device = fake_devices[1]  # "Test Microphone"
         new_label = "Test Microphone"
 
         mock_route_a = MagicMock()
@@ -462,11 +472,14 @@ class TestInputDeviceChangeCallbackB15:
                 sender=None, app_data=new_label, user_data=None
             )
 
-        mock_route_a.stop.assert_not_called()
-        mock_route_a.start.assert_not_called()
+        mock_route_a.set_input_device.assert_called_once_with(new_device)
 
     def test_route_b_device_change_restarts_route_when_running(self):
-        """稼働中に系統2 入力デバイス変更で stop() + start() が呼ばれること（B-15）。"""
+        """稼働中に系統2 入力デバイス変更で set_input_device() が呼ばれること（B-15/C-4）。
+
+        C-4 対応: app.py は直接 stop/start を呼ぶのではなく、
+        CaptionSystem.set_input_device() 公開メソッドに委譲する。
+        """
         from main import RouteState
 
         fake_devices = _fake_devices()
@@ -485,8 +498,9 @@ class TestInputDeviceChangeCallbackB15:
                 sender=None, app_data=new_label, user_data=None
             )
 
-        mock_route_b.stop.assert_called_once()
-        mock_route_b.start.assert_called_once()
+        # "Test Loopback Device [Loopback]" ラベルは fake_devices[0] に対応する
+        expected_device = fake_devices[0]
+        mock_route_b.set_input_device.assert_called_once_with(expected_device)
 
     def test_route_a_device_change_no_system_does_not_crash(self):
         """_konnyaku_system が None の場合、デバイス変更が例外なく終了すること。"""
