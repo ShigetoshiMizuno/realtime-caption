@@ -27,26 +27,22 @@ import app  # noqa: E402
 class TestRouteLabels:
     """GUI 上の系統名が正しいことを定数・ソース検索で確認する。"""
 
-    def test_route_a_label_contains_aitehitomi(self):
-        """経路A のラベルに「相手→自分」または「聞き取り字幕」が含まれること。
-
-        _build_gui() の add_text 呼び出し部分を文字列検索で確認する。
-        """
+    def test_route_a_label_contains_keitou1(self):
+        """系統1 のラベルに「系統1」または「相手→自分」または「聞き取り字幕」が含まれること。"""
         import inspect
         source = inspect.getsource(app._build_gui)
-        # 「相手→自分」または「聞き取り字幕」の表記が含まれること
-        has_aitehitomi = "相手→自分" in source or "相手" in source
-        assert has_aitehitomi, (
-            "_build_gui に「相手→自分」や「相手」の系統名が含まれていない"
+        has_keitou1 = "系統1" in source or "相手→自分" in source or "聞き取り字幕" in source
+        assert has_keitou1, (
+            "_build_gui に「系統1」「相手→自分」「聞き取り字幕」の系統名が含まれていない"
         )
 
-    def test_route_b_label_contains_jibunkaraate(self):
-        """経路B のラベルに「自分→相手」または「同時通訳」が含まれること。"""
+    def test_route_b_label_contains_keitou2(self):
+        """系統2 のラベルに「系統2」または「自分→相手」または「同時通訳」が含まれること。"""
         import inspect
         source = inspect.getsource(app._build_gui)
-        has_jibunkaraate = "自分→相手" in source or "同時通訳" in source
-        assert has_jibunkaraate, (
-            "_build_gui に「自分→相手」や「同時通訳」の系統名が含まれていない"
+        has_keitou2 = "系統2" in source or "自分→相手" in source or "同時通訳" in source
+        assert has_keitou2, (
+            "_build_gui に「系統2」「自分→相手」「同時通訳」の系統名が含まれていない"
         )
 
     def test_route_a_old_label_not_in_build_gui(self):
@@ -272,8 +268,8 @@ class TestRouteCallbackPrefixes:
 
         return captured.get("on_result_a"), captured.get("on_result_b")
 
-    def test_on_result_route_a_uses_aite_prefix(self):
-        """on_result_route_a が「[相手]」プレフィックスを使うこと。"""
+    def test_on_result_route_a_uses_keitou1_prefix(self):
+        """on_result_route_a が「[系統1 入力]」「[系統1 出力]」プレフィックスを使うこと。"""
         on_result_a, _ = self._get_on_result_callbacks()
         assert on_result_a is not None, "on_result_a が MultiCaptionSystem に渡されていない"
 
@@ -282,15 +278,15 @@ class TestRouteCallbackPrefixes:
             on_result_a("Hello", "こんにちは")
 
         assert len(enqueued) == 1
-        assert "[相手]" in enqueued[0].get("original", ""), (
-            f"on_result_a の original が「[相手]」プレフィックスでない: {enqueued[0]}"
+        assert "[系統1 入力]" in enqueued[0].get("original", ""), (
+            f"on_result_a の original が「[系統1 入力]」プレフィックスでない: {enqueued[0]}"
         )
-        assert "[相手]" in enqueued[0].get("translated", ""), (
-            f"on_result_a の translated が「[相手]」プレフィックスでない: {enqueued[0]}"
+        assert "[系統1 出力]" in enqueued[0].get("translated", ""), (
+            f"on_result_a の translated が「[系統1 出力]」プレフィックスでない: {enqueued[0]}"
         )
 
-    def test_on_result_route_b_uses_jibun_prefix(self):
-        """on_result_route_b が「[自分]」プレフィックスを使うこと。"""
+    def test_on_result_route_b_uses_keitou2_prefix(self):
+        """on_result_route_b が「[系統2 入力]」「[系統2 出力]」プレフィックスを使うこと。"""
         _, on_result_b = self._get_on_result_callbacks()
         assert on_result_b is not None, "on_result_b が MultiCaptionSystem に渡されていない"
 
@@ -299,11 +295,11 @@ class TestRouteCallbackPrefixes:
             on_result_b("I speak", "翻訳結果")
 
         assert len(enqueued) == 1
-        assert "[自分]" in enqueued[0].get("original", ""), (
-            f"on_result_b の original が「[自分]」プレフィックスでない: {enqueued[0]}"
+        assert "[系統2 入力]" in enqueued[0].get("original", ""), (
+            f"on_result_b の original が「[系統2 入力]」プレフィックスでない: {enqueued[0]}"
         )
-        assert "[自分]" in enqueued[0].get("translated", ""), (
-            f"on_result_b の translated が「[自分]」プレフィックスでない: {enqueued[0]}"
+        assert "[系統2 出力]" in enqueued[0].get("translated", ""), (
+            f"on_result_b の translated が「[系統2 出力]」プレフィックスでない: {enqueued[0]}"
         )
 
     def test_on_result_route_a_old_prefix_not_used(self):

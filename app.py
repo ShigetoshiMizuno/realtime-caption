@@ -834,12 +834,12 @@ def _on_konnyaku_start_stop_click():
 
         # GUI ログに翻訳結果を出力するコールバック（経路 A / B 別）
         def _on_result_route_a(original: str, translated: str) -> None:
-            """相手→自分 経路の翻訳結果を GUI ログに追加。"""
+            """系統1（相手→自分） 経路の翻訳結果を GUI ログに追加。"""
             ts = datetime.now().strftime("%H:%M:%S")
             _log_entries.append({
                 "ts": ts,
-                "original": (f"[相手] {original}" if original else ""),
-                "translated": (f"[相手] {translated}" if translated else ""),
+                "original": (f"[系統1 入力] {original}" if original else ""),
+                "translated": (f"[系統1 出力] {translated}" if translated else ""),
                 "route": "a",
             })
             if len(_log_entries) > 200:
@@ -847,17 +847,17 @@ def _on_konnyaku_start_stop_click():
             _enqueue(
                 "append_log",
                 ts=ts,
-                original=(f"[相手] {original}" if original else ""),
-                translated=(f"[相手] {translated}" if translated else ""),
+                original=(f"[系統1 入力] {original}" if original else ""),
+                translated=(f"[系統1 出力] {translated}" if translated else ""),
             )
 
         def _on_result_route_b(original: str, translated: str) -> None:
-            """自分→相手 経路の翻訳結果を GUI ログに追加。"""
+            """系統2（自分→相手） 経路の翻訳結果を GUI ログに追加。"""
             ts = datetime.now().strftime("%H:%M:%S")
             _log_entries.append({
                 "ts": ts,
-                "original": (f"[自分] {original}" if original else ""),
-                "translated": (f"[自分] {translated}" if translated else ""),
+                "original": (f"[系統2 入力] {original}" if original else ""),
+                "translated": (f"[系統2 出力] {translated}" if translated else ""),
                 "route": "b",
             })
             if len(_log_entries) > 200:
@@ -865,8 +865,8 @@ def _on_konnyaku_start_stop_click():
             _enqueue(
                 "append_log",
                 ts=ts,
-                original=(f"[自分] {original}" if original else ""),
-                translated=(f"[自分] {translated}" if translated else ""),
+                original=(f"[系統2 入力] {original}" if original else ""),
+                translated=(f"[系統2 出力] {translated}" if translated else ""),
             )
 
         _konnyaku_system = MultiCaptionSystem(
@@ -1750,7 +1750,7 @@ def _build_gui():
 
         # --- 翻訳こんにゃくモード（メインコンテンツ） ---
         # 旧: collapsing_header（折りたたみ）→ 常時展開に昇格（Issue #38 GUI 統一）
-        dpg.add_text("双方向同時翻訳  [相手] You speak, I hear  /  [自分] I speak, they hear")
+        dpg.add_text("双方向同時翻訳  [系統1] 相手→自分（聞き取り字幕） / [系統2] 自分→相手（同時通訳）")
         with dpg.group(tag=TAG_KONNYAKU_SECTION):
             # プリセットボタン + 開始ボタン
             with dpg.group(horizontal=True):
@@ -1772,8 +1772,8 @@ def _build_gui():
 
             _lang_display_names = get_language_display_names()
 
-            # --- 相手→自分（聞き取り字幕）経路 ---
-            dpg.add_text("相手→自分（聞き取り字幕）  [相手] You speak, I hear")
+            # --- 系統1: 相手→自分（聞き取り字幕）経路 ---
+            dpg.add_text("【系統1】相手→自分（聞き取り字幕）  You speak, I hear")
             with dpg.group(horizontal=True):
                 dpg.add_text("入力デバイス:")
                 dpg.add_combo(
@@ -1851,8 +1851,8 @@ def _build_gui():
 
             dpg.add_separator()
 
-            # --- 自分→相手（同時通訳）経路 ---
-            dpg.add_text("自分→相手（同時通訳）  [自分] I speak, they hear")
+            # --- 系統2: 自分→相手（同時通訳）経路 ---
+            dpg.add_text("【系統2】自分→相手（同時通訳）  I speak, they hear")
             with dpg.group(horizontal=True):
                 dpg.add_text("入力デバイス:")
                 dpg.add_combo(
