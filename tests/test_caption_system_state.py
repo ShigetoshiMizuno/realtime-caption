@@ -273,3 +273,143 @@ class TestShutdownThinWrapper:
         cs.shutdown()
         cs.shutdown()
         assert cs.state == RouteState.IDLE
+
+
+# ---------------------------------------------------------------------------
+# PR-2: CaptionSystem.start() テスト
+# ---------------------------------------------------------------------------
+
+def _make_realtime_caption_config(api_key: str = "sk-test-fake-0000000000000000") -> dict:
+    """openai-realtime モード用の最小限設定 dict（フェイク値のみ使用）。"""
+    return {
+        "translation": {
+            "translation_model": "openai-realtime",
+        },
+        "openai": {
+            "api_key": api_key,
+        },
+        "openai_realtime": {
+            "target_language_code": "ja",
+            "model": "gpt-realtime-translate",
+            "connect_timeout": 10,
+            "reconnect_max_attempts": 5,
+            "reconnect_backoff_base": 1.5,
+            "max_session_minutes": 60,
+            "audio_output": {},
+        },
+        "output": {
+            "log_dir": ".",
+        },
+        "websocket": {
+            "host": "127.0.0.1",
+            "port": 18765,
+        },
+    }
+
+
+def _make_fake_device_info() -> dict:
+    return {
+        "index": 0,
+        "name": "FakeDevice",
+        "defaultSampleRate": 44100,
+        "maxInputChannels": 2,
+    }
+
+
+class TestCaptionSystemStartMethod:
+    """PR-2: CaptionSystem.start() の動作テスト。"""
+
+    def test_init_does_not_check_api_key(self):
+        """__init__ で API キー未設定でも ValueError が発生しないこと（PR-2 仕様）。
+
+        PR-2 以前: api_key 未設定で ValueError が上がっていた。
+        PR-2 以降: __init__ ではチェックせず、start() 時に遅延チェックする。
+        """
+        config = _make_realtime_caption_config(api_key="")
+        device_info = _make_fake_device_info()
+
+        with patch("realtime_translator.RealtimeTranslator"):
+            # ValueError が発生しないこと
+            from main import CaptionSystem
+            cs = CaptionSystem(
+                config=config,
+                device_info=device_info,
+                model_name="tiny",
+            )
+        assert cs is not None
+
+    def test_realtime_translator_lazy_init(self):
+        """__init__ 直後は _realtime_translator が None であること（lazy init）。
+
+        start() を呼ぶ前は RealtimeTranslator インスタンスが生成されていないことを確認。
+        """
+        config = _make_realtime_caption_config(api_key="sk-test-fake-0000000000000000")
+        device_info = _make_fake_device_info()
+
+        from main import CaptionSystem
+        with patch("realtime_translator.RealtimeTranslator"):
+            cs = CaptionSystem(
+                config=config,
+                device_info=device_info,
+                model_name="tiny",
+            )
+
+        # __init__ 直後は lazy init のため None
+        assert cs._realtime_translator is None, (
+            "__init__ 直後に _realtime_translator が None でない（lazy init が実装されていない）"
+        )
+
+    def test_start_with_no_api_key_transitions_to_error(self):
+        """start() で API キー未設定なら state=ERROR + on_error コールバック呼び出し。"""
+        from main import CaptionSystem, RouteState
+
+        config = _make_realtime_caption_config(api_key="")
+        device_info = _make_fake_device_info()
+        error_messages = []
+
+        with patch("realtime_translator.RealtimeTranslator"):
+            cs = CaptionSystem(
+                config=config,
+                device_info=device_info,
+                model_name="tiny",
+                on_realtime_error_external=lambda msg: error_messages.append(msg),
+            )
+
+        cs.start()
+
+        assert cs.state == RouteState.ERROR, (
+            f"API キー未設定時に state が ERROR にならない（actual: {cs.state}）"
+        )
+        assert len(error_messages) == 1, (
+            f"on_realtime_error_external が1回呼ばれるはずが {len(error_messages)} 回呼ばれた"
+        )
+
+    def test_start_idempotent_when_running(self):
+        """start() を RUNNING 状態で呼んでも no-op（state は RUNNING のまま）。"""
+        from main import CaptionSystem, RouteState
+
+        # _make_minimal_caption_system を使って RUNNING 状態を模擬
+        cs = _make_minimal_caption_system()
+        cs._state = RouteState.RUNNING
+        cs._realtime_mode = False  # 非 realtime モードで最小化
+
+        # start() が定義されていない場合は AttributeError で fail する
+        cs.start()
+
+        assert cs.state == RouteState.RUNNING, (
+            f"RUNNING 状態で start() を呼んだ後に state が変化した（actual: {cs.state}）"
+        )
+
+    def test_start_idempotent_when_starting(self):
+        """start() を STARTING 状態で呼んでも no-op（state は STARTING のまま）。"""
+        from main import CaptionSystem, RouteState
+
+        cs = _make_minimal_caption_system()
+        cs._state = RouteState.STARTING
+        cs._realtime_mode = False
+
+        cs.start()
+
+        assert cs.state == RouteState.STARTING, (
+            f"STARTING 状態で start() を呼んだ後に state が変化した（actual: {cs.state}）"
+        )
