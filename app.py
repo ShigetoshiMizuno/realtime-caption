@@ -532,6 +532,86 @@ def _on_route_b_volume_change(sender, app_data, user_data):
         pass
 
 
+def _on_route_a_output_device_change(sender, app_data, user_data):
+    """経路A 出力デバイス変更時。動作中の系統に即反映。"""
+    if _konnyaku_system is None or _konnyaku_system.route_a_system is None:
+        return
+    label = str(app_data)
+    if not label or label == "(なし)":
+        index = None
+    else:
+        out_devices = list_audio_devices(device_type="output")
+        matched = find_device_by_name(label, out_devices)
+        index = matched["index"] if matched else None
+    try:
+        _konnyaku_system.route_a_system.set_output_device(index)
+    except Exception as e:
+        print(f"[ERROR] route_a 出力デバイス変更失敗: {e}", flush=True)
+
+
+def _on_route_b_output_device_change(sender, app_data, user_data):
+    """経路B 出力デバイス変更時。動作中の系統に即反映。"""
+    if _konnyaku_system is None or _konnyaku_system.route_b_system is None:
+        return
+    label = str(app_data)
+    if not label or label == "(なし)":
+        index = None
+    else:
+        out_devices = list_audio_devices(device_type="output")
+        matched = find_device_by_name(label, out_devices)
+        index = matched["index"] if matched else None
+    try:
+        _konnyaku_system.route_b_system.set_output_device(index)
+    except Exception as e:
+        print(f"[ERROR] route_b 出力デバイス変更失敗: {e}", flush=True)
+
+
+def _on_route_a_output_enable_change(sender, app_data, user_data):
+    """経路A 音声出力 ON/OFF 変更時。稼働中なら即反映。"""
+    if _konnyaku_system is None or _konnyaku_system.route_a_system is None:
+        return
+    enabled = bool(app_data)
+    if enabled:
+        label = (dpg.get_value(TAG_ROUTE_A_OUTPUT_DEVICE_COMBO)
+                 if dpg.does_item_exist(TAG_ROUTE_A_OUTPUT_DEVICE_COMBO) else "")
+        if label and label != "(なし)":
+            out_devices = list_audio_devices(device_type="output")
+            matched = find_device_by_name(label, out_devices)
+            if matched:
+                try:
+                    _konnyaku_system.route_a_system.set_output_device(matched["index"])
+                except Exception as e:
+                    print(f"[ERROR] route_a 出力 ON 失敗: {e}", flush=True)
+    else:
+        try:
+            _konnyaku_system.route_a_system.set_output_device(None)
+        except Exception as e:
+            print(f"[ERROR] route_a 出力 OFF 失敗: {e}", flush=True)
+
+
+def _on_route_b_output_enable_change(sender, app_data, user_data):
+    """経路B 音声出力 ON/OFF 変更時。稼働中なら即反映。"""
+    if _konnyaku_system is None or _konnyaku_system.route_b_system is None:
+        return
+    enabled = bool(app_data)
+    if enabled:
+        label = (dpg.get_value(TAG_ROUTE_B_OUTPUT_DEVICE_COMBO)
+                 if dpg.does_item_exist(TAG_ROUTE_B_OUTPUT_DEVICE_COMBO) else "")
+        if label and label != "(なし)":
+            out_devices = list_audio_devices(device_type="output")
+            matched = find_device_by_name(label, out_devices)
+            if matched:
+                try:
+                    _konnyaku_system.route_b_system.set_output_device(matched["index"])
+                except Exception as e:
+                    print(f"[ERROR] route_b 出力 ON 失敗: {e}", flush=True)
+    else:
+        try:
+            _konnyaku_system.route_b_system.set_output_device(None)
+        except Exception as e:
+            print(f"[ERROR] route_b 出力 OFF 失敗: {e}", flush=True)
+
+
 def _on_route_a_gain_mode_change(sender, app_data, user_data):
     """経路A ゲインモード（off/manual/auto）コンボ変更時。動作中の系統に即反映。"""
     if _konnyaku_system is None or _konnyaku_system.route_a_system is None:
@@ -1885,6 +1965,7 @@ def _build_gui():
                     tag=TAG_ROUTE_A_OUTPUT_ENABLE,
                     label="有効",
                     default_value=False,
+                    callback=_on_route_a_output_enable_change,
                 )
             with dpg.group(horizontal=True):
                 dpg.add_text("出力デバイス:")
@@ -1893,6 +1974,7 @@ def _build_gui():
                     items=output_device_labels,
                     default_value="(なし)",
                     width=300,
+                    callback=_on_route_a_output_device_change,
                 )
             with dpg.group(horizontal=True):
                 dpg.add_text("出力音量:")
@@ -1970,6 +2052,7 @@ def _build_gui():
                     tag=TAG_ROUTE_B_OUTPUT_ENABLE,
                     label="有効",
                     default_value=True,
+                    callback=_on_route_b_output_enable_change,
                 )
             with dpg.group(horizontal=True):
                 dpg.add_text("出力デバイス:")
@@ -1981,6 +2064,7 @@ def _build_gui():
                         "(なし)",
                     ),
                     width=300,
+                    callback=_on_route_b_output_device_change,
                 )
             with dpg.group(horizontal=True):
                 dpg.add_text("出力音量:")

@@ -944,7 +944,9 @@ class TestSetOutputDevice:
 
         mock_stream_instance = _MM()
 
-        with _patch("main.AudioOutputStream", return_value=mock_stream_instance) as mock_cls:
+        # set_output_device は内部で `from audio_output import AudioOutputStream` するため
+        # audio_output モジュールのクラスをパッチする
+        with _patch("audio_output.AudioOutputStream", return_value=mock_stream_instance) as mock_cls:
             cs.set_output_device(3)
 
         mock_cls.assert_called_once()
@@ -972,7 +974,7 @@ class TestSetOutputDevice:
 
         mock_stream_instance = _MM()
 
-        with _patch("main.AudioOutputStream", return_value=mock_stream_instance) as mock_cls:
+        with _patch("audio_output.AudioOutputStream", return_value=mock_stream_instance) as mock_cls:
             cs.set_output_device(7)
 
         call_kwargs = mock_cls.call_args.kwargs if mock_cls.call_args else {}
@@ -1011,7 +1013,7 @@ class TestSetOutputDevice:
         def _setter():
             for i in range(iterations):
                 try:
-                    with _patch("main.AudioOutputStream", side_effect=_make_stream):
+                    with _patch("audio_output.AudioOutputStream", side_effect=_make_stream):
                         cs.set_output_device(i % 4)
                 except Exception as e:
                     errors.append(e)

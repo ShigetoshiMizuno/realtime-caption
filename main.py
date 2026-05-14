@@ -503,6 +503,8 @@ class CaptionSystem:
         self._agc_envelope: float = 0.0  # 直近の peak 追従値（減衰付き）
         # _capture_thread_body が開いた PyAudio ストリーム（shutdown から stop_stream() で解除）
         self._capture_stream = None
+        # 音声出力ストリームの並行アクセスを保護するロック（set_output_device vs _on_audio_delta）
+        self._audio_stream_lock = threading.Lock()
         # Verbose ログ（STT 結果・翻訳リクエスト・成功失敗を時系列で別ファイルに残す）
         self.verbose: bool = False
         self._verbose_log_path: Path | None = None
@@ -710,10 +712,57 @@ class CaptionSystem:
                 return path
             n += 1
 
+    def set_output_device(self, device_index: "int | None") -> None:
+        """出力デバイスを動的に変更する（稼働中も呼べる、thread-safe）。
+
+        device_index=None: 出力ストリームを停止し、_audio_stream=None にする
+        device_index=int:  既存ストリームを停止し、新デバイスで再生成して start
+        """
+        from audio_output import AudioOutputStream
+        with self._audio_stream_lock:
+            # 既存ストリームを停止
+            old_stream = self._audio_stream
+            self._audio_stream = None  # None に先に設定して _on_audio_delta への write を防ぐ
+
+        if old_stream is not None:
+            try:
+                old_stream.stop()
+            except Exception:
+                pass
+
+        if device_index is None:
+            self._output_device_index = None
+            self._audio_output_mode = False
+            return
+
+        # 共有 PyAudio があればそれを使い、なければローカル生成
+        if self._pa_instance is not None:
+            pa_for_output = self._pa_instance
+            owns_pa = False
+        else:
+            pa_for_output = pyaudio.PyAudio()
+            owns_pa = True
+
+        new_stream = AudioOutputStream(
+            pyaudio_instance=pa_for_output,
+            device_index=device_index,
+            volume=self._output_volume,
+            owns_pa=owns_pa,
+        )
+        new_stream.start()
+
+        with self._audio_stream_lock:
+            self._audio_stream = new_stream
+
+        self._output_device_index = device_index
+        self._audio_output_mode = True
+
     def _on_audio_delta(self, pcm16_bytes: bytes) -> None:
         """RealtimeTranslator から音声出力チャンクを受け取るコールバック。"""
-        if self._audio_stream is not None:
-            self._audio_stream.write(pcm16_bytes)
+        with self._audio_stream_lock:
+            stream = self._audio_stream
+        if stream is not None:
+            stream.write(pcm16_bytes)
 
     def _on_realtime_transcript(self, text: str):
         """RealtimeTranslator から翻訳テキストを受け取るコールバック。

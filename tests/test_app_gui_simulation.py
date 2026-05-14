@@ -896,26 +896,41 @@ class TestRouteToggle:
 class TestOutputDeviceRTReflect:
     """出力デバイスコンボと ON/OFF チェックボックスが稼働中に即反映されること（Issue #51）。"""
 
+    def _find_callback_in_dpg_call(self, source: str, tag_name: str, callback_name: str) -> bool:
+        """_build_gui ソース中で tag_name が登場する dpg.add_* ブロック内に
+        callback=callback_name が含まれるか調べるヘルパー。
+
+        tag=TAG_XXX の行を見つけ、その前後で括弧が閉じるまでの範囲を走査する。
+        """
+        lines = source.splitlines()
+        for idx, line in enumerate(lines):
+            if tag_name not in line:
+                continue
+            # tag= が含まれる行を起点に、前に遡って add_* ( の開始行を見つける
+            start_idx = idx
+            for back in range(idx, max(0, idx - 5), -1):
+                if "dpg.add_" in lines[back]:
+                    start_idx = back
+                    break
+            # start_idx から括弧が閉じるまでを走査
+            depth = 0
+            for j in range(start_idx, min(len(lines), start_idx + 20)):
+                stripped = lines[j].strip()
+                depth += stripped.count("(") - stripped.count(")")
+                if callback_name in stripped:
+                    return True
+                if j > start_idx and depth <= 0:
+                    break
+        return False
+
     def test_route_a_output_device_combo_has_callback(self):
         """_build_gui 内の TAG_ROUTE_A_OUTPUT_DEVICE_COMBO の add_combo に callback が設定されていること。"""
         import inspect
         source = inspect.getsource(app._build_gui)
-        # TAG_ROUTE_A_OUTPUT_DEVICE_COMBO の add_combo ブロックに callback= が含まれていること
-        # ソースを行単位で解析して確認する
-        lines = source.splitlines()
-        in_route_a_combo = False
-        found_callback = False
-        for i, line in enumerate(lines):
-            if "TAG_ROUTE_A_OUTPUT_DEVICE_COMBO" in line and "add_combo" in line:
-                in_route_a_combo = True
-            if in_route_a_combo:
-                if "callback=" in line and "_on_route_a_output_device_change" in line:
-                    found_callback = True
-                    break
-                # 次の add_ 系呼び出しが来たら抜ける（この combo ブロックは終わり）
-                if i > 0 and "add_" in line and "TAG_ROUTE_A_OUTPUT_DEVICE_COMBO" not in line:
-                    break
-        assert found_callback, (
+        found = self._find_callback_in_dpg_call(
+            source, "TAG_ROUTE_A_OUTPUT_DEVICE_COMBO", "_on_route_a_output_device_change"
+        )
+        assert found, (
             "TAG_ROUTE_A_OUTPUT_DEVICE_COMBO の add_combo に "
             "callback=_on_route_a_output_device_change が設定されていない"
         )
@@ -924,19 +939,10 @@ class TestOutputDeviceRTReflect:
         """_build_gui 内の TAG_ROUTE_A_OUTPUT_ENABLE の add_checkbox に callback が設定されていること。"""
         import inspect
         source = inspect.getsource(app._build_gui)
-        lines = source.splitlines()
-        in_route_a_enable = False
-        found_callback = False
-        for i, line in enumerate(lines):
-            if "TAG_ROUTE_A_OUTPUT_ENABLE" in line and "add_checkbox" in line:
-                in_route_a_enable = True
-            if in_route_a_enable:
-                if "callback=" in line and "_on_route_a_output_enable_change" in line:
-                    found_callback = True
-                    break
-                if i > 0 and "add_" in line and "TAG_ROUTE_A_OUTPUT_ENABLE" not in line:
-                    break
-        assert found_callback, (
+        found = self._find_callback_in_dpg_call(
+            source, "TAG_ROUTE_A_OUTPUT_ENABLE", "_on_route_a_output_enable_change"
+        )
+        assert found, (
             "TAG_ROUTE_A_OUTPUT_ENABLE の add_checkbox に "
             "callback=_on_route_a_output_enable_change が設定されていない"
         )
