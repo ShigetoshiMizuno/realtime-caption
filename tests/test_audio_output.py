@@ -339,3 +339,176 @@ class TestAudioOutputStreamTerminate:
         stream.stop()
         stream.stop()
         mock_pa.terminate.assert_called_once()
+
+
+@pytest.mark.skipif(not _MODULE_AVAILABLE, reason="audio_output モジュール未実装")
+class TestAudioOutputStreamSampleRateFallback:
+    """サンプルレートフォールバックとリサンプリング機能のテスト。"""
+
+    def test_start_falls_back_to_device_default_rate_on_failure(self):
+        """24000Hz でオープン失敗時、デバイスの defaultSampleRate にフォールバックすること。"""
+        mock_pa = MagicMock()
+        # 1回目（24000Hz）は例外、2回目（48000Hz）は成功
+        mock_pa.open.side_effect = [
+            Exception("[Errno -9997] Invalid sample rate"),
+            MagicMock(),
+        ]
+        mock_pa.get_device_info_by_index.return_value = {
+            "defaultSampleRate": 48000.0,
+            "name": "CABLE Input (VB-Audio Virtual Cable)",
+        }
+        stream = AudioOutputStream(
+            pyaudio_instance=mock_pa,
+            device_index=21,
+            sample_rate=24000,
+        )
+        stream.start()
+
+        assert stream._stream is not None, "フォールバック後もストリームが開かれるべき"
+        assert stream._output_rate == 48000, (
+            f"フォールバックレートは 48000 のはず、実際: {stream._output_rate}"
+        )
+        assert mock_pa.open.call_count == 2, (
+            f"open は 2 回呼ばれるべき（1回目失敗、2回目成功）、実際: {mock_pa.open.call_count}"
+        )
+        stream.stop()
+
+    def test_start_falls_back_through_all_rates_when_all_fail(self):
+        """全てのサンプルレートで失敗した場合、stream は None のまま。"""
+        mock_pa = MagicMock()
+        mock_pa.open.side_effect = Exception("[Errno -9997] Invalid sample rate")
+        mock_pa.get_device_info_by_index.return_value = {
+            "defaultSampleRate": 48000.0,
+            "name": "CABLE Input (VB-Audio Virtual Cable)",
+        }
+        stream = AudioOutputStream(
+            pyaudio_instance=mock_pa,
+            device_index=21,
+            sample_rate=24000,
+        )
+        stream.start()
+
+        assert stream._stream is None, "全 rate で失敗したとき stream は None のまま"
+        assert not stream._started, "全 rate で失敗したとき _started は False のまま"
+
+    def test_start_tries_48000_and_44100_as_final_fallbacks(self):
+        """デバイス defaultSampleRate が 24000 と同じ場合、最終フォールバックとして 48000Hz を試すこと。"""
+        mock_pa = MagicMock()
+        # 1回目（24000Hz）は失敗、2回目（48000Hz）は成功
+        mock_pa.open.side_effect = [
+            Exception("[Errno -9997] Invalid sample rate"),
+            MagicMock(),
+        ]
+        # defaultSampleRate が 24000 の場合（フォールバック候補なし）
+        mock_pa.get_device_info_by_index.return_value = {
+            "defaultSampleRate": 24000.0,
+            "name": "Some Device",
+        }
+        stream = AudioOutputStream(
+            pyaudio_instance=mock_pa,
+            device_index=5,
+            sample_rate=24000,
+        )
+        stream.start()
+
+        assert stream._stream is not None, "48000Hz フォールバックで成功するはず"
+        assert stream._output_rate == 48000, (
+            f"最終フォールバック 48000Hz になるはず、実際: {stream._output_rate}"
+        )
+        stream.stop()
+
+    def test_output_rate_equals_input_rate_when_open_succeeds_first_try(self):
+        """24000Hz でそのまま開けた場合、_output_rate は 24000 のまま。"""
+        mock_pa = MagicMock()
+        mock_pa.open.return_value = MagicMock()
+        stream = AudioOutputStream(
+            pyaudio_instance=mock_pa,
+            device_index=0,
+            sample_rate=24000,
+        )
+        stream.start()
+
+        assert stream._output_rate == 24000, (
+            f"直接成功時は _output_rate == 24000 のはず、実際: {stream._output_rate}"
+        )
+        stream.stop()
+
+    def test_drain_resamples_when_output_rate_differs_from_input_rate(self):
+        """input_rate(24000) と output_rate(48000) が異なるとき、
+        _drain_loop がリサンプリングして stream.write に渡すこと。
+        24000Hz → 48000Hz のリサンプリングでサンプル数が約 2 倍になる。
+        """
+        import numpy as np
+
+        mock_pa = MagicMock()
+        mock_stream_obj = MagicMock()
+        written_data = []
+        mock_stream_obj.write.side_effect = lambda d: written_data.append(d)
+
+        # 1回目（24000Hz）は失敗、2回目（48000Hz）は成功
+        mock_pa.open.side_effect = [
+            Exception("[Errno -9997] Invalid sample rate"),
+            mock_stream_obj,
+        ]
+        mock_pa.get_device_info_by_index.return_value = {
+            "defaultSampleRate": 48000.0,
+            "name": "CABLE Input (VB-Audio Virtual Cable)",
+        }
+
+        stream = AudioOutputStream(
+            pyaudio_instance=mock_pa,
+            device_index=21,
+            sample_rate=24000,
+        )
+        stream.start()
+        assert stream._output_rate == 48000, "テスト前提: フォールバック後は 48000Hz"
+
+        # 24000Hz 相当の PCM16 データ（960 サンプル = 40ms 分）
+        n_samples_in = 960
+        pcm_in = (np.ones(n_samples_in, dtype=np.int16) * 1000).tobytes()
+        stream.write(pcm_in)
+
+        deadline = time.time() + 3
+        while not written_data and time.time() < deadline:
+            time.sleep(0.05)
+
+        stream.stop()
+
+        assert written_data, "リサンプリング後のデータがストリームに届いていない"
+        out_samples = np.frombuffer(written_data[0], dtype=np.int16)
+        # 48000/24000 = 2 倍のサンプル数になるはず
+        assert len(out_samples) == n_samples_in * 2, (
+            f"リサンプリング後のサンプル数は {n_samples_in * 2} のはず、実際: {len(out_samples)}"
+        )
+
+    def test_no_resample_when_rates_match(self):
+        """input_rate と output_rate が同じとき、データはそのまま stream.write に渡される。"""
+        import numpy as np
+
+        mock_pa = MagicMock()
+        mock_stream_obj = MagicMock()
+        written_data = []
+        mock_stream_obj.write.side_effect = lambda d: written_data.append(d)
+        mock_pa.open.return_value = mock_stream_obj
+
+        stream = AudioOutputStream(
+            pyaudio_instance=mock_pa,
+            device_index=0,
+            sample_rate=24000,
+        )
+        stream.start()
+        assert stream._output_rate == 24000, "テスト前提: 直接成功で 24000Hz"
+
+        original = (np.ones(960, dtype=np.int16) * 2000).tobytes()
+        stream.write(original)
+
+        deadline = time.time() + 3
+        while not written_data and time.time() < deadline:
+            time.sleep(0.05)
+
+        stream.stop()
+
+        assert written_data, "データがストリームに届いていない"
+        assert written_data[0] == original, (
+            "レート一致のとき、データはそのまま渡されるはず（リサンプリングなし）"
+        )
