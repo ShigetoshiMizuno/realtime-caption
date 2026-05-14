@@ -906,10 +906,10 @@ def _on_konnyaku_start_stop_click():
         # 停止ボタン押下: すぐにボタンを「停止中...」+ disabled に切り替え、
         # stop_all はバックグラウンドスレッドで実行して GUI がフリーズしないようにする。
         # 常駐モデル: _konnyaku_system は None にせず保持する。
-        if dpg.does_item_exist(TAG_KONNYAKU_START_BTN):
-            dpg.configure_item(TAG_KONNYAKU_START_BTN, label="停止中...", enabled=False)
-        if dpg.does_item_exist(TAG_STATUS_STATE):
-            dpg.set_value(TAG_STATUS_STATE, "翻訳こんにゃくモード停止中...")
+        _gui_set_label(TAG_KONNYAKU_START_BTN, "停止中...", name="konnyaku_start_btn",
+                       enabled=False)
+        _gui_set_value(TAG_STATUS_STATE, "翻訳こんにゃくモード停止中...",
+                       label="status_state")
 
         def _stop_in_background():
             global _konnyaku_running
@@ -920,14 +920,15 @@ def _on_konnyaku_start_stop_click():
             except Exception as e:
                 print(f"[ERROR] こんにゃく停止失敗: {e}", flush=True)
             finally:
-                if dpg.does_item_exist(TAG_KONNYAKU_START_BTN):
-                    try:
-                        dpg.configure_item(TAG_KONNYAKU_START_BTN, label="開始", enabled=True)
-                    except Exception:
-                        pass
+                try:
+                    _gui_set_label(TAG_KONNYAKU_START_BTN, "開始",
+                                   name="konnyaku_start_btn", enabled=True)
+                except Exception:
+                    pass
                 if dpg.does_item_exist(TAG_STATUS_STATE):
                     try:
-                        dpg.set_value(TAG_STATUS_STATE, "停止しました")
+                        _gui_set_value(TAG_STATUS_STATE, "停止しました",
+                                       label="status_state")
                     except Exception:
                         pass
 
@@ -954,7 +955,8 @@ def _on_konnyaku_start_stop_click():
             if dpg.does_item_exist(TAG_ROUTE_B_ENABLE) else True
         )
         if not route_a_enabled and not route_b_enabled:
-            dpg.set_value(TAG_STATUS_STATE, "少なくとも1つの系統を有効にしてください")
+            _gui_set_value(TAG_STATUS_STATE, "少なくとも1つの系統を有効にしてください",
+                           label="status_state")
             return
 
         # 常駐モデル: MultiCaptionSystem は既に存在するはず（main() で生成済み）
@@ -984,7 +986,7 @@ def _on_konnyaku_start_stop_click():
         _konnyaku_running = True
 
         if dpg.does_item_exist(TAG_KONNYAKU_START_BTN):
-            dpg.configure_item(TAG_KONNYAKU_START_BTN, label="停止")
+            _gui_set_label(TAG_KONNYAKU_START_BTN, "停止", name="konnyaku_start_btn")
 
     except Exception as e:
         import traceback
@@ -1137,6 +1139,46 @@ def _enqueue_cost_warning(threshold: float) -> None:
 
 def _enqueue(cmd: str, **kwargs):
     _gui_queue.put({"cmd": cmd, **kwargs})
+
+
+# =============================================================================
+# UI 変化ログユーティリティ (Issue #66)
+# OLD->NEW を [GUI] プレフィックスで記録して、UI 動作の検証を容易にする
+# =============================================================================
+
+def _gui_set_value(tag: str, new_value, label: str | None = None) -> None:
+    """dpg.set_value のラッパー。OLD->NEW を console に記録。
+
+    Parameters
+    ----------
+    tag      : ウィジェットタグ
+    new_value: 新しい値
+    label    : ログ表記名（省略時は tag をそのまま使う）
+    """
+    name = label if label is not None else tag
+    try:
+        old = dpg.get_value(tag) if dpg.does_item_exist(tag) else None
+    except Exception:
+        old = None
+    if old != new_value:
+        print(f"[GUI] {name}: {old!r} -> {new_value!r}", flush=True)
+    if dpg.does_item_exist(tag):
+        dpg.set_value(tag, new_value)
+
+
+def _gui_set_label(tag: str, new_label: str, name: str | None = None,
+                   **other_kwargs) -> None:
+    """dpg.configure_item でラベル変更時 OLD->NEW を console に記録。"""
+    display_name = name if name is not None else tag
+    try:
+        old = (dpg.get_item_configuration(tag).get("label")
+               if dpg.does_item_exist(tag) else None)
+    except Exception:
+        old = None
+    if old != new_label:
+        print(f"[GUI] {display_name} label: {old!r} -> {new_label!r}", flush=True)
+    if dpg.does_item_exist(tag):
+        dpg.configure_item(tag, label=new_label, **other_kwargs)
 
 
 def _classify_preload_cache(cached_system, cached_key, requested_key) -> tuple[str, object | None]:
