@@ -536,21 +536,24 @@ class TestKonnyakuStartIntegration:
 # ---------------------------------------------------------------------------
 
 class TestAutoKonnyakuRunner:
-    """_auto_konnyaku_runner が正しい順序で各コールバックを呼ぶことを検証する。"""
+    """_auto_konnyaku_runner が正しい順序で各コールバックを呼ぶことを検証する。
+
+    v2 仕様変更 (B-11): プリセットボタンが削除されたため、
+    _auto_konnyaku_runner から _on_konnyaku_preset_click の呼び出しが削除された。
+    シーケンスは「開始 → N秒待機 → 停止」のみになった。
+    """
 
     def test_auto_konnyaku_runner_executes_correct_sequence(self):
         """
         _auto_konnyaku_runner が正しい順序で各コールバックを呼ぶこと:
-        1. _on_konnyaku_preset_click
-        2. _on_konnyaku_start_stop_click (開始)
-        3. _on_konnyaku_start_stop_click (停止)
-        4. dpg.stop_dearpygui
+        1. _on_konnyaku_start_stop_click (開始)
+        2. _on_konnyaku_start_stop_click (停止)
+        3. dpg.stop_dearpygui
         time.sleep をモックしてスキップし、順序のみ検証する。
+
+        v2 変更: プリセットボタン押下は削除された (B-11)。
         """
         call_order: list[str] = []
-
-        def fake_preset():
-            call_order.append("preset")
 
         def fake_start_stop():
             call_order.append("start_stop")
@@ -562,7 +565,6 @@ class TestAutoKonnyakuRunner:
         mock_dpg.stop_dearpygui.side_effect = fake_stop_dpg
 
         with (
-            patch.object(app, "_on_konnyaku_preset_click", fake_preset),
             patch.object(app, "_on_konnyaku_start_stop_click", fake_start_stop),
             patch.object(app, "dpg", mock_dpg),
             patch("app.time") as mock_time,
@@ -572,8 +574,8 @@ class TestAutoKonnyakuRunner:
             # _auto_konnyaku_runner を直接呼ぶ（スレッド経由でなく同期的に）
             app._auto_konnyaku_runner(duration=0)
 
-        # 呼び出し順序の検証
-        assert call_order == ["preset", "start_stop", "start_stop", "stop_dearpygui"], (
+        # 呼び出し順序の検証（プリセットなし）
+        assert call_order == ["start_stop", "start_stop", "stop_dearpygui"], (
             f"呼び出し順序が期待と異なる: {call_order}"
         )
 
@@ -581,17 +583,17 @@ class TestAutoKonnyakuRunner:
         """
         _auto_konnyaku_runner が正しい sleep 引数で time.sleep を呼ぶこと:
         - 5秒 (モデルロード待機)
-        - 1秒 (GUI 反映待機)
         - N秒 (duration)
         shutdown 完了待ちはループ（time.sleep(0.2) × 複数回）に変更されたため
         固定値 3 は含まれないこと。
+
+        v2 変更: プリセット用の sleep(1) が削除された (B-11)。
         """
         sleep_args: list[float] = []
 
         mock_dpg = MagicMock()
 
         with (
-            patch.object(app, "_on_konnyaku_preset_click", MagicMock()),
             patch.object(app, "_on_konnyaku_start_stop_click", MagicMock()),
             patch.object(app, "_konnyaku_running", False),
             patch.object(app, "dpg", mock_dpg),
@@ -603,8 +605,8 @@ class TestAutoKonnyakuRunner:
             mock_time.monotonic = __import__("time").monotonic
             app._auto_konnyaku_runner(duration=10)
 
-        # 5, 1, 10 が含まれていること（shutdown 完了待ちは _konnyaku_running=False で即抜ける）
-        assert sleep_args[:3] == [5, 1, 10], (
+        # 5, 10 が含まれていること（プリセット用 sleep(1) は削除済み）
+        assert sleep_args[:2] == [5, 10], (
             f"sleep の呼び出しシーケンスが期待と異なる: {sleep_args}"
         )
         # 固定値 3 の sleep が含まれていないこと（ループ待機に変更されたため）
@@ -630,7 +632,6 @@ class TestAutoKonnyakuRunner:
         mock_dpg = MagicMock()
 
         with (
-            patch.object(app, "_on_konnyaku_preset_click", MagicMock()),
             patch.object(app, "_on_konnyaku_start_stop_click", fake_start_stop),
             patch.object(app, "dpg", mock_dpg),
             patch("app.time") as mock_time,
@@ -656,7 +657,7 @@ class TestAutoKonnyakuRunner:
         mock_dpg = MagicMock()
 
         with (
-            patch.object(app, "_on_konnyaku_preset_click", side_effect=RuntimeError("boom")),
+            patch.object(app, "_on_konnyaku_start_stop_click", side_effect=RuntimeError("boom")),
             patch.object(app, "dpg", mock_dpg),
             patch("app.time") as mock_time,
         ):
