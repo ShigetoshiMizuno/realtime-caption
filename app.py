@@ -2053,7 +2053,31 @@ def _update_konnyaku_level_meters():
 # CLI 自動操作モード
 # ---------------------------------------------------------------------------
 
-def _auto_konnyaku_runner(duration: int) -> None:
+def _inject_test_transcripts() -> None:
+    """偽の transcript を route_a / route_b の RealtimeTranslator コールバックに注入する。
+
+    実音声なしで _realtime_broadcast → broadcaster.broadcast を発火させる。
+    AI 自動デバッグで Issue #42（overlay 字幕表示）を検証するため。
+    """
+    if _konnyaku_system is None:
+        print("[INJECT] _konnyaku_system is None, skip", flush=True)
+        return
+    route_a = _konnyaku_system.route_a_system
+    route_b = _konnyaku_system.route_b_system
+    print("[INJECT] route_a: source 'Hello from A'", flush=True)
+    route_a._on_realtime_source_transcript("Hello from A")
+    time.sleep(0.3)
+    print("[INJECT] route_a: translated '経路Aテスト翻訳'", flush=True)
+    route_a._on_realtime_transcript("経路Aテスト翻訳")
+    time.sleep(0.3)
+    print("[INJECT] route_b: source 'こんにちは経路B'", flush=True)
+    route_b._on_realtime_source_transcript("こんにちは経路B")
+    time.sleep(0.3)
+    print("[INJECT] route_b: translated 'Test from B'", flush=True)
+    route_b._on_realtime_transcript("Test from B")
+
+
+def _auto_konnyaku_runner(duration: int, inject_test: bool = False) -> None:
     """別スレッドで実行される自動操作（--auto-konnyaku 用）。
 
     AI が Bash 経由でアプリを実行 → ログ取得 → クラッシュ原因解析 → 修正のループを
@@ -2071,7 +2095,14 @@ def _auto_konnyaku_runner(duration: int) -> None:
         _on_konnyaku_start_stop_click()
 
         print(f"[AUTO] Phase 4/5: {duration}秒間動作中...", flush=True)
-        time.sleep(duration)
+        if inject_test:
+            # WS サーバー起動 + クライアント接続待ち
+            time.sleep(3)
+            print("[AUTO] 偽 transcript を注入してbroadcast 経路を検証", flush=True)
+            _inject_test_transcripts()
+            time.sleep(max(0, duration - 3))
+        else:
+            time.sleep(duration)
 
         print(f"[AUTO] Phase 5/5: こんにゃく停止ボタン押下", flush=True)
         _on_konnyaku_start_stop_click()
@@ -2105,6 +2136,10 @@ def main():
         "--auto-konnyaku", type=int, default=None,
         help="Auto-test konnyaku mode for N seconds then exit (for AI debugging)",
     )
+    parser.add_argument(
+        "--inject-test-transcripts", action="store_true",
+        help="Inject fake transcripts to verify broadcast path (use with --auto-konnyaku)",
+    )
     args = parser.parse_args()
 
     _config = load_config("config.yaml")
@@ -2131,10 +2166,14 @@ def main():
 
     # CLI 自動操作モード: --auto-konnyaku=N 指定時はバックグラウンドスレッドで操作を自動実行
     if args.auto_konnyaku is not None:
-        print(f"[AUTO] auto-konnyaku モード開始 (duration={args.auto_konnyaku}s)", flush=True)
+        print(
+            f"[AUTO] auto-konnyaku モード開始 (duration={args.auto_konnyaku}s,"
+            f" inject_test={args.inject_test_transcripts})",
+            flush=True,
+        )
         threading.Thread(
             target=_auto_konnyaku_runner,
-            args=(args.auto_konnyaku,),
+            args=(args.auto_konnyaku, args.inject_test_transcripts),
             daemon=True,
             name="AutoKonnyakuRunner",
         ).start()
