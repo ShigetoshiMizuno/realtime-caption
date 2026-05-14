@@ -480,3 +480,127 @@ class TestSetOutputDeviceDoesNotLeakStandalonePa:
             f"_pa_instance が None のとき owns_pa=True で生成されるべき: "
             f"owns_pa={created_streams[0]}"
         )
+
+
+# ---------------------------------------------------------------------------
+# W-1: set_input_device() が start() の例外を飲み込み、app.py コールバックも防御すること
+# ---------------------------------------------------------------------------
+
+class TestSetInputDeviceSwallowsStartException:
+    """W-1: CaptionSystem.set_input_device() で start() が例外を発生させても
+    呼び出し元に伝播しないこと。
+
+    背景: was_running=True で stop() → _device_info 更新 → start() の順で処理されるが、
+    start() が例外を raise した場合、_device_info は新値に更新済みで state は ERROR のまま残る。
+    呼び出し元の GUI コールバックに例外が伝播するとクラッシュするため、
+    set_input_device() 内で例外を握ること。
+    """
+
+    def test_set_input_device_swallows_start_exception(self):
+        """stop後 start() が例外を発生させても set_input_device() は例外を re-raise しないこと。"""
+        cs = _make_minimal_caption_system()
+        cs._device_info = {"index": 0, "name": "OldDevice"}
+        cs._state = RouteState.RUNNING
+
+        def mock_stop():
+            cs._state = RouteState.IDLE
+
+        def mock_start():
+            cs._state = RouteState.ERROR
+            raise RuntimeError("API key not set (fake error for test)")
+
+        cs.stop = mock_stop
+        cs.start = mock_start
+
+        new_device = {"index": 2, "name": "NewDevice"}
+
+        # 例外が re-raise されないこと（ここで例外が出たらテスト失敗）
+        try:
+            cs.set_input_device(new_device)
+        except Exception as e:
+            pytest.fail(
+                f"set_input_device() が start() の例外を呼び出し元に伝播させた: {type(e).__name__}: {e}"
+            )
+
+    def test_set_input_device_device_info_updated_even_if_start_fails(self):
+        """start() が例外を発生させても _device_info は新値に更新済みであること。"""
+        cs = _make_minimal_caption_system()
+        cs._device_info = {"index": 0, "name": "OldDevice"}
+        cs._state = RouteState.RUNNING
+
+        def mock_stop():
+            cs._state = RouteState.IDLE
+
+        def mock_start():
+            cs._state = RouteState.ERROR
+            raise RuntimeError("API key not set (fake error for test)")
+
+        cs.stop = mock_stop
+        cs.start = mock_start
+
+        new_device = {"index": 2, "name": "NewDevice"}
+        cs.set_input_device(new_device)
+
+        assert cs._device_info == new_device, (
+            f"start() 失敗後も _device_info は新値であるべき: {cs._device_info}"
+        )
+
+    def test_set_input_device_state_is_error_after_start_fails(self):
+        """start() が例外を発生させた後、state が ERROR のままであること。"""
+        cs = _make_minimal_caption_system()
+        cs._device_info = {"index": 0, "name": "OldDevice"}
+        cs._state = RouteState.RUNNING
+
+        def mock_stop():
+            cs._state = RouteState.IDLE
+
+        def mock_start():
+            cs._state = RouteState.ERROR
+            raise RuntimeError("API key not set (fake error for test)")
+
+        cs.stop = mock_stop
+        cs.start = mock_start
+
+        new_device = {"index": 2, "name": "NewDevice"}
+        cs.set_input_device(new_device)
+
+        assert cs.state == RouteState.ERROR, (
+            f"start() 失敗後の state は ERROR であるべき: {cs.state}"
+        )
+
+
+class TestRouteDeviceChangeCallbackHandlesException:
+    """W-1 (app.py 側): _on_route_a/b_device_change コールバックが
+    set_input_device() の例外を握って GUI スレッドにクラッシュさせないこと。
+
+    背景: set_input_device() 内で例外を飲み込む修正をするが、
+    app.py のコールバックにも防御的 try/except を追加して多層防御とする。
+    """
+
+    def test_route_a_device_change_callback_handles_exception(self):
+        """_on_route_a_device_change が set_input_device() の例外を握ること。
+
+        app.py はモジュールレベルのグローバル関数なので、
+        関数のソースに try/except が含まれることを静的確認する。
+        """
+        import inspect
+        import app as app_module
+
+        source = inspect.getsource(app_module._on_route_a_device_change)
+
+        assert "try" in source and "except" in source, (
+            "_on_route_a_device_change に try/except が含まれていない (W-1 app.py 未対応)\n"
+            f"ソース:\n{source}"
+        )
+
+    def test_route_b_device_change_callback_handles_exception(self):
+        """_on_route_b_device_change が set_input_device() の例外を握ること。"""
+        import inspect
+        import app as app_module
+
+        source = inspect.getsource(app_module._on_route_b_device_change)
+
+        assert "try" in source and "except" in source, (
+            "_on_route_b_device_change に try/except が含まれていない (W-1 app.py 未対応)\n"
+            f"ソース:\n{source}"
+        )
