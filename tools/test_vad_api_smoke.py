@@ -25,6 +25,15 @@ import sys
 import time
 from pathlib import Path
 
+# Windows cp932 環境で日本語 + em dash 等の特殊文字を扱うため utf-8 に切替
+# (実機検証で UnicodeEncodeError 検出 - "—" em dash)
+if hasattr(sys.stdout, "reconfigure"):
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
+
 # プロジェクトルートを sys.path に追加（config_utils 等を使うため）
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(_PROJECT_ROOT))
