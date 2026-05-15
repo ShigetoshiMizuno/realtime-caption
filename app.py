@@ -758,6 +758,36 @@ def _on_route_b_output_enable_change(sender, app_data, user_data):
         ).start()
 
 
+def _on_route_a_source_transcript_change(sender, app_data):
+    """経路A 原文表示 ON/OFF 変更時。次回起動時に反映（W-COST-2）。
+
+    稼働中の場合はステータスバーに「次回起動時に反映されます」と通知する。
+    再起動結線は別 PR 対応のため、ここでは設定保存のみ行う。
+    """
+    _save_settings()
+    if _konnyaku_running:
+        if dpg.does_item_exist(TAG_STATUS_STATE):
+            try:
+                dpg.set_value(TAG_STATUS_STATE, "次回起動時に反映されます")
+            except Exception:
+                pass
+
+
+def _on_route_b_source_transcript_change(sender, app_data):
+    """経路B 原文表示 ON/OFF 変更時。次回起動時に反映（W-COST-2）。
+
+    稼働中の場合はステータスバーに「次回起動時に反映されます」と通知する。
+    再起動結線は別 PR 対応のため、ここでは設定保存のみ行う。
+    """
+    _save_settings()
+    if _konnyaku_running:
+        if dpg.does_item_exist(TAG_STATUS_STATE):
+            try:
+                dpg.set_value(TAG_STATUS_STATE, "次回起動時に反映されます")
+            except Exception:
+                pass
+
+
 def _find_zoom_preset_output(devices: list[dict]) -> int | None:
     """
     デバイスリストから CABLE Input (VB-CABLE) のインデックスを返す純関数。
@@ -2627,6 +2657,14 @@ def _build_gui():
                     callback=_on_route_a_output_enable_change,
                 )
             with dpg.group(horizontal=True):
+                dpg.add_text("原文表示:")
+                dpg.add_checkbox(
+                    tag=TAG_ROUTE_A_SOURCE_TRANSCRIPT_ENABLE,
+                    label="原文も表示する（Whisper 課金あり）",
+                    default_value=bool(route_a_saved.get("source_transcript_enabled", True)),
+                    callback=_on_route_a_source_transcript_change,
+                )
+            with dpg.group(horizontal=True):
                 dpg.add_text("出力デバイス:")
                 dpg.add_combo(
                     tag=TAG_ROUTE_A_OUTPUT_DEVICE_COMBO,
@@ -2737,6 +2775,14 @@ def _build_gui():
                     label="有効",
                     default_value=bool(route_b_saved.get("output_enabled", True)),
                     callback=_on_route_b_output_enable_change,
+                )
+            with dpg.group(horizontal=True):
+                dpg.add_text("原文表示:")
+                dpg.add_checkbox(
+                    tag=TAG_ROUTE_B_SOURCE_TRANSCRIPT_ENABLE,
+                    label="原文も表示する（Whisper 課金あり）",
+                    default_value=bool(route_b_saved.get("source_transcript_enabled", True)),
+                    callback=_on_route_b_source_transcript_change,
                 )
             with dpg.group(horizontal=True):
                 dpg.add_text("出力デバイス:")

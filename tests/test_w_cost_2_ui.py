@@ -300,7 +300,7 @@ class TestSourceTranscriptGuiDefaultValue:
              patch("app._config", {}), \
              patch("app._dpg_ready", False):
             try:
-                app._build_gui(rpc_port=18765)
+                app._build_gui()
             except Exception:
                 # dpg の一部呼び出しがモックで失敗しても捕捉済みの add_checkbox データを使う
                 pass
@@ -411,7 +411,7 @@ class TestSourceTranscriptGuiDefaultValue:
              patch("app._config", {}), \
              patch("app._dpg_ready", False):
             try:
-                app._build_gui(rpc_port=18765)
+                app._build_gui()
             except Exception:
                 pass
 
@@ -460,7 +460,7 @@ class TestSourceTranscriptGuiDefaultValue:
              patch("app._config", {}), \
              patch("app._dpg_ready", False):
             try:
-                app._build_gui(rpc_port=18765)
+                app._build_gui()
             except Exception:
                 pass
 
