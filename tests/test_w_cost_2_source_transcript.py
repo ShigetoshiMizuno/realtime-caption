@@ -217,21 +217,18 @@ class TestCaptionSystemSourceTranscriptPropagation:
 
     def test_create_realtime_translator_passes_flag_false(self):
         """_create_realtime_translator が _request_source_transcript=False を
-        RealtimeTranslator に渡すこと。"""
+        RealtimeTranslator に渡すこと。
+
+        _create_realtime_translator 内で from realtime_translator import RealtimeTranslator を
+        local import しているため、realtime_translator.RealtimeTranslator をモックする。
+        """
         cs = self._make_caption_system(False)
 
-        created_kwargs = {}
-
-        original_init = RealtimeTranslator.__init__
-
-        def capturing_init(self_rt, **kwargs):
-            created_kwargs.update(kwargs)
-            original_init(self_rt, **kwargs)
-
-        with patch("realtime_translator.RealtimeTranslator.__init__", capturing_init):
-            with patch("main.RealtimeTranslator", wraps=RealtimeTranslator) as MockRT:
-                MockRT.return_value = MagicMock()
-                cs._create_realtime_translator()
+        with patch("realtime_translator.RealtimeTranslator") as MockRT, \
+             patch("cost_monitor.CostMonitor") as MockCM:
+            MockRT.return_value = MagicMock()
+            MockCM.return_value = MagicMock()
+            cs._create_realtime_translator()
 
         # RealtimeTranslator に request_source_transcript=False が渡されること
         assert MockRT.called, "RealtimeTranslator が呼び出されること"
@@ -246,11 +243,11 @@ class TestCaptionSystemSourceTranscriptPropagation:
         RealtimeTranslator に渡すこと。"""
         cs = self._make_caption_system(True)
 
-        with patch("main.RealtimeTranslator") as MockRT:
+        with patch("realtime_translator.RealtimeTranslator") as MockRT, \
+             patch("cost_monitor.CostMonitor") as MockCM:
             MockRT.return_value = MagicMock()
-            with patch("main.CostMonitor") as MockCM:
-                MockCM.return_value = MagicMock()
-                cs._create_realtime_translator()
+            MockCM.return_value = MagicMock()
+            cs._create_realtime_translator()
 
         assert MockRT.called
         _, kwargs = MockRT.call_args

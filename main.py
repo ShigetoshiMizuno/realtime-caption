@@ -427,7 +427,8 @@ class CaptionSystem:
                  route_id: str = "a",
                  shared_broadcaster: "SubtitleBroadcaster | None" = None,
                  pa_instance: "pyaudio.PyAudio | None" = None,
-                 on_realtime_error_external: "Callable[[str], None] | None" = None):
+                 on_realtime_error_external: "Callable[[str], None] | None" = None,
+                 request_source_transcript: bool = True):
         self._config = config
         self._device_info = device_info
         self._model_name = model_name
@@ -436,6 +437,8 @@ class CaptionSystem:
         self._on_whisper_busy = on_whisper_busy  # callable(bool) | None
         self._on_trans_busy = on_trans_busy      # callable(bool) | None
         self._on_realtime_error_external = on_realtime_error_external  # callable(str) | None
+        # W-COST-2: 原文文字起こし（Whisper）有効フラグ。False にすると Whisper 課金を停止する。
+        self._request_source_transcript: bool = request_source_transcript
 
         # 翻訳モード判定
         trans_model = config.get("translation", {}).get("translation_model", "openai").lower()
@@ -623,6 +626,7 @@ class CaptionSystem:
             on_connected=self._on_ready,
             request_audio_output=self._audio_output_mode,
             on_audio_delta=self._on_audio_delta,
+            request_source_transcript=self._request_source_transcript,
         )
         from cost_monitor import CostMonitor
         max_min = rt_cfg.get("max_session_minutes", 60)
@@ -1544,6 +1548,7 @@ class RouteConfig:
     audio_output_enabled: bool
     output_device_index: int | None
     output_volume: float                # 0.0〜2.0
+    request_source_transcript: bool = True  # W-COST-2: 原文表示（Whisper）有効フラグ。デフォルト True（後方互換）
 
 
 class MultiCaptionSystem:
@@ -1609,6 +1614,7 @@ class MultiCaptionSystem:
                 shared_broadcaster=None,  # route_a が broadcaster を所有
                 pa_instance=self._pa,     # 共有 PyAudio を注入
                 on_realtime_error_external=_wrap_error(route_a.route_id),
+                request_source_transcript=route_a.request_source_transcript,
             )
         else:
             self._route_a = None
@@ -1630,6 +1636,7 @@ class MultiCaptionSystem:
                 shared_broadcaster=shared,  # route_a あれば共有、なければ自前
                 pa_instance=self._pa,       # 共有 PyAudio を注入
                 on_realtime_error_external=_wrap_error(route_b.route_id),
+                request_source_transcript=route_b.request_source_transcript,
             )
         else:
             self._route_b = None

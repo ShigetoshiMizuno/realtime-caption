@@ -192,6 +192,10 @@ TAG_ROUTE_B_OUTPUT_VOLUME = "route_b_output_volume"
 TAG_ROUTE_A_ENABLE = "route_a_enable"
 TAG_ROUTE_B_ENABLE = "route_b_enable"
 
+# W-COST-2: 原文表示（Whisper）有効チェックボックスタグ（issue #81）
+TAG_ROUTE_A_SOURCE_TRANSCRIPT_ENABLE = "route_a_source_transcript_enable"
+TAG_ROUTE_B_SOURCE_TRANSCRIPT_ENABLE = "route_b_source_transcript_enable"
+
 # こんにゃくモード コンテナ
 TAG_KONNYAKU_SECTION = "konnyaku_section"
 TAG_KONNYAKU_START_BTN = "konnyaku_start_btn"
@@ -321,23 +325,25 @@ def _save_settings():
             "output_device": output_device,
             "host_api": _get(TAG_HOST_API_COMBO, "wasapi"),
             "route_a": {
-                "enabled":        _get(TAG_ROUTE_A_ENABLE, True),
-                "device":         _get(TAG_ROUTE_A_DEVICE_COMBO, ""),
-                "lang":           _get(TAG_ROUTE_A_LANG_COMBO, ""),
-                "output_enabled": _get(TAG_ROUTE_A_OUTPUT_ENABLE, False),
-                "output_device":  _get(TAG_ROUTE_A_OUTPUT_DEVICE_COMBO, "(なし)"),
-                "output_volume":  _get(TAG_ROUTE_A_OUTPUT_VOLUME, 1.0),
+                "enabled":                  _get(TAG_ROUTE_A_ENABLE, True),
+                "device":                   _get(TAG_ROUTE_A_DEVICE_COMBO, ""),
+                "lang":                     _get(TAG_ROUTE_A_LANG_COMBO, ""),
+                "output_enabled":           _get(TAG_ROUTE_A_OUTPUT_ENABLE, False),
+                "output_device":            _get(TAG_ROUTE_A_OUTPUT_DEVICE_COMBO, "(なし)"),
+                "output_volume":            _get(TAG_ROUTE_A_OUTPUT_VOLUME, 1.0),
+                "source_transcript_enabled": _get(TAG_ROUTE_A_SOURCE_TRANSCRIPT_ENABLE, True),
             },
         }
         # PTT 設定を route_b にマージ（W-3: _build_ptt_settings_dict 経由で統一）
         # route_b の GUI 値を先に構築してから PTT 設定をマージする
         _route_b_base = {
-            "enabled":        _get(TAG_ROUTE_B_ENABLE, True),
-            "device":         _get(TAG_ROUTE_B_DEVICE_COMBO, ""),
-            "lang":           _get(TAG_ROUTE_B_LANG_COMBO, ""),
-            "output_enabled": _get(TAG_ROUTE_B_OUTPUT_ENABLE, True),
-            "output_device":  _get(TAG_ROUTE_B_OUTPUT_DEVICE_COMBO, "(なし)"),
-            "output_volume":  _get(TAG_ROUTE_B_OUTPUT_VOLUME, 1.0),
+            "enabled":                   _get(TAG_ROUTE_B_ENABLE, True),
+            "device":                    _get(TAG_ROUTE_B_DEVICE_COMBO, ""),
+            "lang":                      _get(TAG_ROUTE_B_LANG_COMBO, ""),
+            "output_enabled":            _get(TAG_ROUTE_B_OUTPUT_ENABLE, True),
+            "output_device":             _get(TAG_ROUTE_B_OUTPUT_DEVICE_COMBO, "(なし)"),
+            "output_volume":             _get(TAG_ROUTE_B_OUTPUT_VOLUME, 1.0),
+            "source_transcript_enabled": _get(TAG_ROUTE_B_SOURCE_TRANSCRIPT_ENABLE, True),
         }
         data["route_b"] = _build_ptt_settings_dict(
             existing_data={"route_b": _route_b_base},
@@ -989,6 +995,10 @@ def _create_konnyaku_system() -> None:
         flush=True,
     )
 
+    # W-COST-2: 原文表示（Whisper）有効フラグを保存設定から読み込む（デフォルト True）
+    a_source_transcript_enabled = bool(route_a_saved.get("source_transcript_enabled", True))
+    b_source_transcript_enabled = bool(route_b_saved.get("source_transcript_enabled", True))
+
     route_a_cfg = RouteConfig(
         route_id="a",
         input_device_info=route_a_device,
@@ -996,6 +1006,7 @@ def _create_konnyaku_system() -> None:
         audio_output_enabled=a_output_enabled,
         output_device_index=a_output_idx,
         output_volume=float(route_a_saved.get("output_volume", 1.0)),
+        request_source_transcript=a_source_transcript_enabled,
     )
     route_b_cfg = RouteConfig(
         route_id="b",
@@ -1004,6 +1015,7 @@ def _create_konnyaku_system() -> None:
         audio_output_enabled=b_output_enabled,
         output_device_index=b_output_idx,
         output_volume=float(route_b_saved.get("output_volume", 1.0)),
+        request_source_transcript=b_source_transcript_enabled,
     )
 
     _konnyaku_system = MultiCaptionSystem(
