@@ -23,6 +23,15 @@ import struct
 import sys
 from pathlib import Path
 
+# Windows cp932 環境でデバイス名に含まれる ® 等の文字を扱うため utf-8 に切替
+# (実機検証で UnicodeEncodeError 検出 - 例: "Realtek(R) Audio")
+if hasattr(sys.stdout, "reconfigure"):
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
+
 # プロジェクトルートを sys.path に追加
 _ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(_ROOT))
