@@ -833,6 +833,60 @@ def _on_route_b_source_transcript_change(sender, app_data):
         ).start()
 
 
+def _on_route_a_language_change(sender, app_data, user_data) -> None:
+    """系統A 翻訳先言語変更時。稼働中なら即時再起動して反映（Fix 2, issue #102）。
+
+    稼働中（_konnyaku_running=True かつ route_a が RUNNING）の場合は
+    _restart_route_for_change で stop_route -> start_route を実行し、
+    最新の target_language_code を RealtimeTranslator に反映する。
+    """
+    _save_settings()
+    if (
+        _konnyaku_running
+        and _konnyaku_system is not None
+        and _konnyaku_system.route_a_system is not None
+        and _konnyaku_system.route_a_system.state == RouteState.RUNNING
+    ):
+        if dpg.does_item_exist(TAG_STATUS_STATE):
+            try:
+                dpg.set_value(TAG_STATUS_STATE, "系統1 翻訳先言語切替中...")
+            except Exception:
+                pass
+        threading.Thread(
+            target=_restart_route_for_change,
+            args=("a", "翻訳先言語切替"),
+            daemon=True,
+            name="RestartRouteAForLanguageChange",
+        ).start()
+
+
+def _on_route_b_language_change(sender, app_data, user_data) -> None:
+    """系統B 翻訳先言語変更時。稼働中なら即時再起動して反映（Fix 2, issue #102）。
+
+    稼働中（_konnyaku_running=True かつ route_b が RUNNING）の場合は
+    _restart_route_for_change で stop_route -> start_route を実行し、
+    最新の target_language_code を RealtimeTranslator に反映する。
+    """
+    _save_settings()
+    if (
+        _konnyaku_running
+        and _konnyaku_system is not None
+        and _konnyaku_system.route_b_system is not None
+        and _konnyaku_system.route_b_system.state == RouteState.RUNNING
+    ):
+        if dpg.does_item_exist(TAG_STATUS_STATE):
+            try:
+                dpg.set_value(TAG_STATUS_STATE, "系統2 翻訳先言語切替中...")
+            except Exception:
+                pass
+        threading.Thread(
+            target=_restart_route_for_change,
+            args=("b", "翻訳先言語切替"),
+            daemon=True,
+            name="RestartRouteBForLanguageChange",
+        ).start()
+
+
 def _find_zoom_preset_output(devices: list[dict]) -> int | None:
     """
     デバイスリストから CABLE Input (VB-CABLE) のインデックスを返す純関数。
@@ -2751,7 +2805,7 @@ def _build_gui():
                     items=_lang_display_names,
                     default_value=_route_a_default_lang,
                     width=120,
-                    callback=lambda s, a, u: _save_settings(),
+                    callback=_on_route_a_language_change,
                 )
             with dpg.group(horizontal=True):
                 dpg.add_text("音声出力:")
@@ -2871,7 +2925,7 @@ def _build_gui():
                     items=_lang_display_names,
                     default_value=_route_b_default_lang,
                     width=120,
-                    callback=lambda s, a, u: _save_settings(),
+                    callback=_on_route_b_language_change,
                 )
             with dpg.group(horizontal=True):
                 dpg.add_text("音声出力:")

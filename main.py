@@ -842,6 +842,11 @@ class CaptionSystem:
             self._stop_event_async = None
             self._capture_thread = None
             self._capture_stream = None
+            # Fix 1 (issue #102): stop() 後に _realtime_translator / _cost_monitor を None にリセット。
+            # これにより次回 start() → _create_realtime_translator() で新インスタンスが生成され、
+            # target_language_code 等の最新設定が反映される（stop→start サイクルで言語反映）。
+            self._realtime_translator = None
+            self._cost_monitor = None
             self._set_state(RouteState.IDLE)
 
     def shutdown(self) -> None:
@@ -964,6 +969,27 @@ class CaptionSystem:
                     f"set_input_device: start() に失敗 ({type(e).__name__}: {e})",
                 )
                 # 呼び出し元（GUI コールバック）には例外を伝播させない
+
+    def set_target_language(self, code: str) -> None:
+        """翻訳先言語を動的に変更する（Fix 3, issue #102）。
+
+        config の openai_realtime.target_language_code を更新し、
+        _realtime_translator を None にクリアする。
+        これにより次回 _create_realtime_translator() が呼ばれたとき（stop→start サイクル）
+        最新の言語コードが RealtimeTranslator に渡される。
+
+        実際の再起動（stop→start）はコールバック側（app.py の _on_route_a/b_language_change）
+        が担う。set_input_device パターンと同様、このメソッドは属性更新のみを行う。
+
+        Parameters
+        ----------
+        code: 翻訳先言語コード（例: "ja", "en"）。constants.SUPPORTED_LANGUAGES から選択。
+        """
+        if "openai_realtime" not in self._config:
+            self._config["openai_realtime"] = {}
+        self._config["openai_realtime"]["target_language_code"] = code
+        # RealtimeTranslator をクリアして次回 start() で新インスタンスが生成されるようにする
+        self._realtime_translator = None
 
     def _on_audio_delta(self, pcm16_bytes: bytes) -> None:
         """RealtimeTranslator から音声出力チャンクを受け取るコールバック。"""
