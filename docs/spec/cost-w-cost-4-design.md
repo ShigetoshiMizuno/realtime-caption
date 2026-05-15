@@ -62,8 +62,8 @@ VAD（秒オーダー）と W-COST-4 アイドル切断（分オーダー）は�
     アイドル状態 = level_window_max（1 秒間ピーク）が
                   IDLE_AUDIO_THRESHOLD 未満の秒が IDLE_TIMEOUT_SEC 秒以上継続した状態
 
-- IDLE_AUDIO_THRESHOLD: int 型、デフォルト 200（int16 絶対値 max、0-32767）
-  - 0 dBFS = 32767 に対して、200 は約 -44 dBFS 相当
+- IDLE_AUDIO_THRESHOLD: int 型、デフォルト 100（int16 絶対値 max、0-32767）
+  - 0 dBFS = 32767 に対して、100 は約 -50 dBFS 相当
   - VB-CABLE のノイズフロアが通常 50-100 程度であることを考慮してマージンを設定
   - TBD-4-2: VB-CABLE 経由 Zoom 音声での適切な閾値は実機確認が必要
 - IDLE_TIMEOUT_SEC: float 型、デフォルト 300.0（5 分）
@@ -116,7 +116,7 @@ VAD（秒オーダー）と W-COST-4 アイドル切断（分オーダー）は�
 |---|---|---|---|---|
 | idle_disconnect_enabled | bool | False | — | アイドル切断機能の有効/無効。デフォルト OFF（既存挙動維持） |
 | idle_timeout_sec | float | 300.0 | 秒 | アイドル判定タイムアウト（5 分）。TBD-4-1 |
-| idle_audio_threshold | int | 200 | int16 絶対値 max | 無音とみなす音量上限。TBD-4-2 |
+| idle_audio_threshold | int | 100 | int16 絶対値 max | 無音とみなす音量上限。TBD-4-2 |
 | idle_reconnect_threshold | int | 300 | int16 絶対値 max | 自動再接続をトリガーする音量下限（ヒステリシス） |
 | idle_reconnect_cooldown_sec | float | 10.0 | 秒 | 再接続後の次回切断までの最短間隔 |
 
@@ -128,7 +128,7 @@ VAD（秒オーダー）と W-COST-4 アイドル切断（分オーダー）は�
         # W-COST-4 追加（デフォルト値付き、後方互換）
         idle_disconnect_enabled: bool = False
         idle_timeout_sec: float = 300.0
-        idle_audio_threshold: int = 200
+        idle_audio_threshold: int = 100
         idle_reconnect_threshold: int = 300
         idle_reconnect_cooldown_sec: float = 10.0
 
@@ -141,11 +141,10 @@ VAD（秒オーダー）と W-COST-4 アイドル切断（分オーダー）は�
         def __init__(
             self,
             idle_timeout_sec: float = 300.0,
-            idle_audio_threshold: int = 200,
-            idle_reconnect_threshold: int = 300,
+            audio_threshold: int = 100,
             on_idle_timeout: Callable[[], None] | None = None,
-            on_activity_detected: Callable[[], None] | None = None,
-            _timeout_override: float | None = None,   # テスト用 DI
+            *,
+            timeout_override: float | None = None,   # テスト用 DI
         ) -> None: ...
 
         def report_audio_level(self, peak: int) -> None:
@@ -172,7 +171,7 @@ VAD（秒オーダー）と W-COST-4 アイドル切断（分オーダー）は�
         # W-COST-4 追加
         idle_disconnect_enabled: bool = False,
         idle_timeout_sec: float = 300.0,
-        idle_audio_threshold: int = 200,
+        idle_audio_threshold: int = 100,
         idle_reconnect_threshold: int = 300,
         idle_reconnect_cooldown_sec: float = 10.0,
         _idle_timeout_override: float | None = None,   # テスト用 DI
