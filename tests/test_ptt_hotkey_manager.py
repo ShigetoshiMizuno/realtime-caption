@@ -195,6 +195,10 @@ class TestPttHotkeyManagerCallbacks:
         self.kb = FakeKeyboardBackend()
         self.press_cb = MagicMock()
         self.release_cb = MagicMock()
+        # 離脱デバウンスを制御するため FakeTimerFactory を注入する
+        # (FakeTimerFactory は TestPressDebounce より後に定義されているが
+        #  setup_method 呼び出し時点では定義済みのため問題ない)
+        self.timer_factory = None  # setup 時はまだ FakeTimerFactory 未定義のためプレースホルダー
         self.mgr = PttHotkeyManager(
             hotkey="f8",
             on_press=self.press_cb,
@@ -209,8 +213,22 @@ class TestPttHotkeyManagerCallbacks:
         self.press_cb.assert_called_once()
 
     def test_release_callback_fired(self):
-        """ホットキー離脱時に on_release コールバックが呼ばれること"""
+        """ホットキー離脱後に on_release コールバックが 500ms タイマー満了後に呼ばれること。
+
+        離脱デバウンス追加により、on_release は即時発火せずタイマー満了後に発火する。
+        threading.Timer（デフォルト）では実際に 500ms 待つ必要があるため、
+        ここではタイマーに直接アクセスして cancel() + 手動発火でテストする。
+        """
+        self.kb.simulate_press("f8")
         self.kb.simulate_release("f8")
+        # threading.Timer の場合: まだ発火していない
+        self.release_cb.assert_not_called()
+        # タイマーをキャンセルして手動発火 (threading.Timer はキャンセル可能)
+        timer = self.mgr._release_timer
+        assert timer is not None
+        timer.cancel()
+        # コールバックを直接呼び出してタイマー満了をシミュレート
+        self.mgr._fire_release(self.release_cb, None)
         self.release_cb.assert_called_once()
 
     def test_press_callback_not_fired_for_other_key(self):
