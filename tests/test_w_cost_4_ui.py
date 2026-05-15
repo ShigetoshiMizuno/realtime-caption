@@ -733,19 +733,39 @@ class TestIdleGuiBuild:
 class TestCreateKonnyakuSystemIdleSettings:
     """_create_konnyaku_system が idle 設定を RouteConfig に正しく渡すこと。"""
 
-    def test_idle_disconnect_enabled_passed_to_route_config(self):
-        """_create_konnyaku_system が idle_disconnect_enabled=True を RouteConfig に渡すこと。"""
-        from main import RouteConfig, MultiCaptionSystem
+    def _run_create_and_capture_route_configs(self, settings: dict) -> tuple:
+        """_create_konnyaku_system を実行して RouteConfig のペアをキャプチャするヘルパー。
+
+        MultiCaptionSystem のコンストラクタを MagicMock に差し替えて
+        route_a / route_b の RouteConfig を捕捉する。
+        """
+        from main import MultiCaptionSystem
         captured_configs = []
 
-        original_init = MultiCaptionSystem.__init__
+        fake_cls = MagicMock()
 
-        def capture_init(self, config, route_a, route_b, **kwargs):
+        def fake_new(cls, config, route_a, route_b, **kwargs):
             captured_configs.append((route_a, route_b))
-            # MultiCaptionSystem.__init__ は実際のシステムを生成しない（モック）
-            self.route_a_system = None
-            self.route_b_system = None
+            instance = MagicMock()
+            # route_a_system / route_b_system はプロパティのため MagicMock に設定
+            instance.route_a_system = MagicMock()
+            instance.route_b_system = MagicMock()
+            return instance
 
+        fake_device = {"name": "FakeMic", "index": 0, "samplerate": 16000}
+
+        with patch("app._load_settings", return_value=settings), \
+             patch("app._devices", [fake_device]), \
+             patch("app.list_audio_devices", return_value=[]), \
+             patch("app.find_device_by_name", return_value=None), \
+             patch("app.MultiCaptionSystem", side_effect=lambda *a, **kw: fake_new(MultiCaptionSystem, *a, **kw)):
+            app._konnyaku_system = None
+            app._create_konnyaku_system()
+
+        return tuple(captured_configs[0]) if captured_configs else (None, None)
+
+    def test_idle_disconnect_enabled_passed_to_route_config(self):
+        """_create_konnyaku_system が idle_disconnect_enabled=True を RouteConfig に渡すこと。"""
         fake_settings = {
             "idle_disconnect_enabled": True,
             "idle_timeout_sec": 600,
@@ -753,19 +773,8 @@ class TestCreateKonnyakuSystemIdleSettings:
             "route_a": {"device": "", "lang": ""},
             "route_b": {"device": "", "lang": ""},
         }
-        fake_device = {"name": "FakeMic", "index": 0, "samplerate": 16000}
-
-        with patch("app._load_settings", return_value=fake_settings), \
-             patch("app._devices", [fake_device]), \
-             patch("app._konnyaku_system", None), \
-             patch("app.list_audio_devices", return_value=[]), \
-             patch("app.find_device_by_name", return_value=None), \
-             patch.object(MultiCaptionSystem, "__init__", capture_init):
-            app._konnyaku_system = None
-            app._create_konnyaku_system()
-
-        assert len(captured_configs) == 1, "MultiCaptionSystem が 1 回生成されること"
-        route_a_cfg, route_b_cfg = captured_configs[0]
+        route_a_cfg, route_b_cfg = self._run_create_and_capture_route_configs(fake_settings)
+        assert route_a_cfg is not None
         assert route_a_cfg.idle_disconnect_enabled is True, (
             f"route_a の idle_disconnect_enabled が True であること。got={route_a_cfg.idle_disconnect_enabled}"
         )
@@ -775,14 +784,6 @@ class TestCreateKonnyakuSystemIdleSettings:
 
     def test_idle_timeout_sec_passed_to_route_config(self):
         """_create_konnyaku_system が idle_timeout_sec=600 を RouteConfig に渡すこと。"""
-        from main import RouteConfig, MultiCaptionSystem
-        captured_configs = []
-
-        def capture_init(self, config, route_a, route_b, **kwargs):
-            captured_configs.append((route_a, route_b))
-            self.route_a_system = None
-            self.route_b_system = None
-
         fake_settings = {
             "idle_disconnect_enabled": False,
             "idle_timeout_sec": 600,
@@ -790,32 +791,14 @@ class TestCreateKonnyakuSystemIdleSettings:
             "route_a": {"device": "", "lang": ""},
             "route_b": {"device": "", "lang": ""},
         }
-        fake_device = {"name": "FakeMic", "index": 0, "samplerate": 16000}
-
-        with patch("app._load_settings", return_value=fake_settings), \
-             patch("app._devices", [fake_device]), \
-             patch("app.list_audio_devices", return_value=[]), \
-             patch("app.find_device_by_name", return_value=None), \
-             patch.object(MultiCaptionSystem, "__init__", capture_init):
-            app._konnyaku_system = None
-            app._create_konnyaku_system()
-
-        assert len(captured_configs) == 1
-        route_a_cfg, _ = captured_configs[0]
-        assert route_a_cfg.idle_timeout_sec == 600, (
-            f"route_a の idle_timeout_sec が 600 であること。got={route_a_cfg.idle_timeout_sec}"
+        route_a_cfg, _ = self._run_create_and_capture_route_configs(fake_settings)
+        assert route_a_cfg is not None
+        assert route_a_cfg.idle_timeout_sec == 600.0, (
+            f"route_a の idle_timeout_sec が 600.0 であること。got={route_a_cfg.idle_timeout_sec}"
         )
 
     def test_idle_audio_threshold_passed_to_route_config(self):
         """_create_konnyaku_system が idle_audio_threshold=200 を RouteConfig に渡すこと。"""
-        from main import RouteConfig, MultiCaptionSystem
-        captured_configs = []
-
-        def capture_init(self, config, route_a, route_b, **kwargs):
-            captured_configs.append((route_a, route_b))
-            self.route_a_system = None
-            self.route_b_system = None
-
         fake_settings = {
             "idle_disconnect_enabled": False,
             "idle_timeout_sec": 300,
@@ -823,18 +806,8 @@ class TestCreateKonnyakuSystemIdleSettings:
             "route_a": {"device": "", "lang": ""},
             "route_b": {"device": "", "lang": ""},
         }
-        fake_device = {"name": "FakeMic", "index": 0, "samplerate": 16000}
-
-        with patch("app._load_settings", return_value=fake_settings), \
-             patch("app._devices", [fake_device]), \
-             patch("app.list_audio_devices", return_value=[]), \
-             patch("app.find_device_by_name", return_value=None), \
-             patch.object(MultiCaptionSystem, "__init__", capture_init):
-            app._konnyaku_system = None
-            app._create_konnyaku_system()
-
-        assert len(captured_configs) == 1
-        route_a_cfg, _ = captured_configs[0]
+        route_a_cfg, _ = self._run_create_and_capture_route_configs(fake_settings)
+        assert route_a_cfg is not None
         assert route_a_cfg.idle_audio_threshold == 200, (
             f"route_a の idle_audio_threshold が 200 であること。got={route_a_cfg.idle_audio_threshold}"
         )
