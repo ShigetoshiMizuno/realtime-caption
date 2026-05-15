@@ -17,6 +17,15 @@ import sys
 import threading
 from pathlib import Path
 
+# Windows cp932 環境でログの日本語ステップ名・⚠ マーカーをエンコードできない問題対策
+# (実機検証で文字化け検出)
+if hasattr(sys.stdout, "reconfigure"):
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
+
 # プロジェクトルートを sys.path に追加
 _ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(_ROOT))
@@ -130,6 +139,11 @@ def run_measurement(timeout: float, no_gui: bool) -> tuple[dict[str, float], flo
     if no_gui:
         cmd.append("--no-gui")
 
+    # 子プロセスの stdout を強制的に utf-8 にする（Windows cp932 対策）
+    import os
+    env = os.environ.copy()
+    env["PYTHONIOENCODING"] = "utf-8"
+
     stdout_lines: list[str] = []
     proc = subprocess.Popen(
         cmd,
@@ -139,6 +153,7 @@ def run_measurement(timeout: float, no_gui: bool) -> tuple[dict[str, float], flo
         encoding="utf-8",
         errors="replace",
         cwd=str(_ROOT),
+        env=env,
     )
 
     total_found = threading.Event()
@@ -160,7 +175,16 @@ def run_measurement(timeout: float, no_gui: bool) -> tuple[dict[str, float], flo
         proc.kill()
 
     reader_thread.join(timeout=5)
-    proc.wait(timeout=5)
+    # PR #112 QA W-1 + 実機検証で再現: kill 後でも子プロセスが 5 秒以内に終了しない
+    # ケース (Windows + GUI app) があるため、TimeoutExpired を握って強制 kill する
+    try:
+        proc.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        try:
+            proc.wait(timeout=2)
+        except subprocess.TimeoutExpired:
+            pass  # 諦め
 
     stdout_text = "".join(stdout_lines)
     steps = parse_startup_log(stdout_text)
