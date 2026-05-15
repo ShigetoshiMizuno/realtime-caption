@@ -970,3 +970,64 @@ class TestRouteConfigLanguage:
             )
         assert mcs.route_a_system is not None
         assert mcs.route_a_system._config["openai_realtime"]["target_language_code"] == "en"
+
+
+# ---------------------------------------------------------------------------
+# W-1: コールバックが set_target_language() を呼ぶこと（QA 指摘 W-1）
+# ---------------------------------------------------------------------------
+
+class TestLanguageCallbackCallsSetTargetLanguage:
+    """W-1: _on_route_a/b_language_change が set_target_language() を呼ぶこと。"""
+
+    def test_route_a_language_change_calls_set_target_language(self):
+        """系統A コールバックが route_a_system.set_target_language() を呼ぶこと。"""
+        fake_system = FakeMultiCaptionSystem(route_a_state=RouteState.IDLE)
+        app._konnyaku_system = fake_system
+        app._konnyaku_running = False
+
+        with patch.object(app, "_save_settings"), \
+             patch("app.dpg"):
+            app._on_route_a_language_change("sender", "English", None)
+
+        fake_system.route_a_system.set_target_language.assert_called_once_with("en")
+
+    def test_route_b_language_change_calls_set_target_language(self):
+        """系統B コールバックが route_b_system.set_target_language() を呼ぶこと。"""
+        fake_system = FakeMultiCaptionSystem(route_b_state=RouteState.IDLE)
+        app._konnyaku_system = fake_system
+        app._konnyaku_running = False
+
+        with patch.object(app, "_save_settings"), \
+             patch("app.dpg"):
+            app._on_route_b_language_change("sender", "日本語", None)
+
+        fake_system.route_b_system.set_target_language.assert_called_once_with("ja")
+
+    def test_route_a_language_change_uses_code_not_display_name(self):
+        """系統A コールバックが表示名ではなく言語コードを set_target_language() に渡すこと。"""
+        fake_system = FakeMultiCaptionSystem(route_a_state=RouteState.IDLE)
+        app._konnyaku_system = fake_system
+        app._konnyaku_running = False
+
+        with patch.object(app, "_save_settings"), \
+             patch("app.dpg"):
+            app._on_route_a_language_change("sender", "日本語", None)
+
+        # 表示名 "日本語" ではなくコード "ja" が渡されること
+        call_args = fake_system.route_a_system.set_target_language.call_args
+        assert call_args is not None, "set_target_language() が呼ばれていない"
+        passed_value = call_args[0][0]
+        assert passed_value == "ja", (
+            f"言語コード 'ja' が渡されること。実際に渡された値: {passed_value!r}"
+        )
+        assert passed_value != "日本語", "表示名ではなくコードが渡されること"
+
+    def test_route_a_language_change_no_op_when_system_none(self):
+        """_konnyaku_system が None のとき例外なく終了すること（system None ガード）。"""
+        app._konnyaku_system = None
+        app._konnyaku_running = False
+
+        with patch.object(app, "_save_settings"), \
+             patch("app.dpg"):
+            # 例外が出ないことを確認
+            app._on_route_a_language_change("sender", "English", None)
