@@ -510,3 +510,115 @@ class TestRouteBLabelTag:
     def test_tag_ptt_status_label_defined(self):
         """TAG_PTT_STATUS_LABEL タグが app モジュールに定義されていること（F-6 押下中表示用）。"""
         assert hasattr(app, 'TAG_PTT_STATUS_LABEL'), "TAG_PTT_STATUS_LABEL が app に定義されていない"
+
+
+# ---------------------------------------------------------------------------
+# C-1: _on_ptt_press/_on_ptt_release が _gui_queue 経由で視覚更新すること
+# ---------------------------------------------------------------------------
+
+class TestPttPressUsesGuiQueue:
+    def test_ptt_press_uses_gui_queue(self):
+        """_on_ptt_press が直接 _update_ptt_visual_feedback() を呼ばず
+        _gui_queue に 'update_ptt_visual' コマンドを enqueue すること（C-1）。"""
+        import queue as _queue
+
+        mock_system = MagicMock()
+        app._konnyaku_system = mock_system
+        app._konnyaku_running = True
+
+        # _gui_queue を空にしてから呼び出す
+        while not app._gui_queue.empty():
+            app._gui_queue.get_nowait()
+
+        event = MagicMock()
+        with patch.object(app, '_update_ptt_visual_feedback') as mock_visual:
+            app._on_ptt_press(event)
+
+            # _update_ptt_visual_feedback が直接呼ばれていないこと
+            mock_visual.assert_not_called()
+
+        # _gui_queue に 'update_ptt_visual' が入っていること
+        items = []
+        while not app._gui_queue.empty():
+            items.append(app._gui_queue.get_nowait())
+        cmds = [i.get("cmd") for i in items]
+        assert "update_ptt_visual" in cmds, \
+            f"_gui_queue に 'update_ptt_visual' が enqueue されていない。実際: {cmds}"
+
+    def test_ptt_release_uses_gui_queue(self):
+        """_on_ptt_release が直接 _update_ptt_visual_feedback() を呼ばず
+        _gui_queue に 'update_ptt_visual' コマンドを enqueue すること（C-1）。"""
+        import queue as _queue
+
+        mock_system = MagicMock()
+        app._konnyaku_system = mock_system
+        app._konnyaku_running = True
+
+        # _gui_queue を空にしてから呼び出す
+        while not app._gui_queue.empty():
+            app._gui_queue.get_nowait()
+
+        event = MagicMock()
+        with patch.object(app, '_update_ptt_visual_feedback') as mock_visual:
+            app._on_ptt_release(event)
+
+            # _update_ptt_visual_feedback が直接呼ばれていないこと
+            mock_visual.assert_not_called()
+
+        # _gui_queue に 'update_ptt_visual' が入っていること
+        items = []
+        while not app._gui_queue.empty():
+            items.append(app._gui_queue.get_nowait())
+        cmds = [i.get("cmd") for i in items]
+        assert "update_ptt_visual" in cmds, \
+            f"_gui_queue に 'update_ptt_visual' が enqueue されていない。実際: {cmds}"
+
+    def test_gui_queue_consumes_update_ptt_visual(self):
+        """_drain_queue() が 'update_ptt_visual' コマンドを消費して
+        _update_ptt_visual_feedback() をメインスレッドから呼ぶこと（C-1）。"""
+        app._gui_queue.put({"cmd": "update_ptt_visual"})
+
+        with patch.object(app, '_update_ptt_visual_feedback') as mock_visual:
+            app._drain_queue()
+            mock_visual.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# W-1: 待機中ラベルのホットキー文字列が動的に反映されること
+# ---------------------------------------------------------------------------
+
+class TestIdleLabelUsesCurrentHotkey:
+    def test_idle_label_uses_current_hotkey(self):
+        """ホットキーを変更すると待機中ラベルが _ptt_hotkey を反映すること（W-1）。"""
+        import dearpygui.dearpygui as dpg_real
+
+        app._ptt_enabled = True
+        app._dpg_ready = False  # dpg 未初期化環境でのテスト
+
+        # _ptt_hotkey を f8 以外に変更して _update_ptt_visual_feedback を呼ぶ
+        # dpg_ready=False なので実際の dpg 操作は行われないが、
+        # ラベル文字列生成ロジックをパッチして確認する
+
+        # dpg.does_item_exist が True を返すよう、かつ dpg.set_value / configure_item を
+        # モックして呼び出し引数を検証する
+        app._ptt_hotkey = "f9"
+        app._dpg_ready = True
+
+        with patch.object(dpg_real, 'does_item_exist', return_value=True), \
+             patch.object(dpg_real, 'set_value') as mock_set_value, \
+             patch.object(dpg_real, 'configure_item'), \
+             patch.object(app, '_is_ptt_pressing', return_value=False):
+            app._update_ptt_visual_feedback()
+
+        # TAG_PTT_STATUS_LABEL への set_value 呼び出しを検索
+        calls_for_status = [
+            c for c in mock_set_value.call_args_list
+            if c.args and c.args[0] == app.TAG_PTT_STATUS_LABEL
+        ]
+        assert calls_for_status, "TAG_PTT_STATUS_LABEL への set_value が呼ばれていない"
+
+        label_value = calls_for_status[0].args[1]
+        assert "F9" in label_value or "f9" in label_value, \
+            f"待機中ラベルに _ptt_hotkey ('f9') が含まれていない。実際: {label_value!r}"
+        assert "F8" not in label_value, \
+            f"待機中ラベルに古いホットキー 'F8' がハードコードされている。実際: {label_value!r}"
