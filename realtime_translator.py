@@ -275,17 +275,16 @@ class RealtimeTranslator:
             # 注: 原文文字起こし（session.input_transcript.*）を受信するには
             # audio.input.transcription.model を明示指定する必要がある。
             # 参照: https://developers.openai.com/cookbook/examples/voice_solutions/realtime_translation_guide
-            audio_output_cfg: dict = {"language": self._target_language_code}
+            audio_section: dict = {
+                "input": {
+                    "transcription": {"model": "gpt-realtime-whisper"}
+                }
+            }
+            if self._request_audio_output:
+                audio_section["output"] = {"language": self._target_language_code}
             await ws.send(json.dumps({
                 "type": "session.update",
-                "session": {
-                    "audio": {
-                        "input": {
-                            "transcription": {"model": "gpt-realtime-whisper"}
-                        },
-                        "output": audio_output_cfg
-                    }
-                }
+                "session": {"audio": audio_section}
             }))
 
             if self._on_connected:
