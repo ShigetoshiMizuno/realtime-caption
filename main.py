@@ -432,7 +432,10 @@ class CaptionSystem:
                  vad_enabled: bool = False,
                  vad_threshold: float = 0.5,
                  vad_prefix_padding_ms: int = 300,
-                 vad_silence_duration_ms: int = 500):
+                 vad_silence_duration_ms: int = 500,
+                 idle_disconnect_enabled: bool = False,
+                 idle_timeout_sec: float = 300.0,
+                 idle_audio_threshold: int = 100):
         self._config = config
         self._device_info = device_info
         self._model_name = model_name
@@ -448,6 +451,11 @@ class CaptionSystem:
         self._vad_threshold: float = vad_threshold
         self._vad_prefix_padding_ms: int = vad_prefix_padding_ms
         self._vad_silence_duration_ms: int = vad_silence_duration_ms
+        # W-COST-4: アイドル時セッション自動切断。False（デフォルト）で既存挙動維持。
+        self._idle_disconnect_enabled: bool = idle_disconnect_enabled
+        self._idle_timeout_sec: float = idle_timeout_sec
+        self._idle_audio_threshold: int = idle_audio_threshold
+        self._idle_monitor = None  # _create_realtime_translator で生成（enabled=True のみ）
 
         # 翻訳モード判定
         trans_model = config.get("translation", {}).get("translation_model", "openai").lower()
@@ -648,6 +656,14 @@ class CaptionSystem:
             on_max_reached=self._on_cost_max_reached,
             on_warning=self._on_cost_warning,
         )
+        # W-COST-4: アイドル切断モニターを生成（enabled=True かつ未生成の場合のみ）
+        if self._idle_disconnect_enabled and self._idle_monitor is None:
+            from cost_monitor import IdleDisconnectMonitor
+            self._idle_monitor = IdleDisconnectMonitor(
+                idle_timeout_sec=self._idle_timeout_sec,
+                audio_threshold=self._idle_audio_threshold,
+                on_idle_timeout=self._on_idle_timeout,
+            )
 
     def start(self) -> None:
         """IDLE / ERROR 状態から RUNNING へ遷移する。
@@ -828,6 +844,12 @@ class CaptionSystem:
                     f" {_time.monotonic() - _t1:.3f}s",
                     flush=True,
                 )
+            # W-COST-4: アイドル切断モニターを停止
+            if getattr(self, "_idle_monitor", None) is not None:
+                try:
+                    self._idle_monitor.stop()
+                except Exception:
+                    pass
             print(
                 f"[TIMING] CaptionSystem(route_id={route_id}).stop() TOTAL:"
                 f" {_time.monotonic() - _t0:.3f}s",
@@ -847,6 +869,8 @@ class CaptionSystem:
             # target_language_code 等の最新設定が反映される（stop→start サイクルで言語反映）。
             self._realtime_translator = None
             self._cost_monitor = None
+            # W-COST-4: アイドル切断モニターを None にリセット（次回 start() で再生成）
+            self._idle_monitor = None
             self._set_state(RouteState.IDLE)
 
     def shutdown(self) -> None:
@@ -1055,6 +1079,33 @@ class CaptionSystem:
         # GUI 側でフラグを立てて警告モーダルを表示させる（dpg 直接呼び出しは安全でない）
         if getattr(self, "_on_cost_warning_cb", None) is not None:
             self._on_cost_warning_cb(threshold)
+
+    def _on_idle_timeout(self) -> None:
+        """IdleDisconnectMonitor からのアイドル通知。RealtimeTranslator を切断する。
+
+        W-COST-4: アイドル時間経過時に IdleDisconnectMonitor のウォッチャーループから
+        コールバックされる。切断フラグを立て、WebSocket セッションを切断する。
+        state は維持（IDLE には戻さない、ユーザー再開待ち）。
+        """
+        self._log("INFO", f"アイドル {self._idle_timeout_sec:.0f} 秒を検知 → 切断")
+        if self._idle_monitor is not None:
+            self._idle_monitor.set_disconnected(True)
+        if self._realtime_translator is not None:
+            self._realtime_translator.disconnect()
+
+    def resume_from_idle(self) -> None:
+        """アイドル切断状態から再接続する（ユーザートリガー）。
+
+        W-COST-4 PR2: スケルトン実装。PR3 で app.py の「再開」ボタン / PTT 押下から呼ばれる予定。
+        _idle_monitor が None または切断状態でない場合は no-op。
+        """
+        if self._idle_monitor is None or not self._idle_monitor.is_disconnected():
+            return
+        self._log("INFO", "アイドルから再接続")
+        if self._realtime_translator is not None:
+            self._realtime_translator.connect()
+        self._idle_monitor.reset_idle_timer()
+        self._idle_monitor.set_disconnected(False)
 
     async def _realtime_broadcast(self, original: str, translated: str, route: str = "a"):
         """Realtime 原文・翻訳テキストを WebSocket とログに配信する。
@@ -1273,6 +1324,9 @@ class CaptionSystem:
                     pct = level_window_max * 100 // 32767
                     bar = "█" * (pct // 5)
                     self._log("AUDIO", f"peak={level_window_max:>5d} ({pct:3d}%) {bar} chunks={level_window_chunks}")
+                    # W-COST-4: アイドル切断モニターに 1 秒間のピーク値を報告
+                    if self._idle_monitor is not None:
+                        self._idle_monitor.report_audio_level(level_window_max)
                     level_window_max = 0
                     level_window_chunks = 0
                     next_log = now + 1.0
@@ -1441,6 +1495,10 @@ class CaptionSystem:
         if self._cost_monitor is not None:
             self._cost_monitor.start()
 
+        # W-COST-4: アイドル切断モニターを起動（enabled=True かつ生成済みの場合のみ）
+        if self._idle_monitor is not None:
+            self._idle_monitor.start()
+
         recorder_thread = threading.Thread(target=self._start_recorder, daemon=True)
         recorder_thread.start()
 
@@ -1592,6 +1650,9 @@ class RouteConfig:
     vad_threshold: float = 0.5             # W-COST-3: VAD 起動音量閾値（0.0〜1.0）
     vad_prefix_padding_ms: int = 300        # W-COST-3: 発話開始前に遡るバッファ（ms）
     vad_silence_duration_ms: int = 500      # W-COST-3: 無音判定時間（ms）
+    idle_disconnect_enabled: bool = False   # W-COST-4: アイドル切断有効フラグ。デフォルト False（後方互換・安全側）
+    idle_timeout_sec: float = 300.0         # W-COST-4: アイドル判定タイムアウト（秒）
+    idle_audio_threshold: int = 100         # W-COST-4: 無音とみなす音量上限（int16 絶対値 max）
 
 
 class MultiCaptionSystem:
@@ -1662,6 +1723,9 @@ class MultiCaptionSystem:
                 vad_threshold=route_a.vad_threshold,
                 vad_prefix_padding_ms=route_a.vad_prefix_padding_ms,
                 vad_silence_duration_ms=route_a.vad_silence_duration_ms,
+                idle_disconnect_enabled=route_a.idle_disconnect_enabled,
+                idle_timeout_sec=route_a.idle_timeout_sec,
+                idle_audio_threshold=route_a.idle_audio_threshold,
             )
         else:
             self._route_a = None
@@ -1688,6 +1752,9 @@ class MultiCaptionSystem:
                 vad_threshold=route_b.vad_threshold,
                 vad_prefix_padding_ms=route_b.vad_prefix_padding_ms,
                 vad_silence_duration_ms=route_b.vad_silence_duration_ms,
+                idle_disconnect_enabled=route_b.idle_disconnect_enabled,
+                idle_timeout_sec=route_b.idle_timeout_sec,
+                idle_audio_threshold=route_b.idle_audio_threshold,
             )
         else:
             self._route_b = None
