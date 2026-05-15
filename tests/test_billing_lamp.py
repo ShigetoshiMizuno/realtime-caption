@@ -139,7 +139,7 @@ class TestUpdateBillingLamp:
         """dpg モックを返す。"""
         mock = MagicMock()
         mock.does_item_exist.return_value = item_exists
-        mock.get_value.return_value = "🟢 課金なし"
+        mock.get_value.return_value = "● 課金なし"
         return mock
 
     def test_dpg_not_ready_is_noop(self):
@@ -160,19 +160,19 @@ class TestUpdateBillingLamp:
         dpg_mock.set_value.assert_not_called()
 
     def test_none_state_sets_green_label(self):
-        """課金なし（"none"）のとき "🟢 課金なし" がセットされること。"""
+        """課金なし（"none"）のとき "● 課金なし" がセットされること。"""
         dpg_mock = self._make_dpg_mock()
-        dpg_mock.get_value.return_value = "🔴 両方課金"  # 既存値が違う
+        dpg_mock.get_value.return_value = "● 両方課金"  # 既存値が違う
         with patch.object(app, "_dpg_ready", True), \
              patch.object(app, "dpg", dpg_mock), \
              patch.object(app, "_konnyaku_system", None):
             app._update_billing_lamp()
-        dpg_mock.set_value.assert_called_once_with(app.TAG_BILLING_LAMP, "🟢 課金なし")
+        dpg_mock.set_value.assert_called_once_with(app.TAG_BILLING_LAMP, "● 課金なし")
 
     def test_single_state_sets_yellow_label(self):
-        """片方課金（"single"）のとき "🟡 片方課金" がセットされること。"""
+        """片方課金（"single"）のとき "● 片方課金" がセットされること。"""
         dpg_mock = self._make_dpg_mock()
-        dpg_mock.get_value.return_value = "🟢 課金なし"
+        dpg_mock.get_value.return_value = "● 課金なし"
         system = _make_konnyaku(
             _make_route(RouteState.RUNNING),
             _make_route(RouteState.IDLE),
@@ -181,12 +181,12 @@ class TestUpdateBillingLamp:
              patch.object(app, "dpg", dpg_mock), \
              patch.object(app, "_konnyaku_system", system):
             app._update_billing_lamp()
-        dpg_mock.set_value.assert_called_once_with(app.TAG_BILLING_LAMP, "🟡 片方課金")
+        dpg_mock.set_value.assert_called_once_with(app.TAG_BILLING_LAMP, "● 片方課金")
 
     def test_both_state_sets_red_label(self):
-        """両方課金（"both"）のとき "🔴 両方課金" がセットされること。"""
+        """両方課金（"both"）のとき "● 両方課金" がセットされること。"""
         dpg_mock = self._make_dpg_mock()
-        dpg_mock.get_value.return_value = "🟢 課金なし"
+        dpg_mock.get_value.return_value = "● 課金なし"
         system = _make_konnyaku(
             _make_route(RouteState.RUNNING),
             _make_route(RouteState.RUNNING),
@@ -195,7 +195,48 @@ class TestUpdateBillingLamp:
              patch.object(app, "dpg", dpg_mock), \
              patch.object(app, "_konnyaku_system", system):
             app._update_billing_lamp()
-        dpg_mock.set_value.assert_called_once_with(app.TAG_BILLING_LAMP, "🔴 両方課金")
+        dpg_mock.set_value.assert_called_once_with(app.TAG_BILLING_LAMP, "● 両方課金")
+
+    def test_none_state_sets_green_color(self):
+        """課金なし（"none"）のとき configure_item で緑色 (0, 200, 0, 255) がセットされること。"""
+        dpg_mock = self._make_dpg_mock()
+        with patch.object(app, "_dpg_ready", True), \
+             patch.object(app, "dpg", dpg_mock), \
+             patch.object(app, "_konnyaku_system", None):
+            app._update_billing_lamp()
+        dpg_mock.configure_item.assert_called_once_with(
+            app.TAG_BILLING_LAMP, color=(0, 200, 0, 255)
+        )
+
+    def test_single_state_sets_yellow_color(self):
+        """片方課金（"single"）のとき configure_item で黄色 (255, 200, 0, 255) がセットされること。"""
+        dpg_mock = self._make_dpg_mock()
+        system = _make_konnyaku(
+            _make_route(RouteState.RUNNING),
+            _make_route(RouteState.IDLE),
+        )
+        with patch.object(app, "_dpg_ready", True), \
+             patch.object(app, "dpg", dpg_mock), \
+             patch.object(app, "_konnyaku_system", system):
+            app._update_billing_lamp()
+        dpg_mock.configure_item.assert_called_once_with(
+            app.TAG_BILLING_LAMP, color=(255, 200, 0, 255)
+        )
+
+    def test_both_state_sets_red_color(self):
+        """両方課金（"both"）のとき configure_item で赤色 (220, 0, 0, 255) がセットされること。"""
+        dpg_mock = self._make_dpg_mock()
+        system = _make_konnyaku(
+            _make_route(RouteState.RUNNING),
+            _make_route(RouteState.RUNNING),
+        )
+        with patch.object(app, "_dpg_ready", True), \
+             patch.object(app, "dpg", dpg_mock), \
+             patch.object(app, "_konnyaku_system", system):
+            app._update_billing_lamp()
+        dpg_mock.configure_item.assert_called_once_with(
+            app.TAG_BILLING_LAMP, color=(220, 0, 0, 255)
+        )
 
 
 # ===========================================================================
