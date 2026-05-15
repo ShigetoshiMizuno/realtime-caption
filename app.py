@@ -2853,8 +2853,12 @@ def _load_fonts(size: int = 16):
 
     with dpg.font_registry():
         if jp_font_path:
-            # dearpygui 2.x では文字範囲は自動（add_font_range_hint は no-op）
-            _font_main = dpg.add_font(jp_font_path, size)
+            # 2026-05-16: 実機で日本語が全部 "?" になる文字化け発生。
+            # 「dearpygui 2.x では自動」は誤りで、明示的に Japanese range hint を
+            # 追加しないと CJK が描画されない。
+            with dpg.font(jp_font_path, size) as _font_main_ctx:
+                dpg.add_font_range_hint(dpg.mvFontRangeHint_Japanese)
+            _font_main = _font_main_ctx
         _font_emoji = None
 
 
