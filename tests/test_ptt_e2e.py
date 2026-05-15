@@ -1,8 +1,13 @@
 """PTT 機能の E2E テスト（実 keyboard ライブラリ + 仮想キー送出）。
 
 PR #83-86 で実装された PttHotkeyManager / app.py の callback 配線を、
-実 keyboard ライブラリの hook 登録と keyboard.send() による仮想キー
-押下/離脱を使って統合動作確認する。
+実 keyboard ライブラリの hook 登録と keyboard._listener.direct_callback()
+による仮想キーイベント注入で統合動作確認する。
+
+注意: keyboard.send() / keyboard.press() は自身のフックを経由しない
+（keyboard._listener.is_replaying=True の間はフックをスキップする仕様）。
+そのため本テストでは keyboard._listener.direct_callback() で
+直接イベントを注入してコールバック配線を E2E 検証する。
 
 CI 環境では keyboard のフック登録に管理者権限が必要なため、
 @pytest.mark.skipif でスキップするマーカーを付ける。
@@ -13,7 +18,6 @@ CI 環境では keyboard のフック登録に管理者権限が必要なため�
 """
 
 import os
-import sys
 import time
 import threading
 from unittest.mock import MagicMock, patch
@@ -48,6 +52,40 @@ requires_keyboard_e2e = pytest.mark.skipif(
 # E2E テスト自体は CI ではスキップだが、ローカル実行時には
 # KEYBOARD_E2E_ENABLE=1 pytest tests/test_ptt_e2e.py で動作する。
 
+
+# ===========================================================================
+# ヘルパー: keyboard._listener 経由でイベントを注入する
+# ===========================================================================
+
+def _inject_key_event(key: str, event_type: str) -> None:
+    """実 keyboard ライブラリのリスナーに直接キーイベントを注入する。
+
+    keyboard.send() / keyboard.press() は is_replaying=True の間フックを
+    スキップする仕様のため、direct_callback() を使って OS 経由と同等の
+    イベント処理パスを通す。
+
+    Parameters
+    ----------
+    key : str
+        keyboard ライブラリのキー名（例: "f8"）
+    event_type : str
+        "down" または "up"
+    """
+    import keyboard
+    from keyboard import KeyboardEvent, KEY_DOWN, KEY_UP
+
+    scan_codes = keyboard.key_to_scan_codes(key)
+    sc = scan_codes[0]
+    etype = KEY_DOWN if event_type == "down" else KEY_UP
+    event = KeyboardEvent(etype, sc, key)
+
+    listener = keyboard._listener
+    listener.start_if_necessary()
+    # is_replaying=False の状態で direct_callback を呼ぶと
+    # nonblocking_keys ハンドラーが発火してキューにも積まれる
+    listener.direct_callback(event)
+
+
 # ===========================================================================
 # テスト 1: 実 keyboard ライブラリでのフック登録
 # ===========================================================================
@@ -73,20 +111,18 @@ def test_e2e_real_keyboard_hook_registration():
 
 
 # ===========================================================================
-# テスト 2: keyboard.send() による仮想キー送出で on_press / on_release が呼ばれる
+# テスト 2: 仮想キー注入で on_press / on_release が呼ばれる
 # ===========================================================================
 
 
 @requires_keyboard_e2e
 def test_e2e_simulate_press_and_release():
-    """keyboard.send() で仮想キーを送出すると on_press / on_release が呼ばれること。
+    """_inject_key_event() で仮想キーを注入すると on_press / on_release が呼ばれること。
 
-    実 keyboard ライブラリのフック + keyboard.send() による仮想キー送出で
+    実 keyboard ライブラリのフック登録 + direct_callback() によるイベント注入で
     PttHotkeyManager の callback 配線を E2E 検証する。
     on_release は離脱デバウンス（500ms タイマー）があるため、タイマー満了後に確認する。
     """
-    import keyboard
-
     press_calls = []
     release_calls = []
 
@@ -105,16 +141,20 @@ def test_e2e_simulate_press_and_release():
 
     try:
         # キー押下をシミュレート
-        keyboard.send("f8", do_press=True, do_release=False)
+        _inject_key_event("f8", "down")
         # 100ms 待機して press イベントの処理を確認
         time.sleep(0.1)
-        assert len(press_calls) == 1, f"on_press が呼ばれなかった (press_calls={press_calls})"
+        assert len(press_calls) == 1, (
+            f"on_press が呼ばれなかった (press_calls={press_calls})"
+        )
 
         # キー離脱をシミュレート
-        keyboard.send("f8", do_press=False, do_release=True)
+        _inject_key_event("f8", "up")
         # 離脱デバウンス（500ms）満了を待つ（余裕を持って 700ms 待機）
         time.sleep(0.7)
-        assert len(release_calls) == 1, f"on_release が呼ばれなかった (release_calls={release_calls})"
+        assert len(release_calls) == 1, (
+            f"on_release が呼ばれなかった (release_calls={release_calls})"
+        )
 
     finally:
         mgr.stop()
@@ -131,8 +171,6 @@ def test_e2e_debounce_under_real_keyboard():
 
     高速連打（200ms 未満）では on_press が 1 回しか発火しないことを確認する。
     """
-    import keyboard
-
     press_calls = []
 
     def on_press(event):
@@ -146,9 +184,9 @@ def test_e2e_debounce_under_real_keyboard():
     mgr.start()
 
     try:
-        # 押下デバウンス 200ms 以内の高速連打
+        # 押下デバウンス 200ms 以内の高速連打（5 回）
         for _ in range(5):
-            keyboard.send("f8", do_press=True, do_release=True)
+            _inject_key_event("f8", "down")
             time.sleep(0.01)  # 10ms 間隔（デバウンス閾値 200ms より短い）
 
         # イベント処理待機
@@ -170,39 +208,31 @@ def test_e2e_debounce_under_real_keyboard():
 
 @requires_keyboard_e2e
 def test_e2e_app_callback_wired():
-    """app.py の _on_ptt_press を mock して callback 配線を E2E 検証する。
+    """app._on_ptt_press 相当のコールバックが実 keyboard フック経由で呼ばれること。
 
-    _init_ptt_manager(ptt_enabled=True, ...) で実 keyboard フックを登録し、
-    keyboard.send('f8', ...) で押下後に mock が呼ばれたことを確認する。
+    実 keyboard フックを登録した PttHotkeyManager に _on_ptt_press 相当の
+    コールバックを設定し、_inject_key_event() で押下後に呼ばれたことを確認する。
+    app.py の _init_ptt_manager が行う配線（hotkey + on_press + on_release）を
+    同等条件で再現して E2E 検証する。
     """
-    import keyboard
+    press_calls = []
 
-    # app モジュールのインポート（GUI 描画なしで PTT 関連関数のみ使用）
-    # app.py は dearpygui 等のインポートがあるが、
-    # _init_ptt_manager / _on_ptt_press は ptt_hotkey_manager に依存するだけなので
-    # module-level の副作用を避けるため直接 import する
-    with patch.dict(os.environ, {"KEYBOARD_E2E_ENABLE": "1"}):
-        # app モジュールの _on_ptt_press を mock で差し替え
-        press_mock = MagicMock()
-        press_calls = []
+    def mock_on_ptt_press(event):
+        """app._on_ptt_press 相当のコールバック（GUI 呼び出しなし）。"""
+        press_calls.append(event)
 
-        def patched_press(event):
-            press_calls.append(event)
+    mgr = PttHotkeyManager(
+        hotkey="f8",
+        on_press=mock_on_ptt_press,
+        on_release=None,
+    )
+    mgr.start()
 
-        mgr = PttHotkeyManager(
-            hotkey="f8",
-            on_press=patched_press,
-            on_release=None,
+    try:
+        _inject_key_event("f8", "down")
+        time.sleep(0.1)
+        assert len(press_calls) == 1, (
+            f"app._on_ptt_press 相当のコールバックが呼ばれなかった (calls={press_calls})"
         )
-        mgr.start()
-
-        try:
-            keyboard.send("f8", do_press=True, do_release=False)
-            time.sleep(0.1)
-            assert len(press_calls) == 1, (
-                f"app._on_ptt_press 相当のコールバックが呼ばれなかった (calls={press_calls})"
-            )
-        finally:
-            mgr.stop()
-            keyboard.send("f8", do_press=False, do_release=True)
-            time.sleep(0.1)
+    finally:
+        mgr.stop()
