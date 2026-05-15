@@ -277,3 +277,21 @@ class TestRenderingLoopWiring:
         assert "_update_billing_lamp" in source, (
             "_update_konnyaku_level_meters の中で _update_billing_lamp() が呼ばれていない"
         )
+
+    def test_billing_lamp_updates_even_when_konnyaku_system_is_none(self):
+        """_konnyaku_system = None の状態で _update_konnyaku_level_meters() を呼ぶと
+        _update_billing_lamp() が呼ばれること。（Issue #99 QA 仕切り直し W-1）
+
+        早期リターン（_konnyaku_system is None）の前に _update_billing_lamp() が
+        配置されていることを実際の呼び出しで確認する。
+        """
+        called = []
+
+        with patch.object(app, "_konnyaku_system", None), \
+             patch.object(app, "_update_billing_lamp", side_effect=lambda: called.append(True)):
+            app._update_konnyaku_level_meters()
+
+        assert len(called) == 1, (
+            "_konnyaku_system=None のとき _update_billing_lamp() が 1 回呼ばれること。"
+            f"実際の呼び出し回数: {len(called)}"
+        )

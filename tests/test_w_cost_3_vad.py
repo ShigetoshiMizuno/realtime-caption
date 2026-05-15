@@ -764,3 +764,199 @@ class TestAppSettingsVad:
         assert created_route_a_kwargs.get("vad_enabled") is False, (
             f"デフォルト False が使われること。got={created_route_a_kwargs}"
         )
+
+
+# ---------------------------------------------------------------------------
+# 8. app.py: VAD 数値パラメータ (threshold / prefix_padding_ms / silence_duration_ms)
+#    の save/load 往復確認 (PR #97 QA 仕切り直し W-2)
+# ---------------------------------------------------------------------------
+
+class TestAppSettingsVadNumericParams:
+    """vad_threshold / vad_prefix_padding_ms / vad_silence_duration_ms が
+    _save_settings / _create_konnyaku_system で正しく保存・読み込みされること。"""
+
+    def setup_method(self):
+        self._old_system = app._konnyaku_system
+        self._old_running = app._konnyaku_running
+
+    def teardown_method(self):
+        app._konnyaku_system = self._old_system
+        app._konnyaku_running = self._old_running
+
+    def _run_save_settings(self) -> dict:
+        """_save_settings を呼んで保存された dict を返すヘルパー。"""
+        saved_data = {}
+
+        def fake_json_dump(data, f, **kwargs):
+            saved_data.update(data)
+
+        with patch("app.dpg") as mock_dpg, \
+             patch("app._dpg_ready", True), \
+             patch("app.json.dump", fake_json_dump), \
+             patch("builtins.open", MagicMock()):
+            mock_dpg.does_item_exist.return_value = True
+            mock_dpg.get_value.side_effect = lambda tag: {
+                app.TAG_ROUTE_A_SOURCE_TRANSCRIPT_ENABLE: True,
+                app.TAG_ROUTE_B_SOURCE_TRANSCRIPT_ENABLE: True,
+            }.get(tag, "")
+            app._save_settings()
+
+        return saved_data
+
+    def test_save_settings_includes_vad_numeric_params_route_a(self):
+        """_save_settings が route_a の vad 数値パラメータ 3 つを保存すること。
+        (PR #97 QA 仕切り直し W-2)"""
+        saved_data = self._run_save_settings()
+        route_a = saved_data.get("route_a", {})
+        assert "vad_threshold" in route_a, (
+            f"route_a に vad_threshold が保存されること。route_a={route_a}"
+        )
+        assert "vad_prefix_padding_ms" in route_a, (
+            f"route_a に vad_prefix_padding_ms が保存されること。route_a={route_a}"
+        )
+        assert "vad_silence_duration_ms" in route_a, (
+            f"route_a に vad_silence_duration_ms が保存されること。route_a={route_a}"
+        )
+
+    def test_save_settings_includes_vad_numeric_params_route_b(self):
+        """_save_settings が route_b の vad 数値パラメータ 3 つを保存すること。
+        (PR #97 QA 仕切り直し W-2)"""
+        saved_data = self._run_save_settings()
+        route_b = saved_data.get("route_b", {})
+        assert "vad_threshold" in route_b, (
+            f"route_b に vad_threshold が保存されること。route_b={route_b}"
+        )
+        assert "vad_prefix_padding_ms" in route_b, (
+            f"route_b に vad_prefix_padding_ms が保存されること。route_b={route_b}"
+        )
+        assert "vad_silence_duration_ms" in route_b, (
+            f"route_b に vad_silence_duration_ms が保存されること。route_b={route_b}"
+        )
+
+    def test_create_konnyaku_system_passes_vad_numeric_params_to_route_config(self):
+        """_create_konnyaku_system が saved settings の vad 数値パラメータを
+        RouteConfig に反映すること。(PR #97 QA 仕切り直し W-2)"""
+        fake_devices = [{"name": "Mic1", "index": 0, "samplerate": 16000}]
+        fake_settings = {
+            "route_a": {
+                "device": "Mic1",
+                "lang": "",
+                "output_enabled": False,
+                "source_transcript_enabled": True,
+                "vad_enabled": False,
+                "vad_threshold": 0.7,
+                "vad_prefix_padding_ms": 200,
+                "vad_silence_duration_ms": 800,
+            },
+            "route_b": {
+                "device": "Mic1",
+                "lang": "",
+                "output_enabled": False,
+                "source_transcript_enabled": True,
+                "vad_enabled": False,
+                "vad_threshold": 0.6,
+                "vad_prefix_padding_ms": 150,
+                "vad_silence_duration_ms": 600,
+            },
+        }
+
+        app._konnyaku_system = None
+        app._konnyaku_running = False
+        captured_a = {}
+        captured_b = {}
+
+        def capturing_mcs(config, route_a, route_b, **kwargs):
+            if route_a is not None:
+                captured_a["vad_threshold"] = route_a.vad_threshold
+                captured_a["vad_prefix_padding_ms"] = route_a.vad_prefix_padding_ms
+                captured_a["vad_silence_duration_ms"] = route_a.vad_silence_duration_ms
+            if route_b is not None:
+                captured_b["vad_threshold"] = route_b.vad_threshold
+                captured_b["vad_prefix_padding_ms"] = route_b.vad_prefix_padding_ms
+                captured_b["vad_silence_duration_ms"] = route_b.vad_silence_duration_ms
+            mock_mcs = MagicMock()
+            mock_mcs.route_a_system = MagicMock()
+            mock_mcs.route_b_system = MagicMock()
+            return mock_mcs
+
+        with patch("app._load_settings", return_value=fake_settings), \
+             patch("app._devices", fake_devices), \
+             patch("app.MultiCaptionSystem", side_effect=capturing_mcs), \
+             patch("app.list_audio_devices", return_value=[]), \
+             patch("app.find_device_by_name", return_value=None):
+            app._create_konnyaku_system()
+
+        import pytest as _pytest
+        assert captured_a.get("vad_threshold") == _pytest.approx(0.7), (
+            f"route_a vad_threshold=0.7 が反映されること。got={captured_a}"
+        )
+        assert captured_a.get("vad_prefix_padding_ms") == 200, (
+            f"route_a vad_prefix_padding_ms=200 が反映されること。got={captured_a}"
+        )
+        assert captured_a.get("vad_silence_duration_ms") == 800, (
+            f"route_a vad_silence_duration_ms=800 が反映されること。got={captured_a}"
+        )
+        assert captured_b.get("vad_threshold") == _pytest.approx(0.6), (
+            f"route_b vad_threshold=0.6 が反映されること。got={captured_b}"
+        )
+        assert captured_b.get("vad_prefix_padding_ms") == 150, (
+            f"route_b vad_prefix_padding_ms=150 が反映されること。got={captured_b}"
+        )
+        assert captured_b.get("vad_silence_duration_ms") == 600, (
+            f"route_b vad_silence_duration_ms=600 が反映されること。got={captured_b}"
+        )
+
+    def test_create_konnyaku_system_fallback_for_invalid_vad_numeric_params(self):
+        """saved settings に vad 数値パラメータが文字列など不正値の場合、
+        デフォルト値（threshold=0.5, prefix=300, silence=500）にフォールバックすること。
+        (PR #97 QA 仕切り直し W-2)"""
+        fake_devices = [{"name": "Mic1", "index": 0, "samplerate": 16000}]
+        fake_settings = {
+            "route_a": {
+                "device": "Mic1",
+                "lang": "",
+                "output_enabled": False,
+                "source_transcript_enabled": True,
+                "vad_enabled": False,
+                "vad_threshold": "invalid",     # 不正値
+                "vad_prefix_padding_ms": None,  # 不正値
+                "vad_silence_duration_ms": [],  # 不正値
+            },
+            "route_b": {
+                "device": "Mic1",
+                "lang": "",
+                "output_enabled": False,
+            },
+        }
+
+        app._konnyaku_system = None
+        app._konnyaku_running = False
+        captured_a = {}
+
+        def capturing_mcs(config, route_a, route_b, **kwargs):
+            if route_a is not None:
+                captured_a["vad_threshold"] = route_a.vad_threshold
+                captured_a["vad_prefix_padding_ms"] = route_a.vad_prefix_padding_ms
+                captured_a["vad_silence_duration_ms"] = route_a.vad_silence_duration_ms
+            mock_mcs = MagicMock()
+            mock_mcs.route_a_system = MagicMock()
+            mock_mcs.route_b_system = MagicMock()
+            return mock_mcs
+
+        with patch("app._load_settings", return_value=fake_settings), \
+             patch("app._devices", fake_devices), \
+             patch("app.MultiCaptionSystem", side_effect=capturing_mcs), \
+             patch("app.list_audio_devices", return_value=[]), \
+             patch("app.find_device_by_name", return_value=None):
+            app._create_konnyaku_system()
+
+        import pytest as _pytest
+        assert captured_a.get("vad_threshold") == _pytest.approx(0.5), (
+            f"不正値の場合 vad_threshold は 0.5 にフォールバックすること。got={captured_a}"
+        )
+        assert captured_a.get("vad_prefix_padding_ms") == 300, (
+            f"不正値の場合 vad_prefix_padding_ms は 300 にフォールバックすること。got={captured_a}"
+        )
+        assert captured_a.get("vad_silence_duration_ms") == 500, (
+            f"不正値の場合 vad_silence_duration_ms は 500 にフォールバックすること。got={captured_a}"
+        )

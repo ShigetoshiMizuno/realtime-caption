@@ -339,6 +339,9 @@ def _save_settings():
                 "output_volume":            _get(TAG_ROUTE_A_OUTPUT_VOLUME, 1.0),
                 "source_transcript_enabled": _get(TAG_ROUTE_A_SOURCE_TRANSCRIPT_ENABLE, True),
                 "vad_enabled":               False,  # W-COST-3: GUI ウィジェット未実装のためデフォルト False
+                "vad_threshold":             0.5,    # W-COST-3: GUI 未実装のためデフォルト値固定保存
+                "vad_prefix_padding_ms":     300,    # W-COST-3: GUI 未実装のためデフォルト値固定保存
+                "vad_silence_duration_ms":   500,    # W-COST-3: GUI 未実装のためデフォルト値固定保存
             },
         }
         # PTT 設定を route_b にマージ（W-3: _build_ptt_settings_dict 経由で統一）
@@ -352,6 +355,9 @@ def _save_settings():
             "output_volume":             _get(TAG_ROUTE_B_OUTPUT_VOLUME, 1.0),
             "source_transcript_enabled": _get(TAG_ROUTE_B_SOURCE_TRANSCRIPT_ENABLE, True),
             "vad_enabled":               False,  # W-COST-3: GUI ウィジェット未実装のためデフォルト False
+            "vad_threshold":             0.5,    # W-COST-3: GUI 未実装のためデフォルト値固定保存
+            "vad_prefix_padding_ms":     300,    # W-COST-3: GUI 未実装のためデフォルト値固定保存
+            "vad_silence_duration_ms":   500,    # W-COST-3: GUI 未実装のためデフォルト値固定保存
         }
         data["route_b"] = _build_ptt_settings_dict(
             existing_data={"route_b": _route_b_base},
@@ -1153,6 +1159,27 @@ def _create_konnyaku_system() -> None:
     a_vad_enabled = bool(route_a_saved.get("vad_enabled", False))
     b_vad_enabled = bool(route_b_saved.get("vad_enabled", False))
 
+    # W-COST-3: VAD 数値パラメータを保存設定から読み込む（不正値はデフォルトにフォールバック）
+    # GUI 未実装のため settings.json はデフォルト値固定保存だが、将来の UI 結線に備えて読み込む
+    def _safe_float(val, default: float) -> float:
+        try:
+            return float(val)
+        except (TypeError, ValueError):
+            return default
+
+    def _safe_int(val, default: int) -> int:
+        try:
+            return int(val)
+        except (TypeError, ValueError):
+            return default
+
+    a_vad_threshold = _safe_float(route_a_saved.get("vad_threshold", 0.5), 0.5)
+    a_vad_prefix_padding_ms = _safe_int(route_a_saved.get("vad_prefix_padding_ms", 300), 300)
+    a_vad_silence_duration_ms = _safe_int(route_a_saved.get("vad_silence_duration_ms", 500), 500)
+    b_vad_threshold = _safe_float(route_b_saved.get("vad_threshold", 0.5), 0.5)
+    b_vad_prefix_padding_ms = _safe_int(route_b_saved.get("vad_prefix_padding_ms", 300), 300)
+    b_vad_silence_duration_ms = _safe_int(route_b_saved.get("vad_silence_duration_ms", 500), 500)
+
     route_a_cfg = RouteConfig(
         route_id="a",
         input_device_info=route_a_device,
@@ -1162,6 +1189,9 @@ def _create_konnyaku_system() -> None:
         output_volume=float(route_a_saved.get("output_volume", 1.0)),
         request_source_transcript=a_source_transcript_enabled,
         vad_enabled=a_vad_enabled,
+        vad_threshold=a_vad_threshold,
+        vad_prefix_padding_ms=a_vad_prefix_padding_ms,
+        vad_silence_duration_ms=a_vad_silence_duration_ms,
     )
     route_b_cfg = RouteConfig(
         route_id="b",
@@ -1172,6 +1202,9 @@ def _create_konnyaku_system() -> None:
         output_volume=float(route_b_saved.get("output_volume", 1.0)),
         request_source_transcript=b_source_transcript_enabled,
         vad_enabled=b_vad_enabled,
+        vad_threshold=b_vad_threshold,
+        vad_prefix_padding_ms=b_vad_prefix_padding_ms,
+        vad_silence_duration_ms=b_vad_silence_duration_ms,
     )
 
     _konnyaku_system = MultiCaptionSystem(
@@ -3092,6 +3125,9 @@ def _update_konnyaku_level_meters():
     入力レベル: CaptionSystem.audio_peak_now（capture スレッドが毎チャンク更新）
     出力レベル: AudioOutputStream.audio_peak_now（write 時に更新）
     """
+    # 課金状態ランプは konnyaku_system の有無にかかわらず更新する (Issue #99, QA 仕切り直し W-1)
+    # _get_billing_state() は _konnyaku_system is None のとき "none" を返すので副作用なし
+    _update_billing_lamp()
     if _konnyaku_system is None:
         return
 
@@ -3154,9 +3190,6 @@ def _update_konnyaku_level_meters():
     if dpg.does_item_exist(TAG_LEVEL_METER_B_OUT):
         dpg.set_value(TAG_LEVEL_METER_B_OUT, level_b_out)
         dpg.configure_item(TAG_LEVEL_METER_B_OUT, overlay=f"{int(level_b_out * 100)}%")
-
-    # 課金状態ランプを同じタイミングで更新 (Issue #99)
-    _update_billing_lamp()
 
 
 # ---------------------------------------------------------------------------

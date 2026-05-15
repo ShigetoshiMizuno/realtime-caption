@@ -140,7 +140,7 @@ VAD ON 後:
         self,
         # ... 既存パラメータ省略 ...
         request_source_transcript: bool = True,    # 既存（W-COST-2）
-        vad_enabled: bool = True,                   # W-COST-3 追加
+        vad_enabled: bool = False,                  # W-COST-3 追加（監督判断: False を採用・安全側）
         vad_threshold: float = 0.5,                # W-COST-3 追加
         vad_prefix_padding_ms: int = 300,           # W-COST-3 追加
         vad_silence_duration_ms: int = 500,         # W-COST-3 追加
@@ -184,7 +184,7 @@ VAD ON 後:
         self,
         # ... 既存パラメータ省略 ...
         request_source_transcript: bool = True,
-        vad_enabled: bool = True,
+        vad_enabled: bool = False,                 # 監督判断: False を採用（安全側・既存挙動維持）
         vad_threshold: float = 0.5,
         vad_prefix_padding_ms: int = 300,
         vad_silence_duration_ms: int = 500,
@@ -201,7 +201,7 @@ VAD ON 後:
         output_device_index: int | None
         output_volume: float
         request_source_transcript: bool = True    # W-COST-2（既存）
-        vad_enabled: bool = True                  # W-COST-3 追加
+        vad_enabled: bool = False                 # W-COST-3 追加（監督判断: False を採用・安全側）
         vad_silence_duration_ms: int = 500        # W-COST-3 追加
         vad_threshold: float = 0.5                # W-COST-3 追加
         vad_prefix_padding_ms: int = 300          # W-COST-3 追加
@@ -239,8 +239,8 @@ main.py の route_a 生成（L1605-1618 付近）と route_b 生成（L1627-1640
 - [ ] vad_enabled=False のとき、session.update に turn_detection キーが含まれない（既存挙動）
 - [ ] request_source_transcript=False のとき、VAD 設定に関係なく audio.input キー自体が存在しない（W-COST-2 の既存テスト維持）
 - [ ] request_audio_output と vad_enabled の 2x2 組み合わせで session.update の構造が正しい（マトリクステスト）
-- [ ] RealtimeTranslator のデフォルト値が vad_enabled=True、vad_threshold=0.5、vad_silence_duration_ms=500、vad_prefix_padding_ms=300 である
-- [ ] RouteConfig.vad_enabled のデフォルト値が True である
+- [ ] RealtimeTranslator のデフォルト値が vad_enabled=False、vad_threshold=0.5、vad_silence_duration_ms=500、vad_prefix_padding_ms=300 である（監督判断: False を採用）
+- [ ] RouteConfig.vad_enabled のデフォルト値が False である（監督判断: False を採用・安全側・既存挙動維持）
 - [ ] CaptionSystem._create_realtime_translator() が RouteConfig の VAD 設定を RealtimeTranslator に渡す（単体テスト）
 - [ ] 案 B 採用時: vad_enabled チェックボックスが UI に表示され、変更が settings.json に永続化される（TBD-3-2 次第）
 - [ ] 既存テスト（125 件）が全 PASS のまま維持される
@@ -320,7 +320,7 @@ VB-CABLE 経由 Zoom 音声ではループバック音声が常に音が入っ�
 |---|---|---|
 | TBD-3-1 | gpt-realtime-translate エンドポイントが audio.input.turn_detection を受け入れるか実機検証が必要 | 本仕様全体の前提。API 拒否時は W-COST-3 を将来課題に棚上げ |
 | TBD-3-2 | 案 A（常時 ON、PR1+2 のみ）か案 B（UI 切替、PR1+2+3）か | PR3 の要否。初期値 True/False の選択 |
-| TBD-3-3 | vad_enabled のデフォルト値: True（即時効果）か False（既存挙動維持・安全側）か | 本番投入時のリスク vs コスト削減速度 |
+| ~~TBD-3-3~~ | ~~vad_enabled のデフォルト値: True（即時効果）か False（既存挙動維持・安全側）か~~ | **監督判断: False を採用（安全側・既存挙動維持）[クローズ]** |
 
 ---
 
