@@ -65,6 +65,7 @@ class RealtimeTranslator:
         on_connected: Callable[[], None] | None = None,
         request_audio_output: bool = False,
         on_audio_delta: Callable[[bytes], None] | None = None,
+        request_source_transcript: bool = True,
     ):
         """
         Parameters
@@ -83,6 +84,9 @@ class RealtimeTranslator:
                                   注: 以前は session.update に audio.output.format=pcm16 を追加していたが、
                                   サーバが Unknown parameter エラーで session.update 自体を拒否するため削除。
         on_audio_delta:           音声出力チャンクコールバック (pcm16_bytes: bytes) -> None
+        request_source_transcript: 原文文字起こし（Whisper）を有効化するフラグ。
+                                  False のとき audio.input.transcription を session.update から除外し、
+                                  Whisper 課金を停止する（W-COST-2）。デフォルト True（後方互換）。
         """
         self._api_key = api_key
         self._target_language_code = target_language_code
@@ -96,6 +100,7 @@ class RealtimeTranslator:
         self._on_connected = on_connected
         self._request_audio_output = request_audio_output
         self._on_audio_delta = on_audio_delta
+        self._request_source_transcript = request_source_transcript
 
         # WebSocket エンドポイント（テスト時はこの属性を上書きする）
         self._ws_url = (
@@ -275,11 +280,12 @@ class RealtimeTranslator:
             # 注: 原文文字起こし（session.input_transcript.*）を受信するには
             # audio.input.transcription.model を明示指定する必要がある。
             # 参照: https://developers.openai.com/cookbook/examples/voice_solutions/realtime_translation_guide
-            audio_section: dict = {
-                "input": {
+            # W-COST-2: _request_source_transcript=False のとき transcription を除外して Whisper 課金を停止する。
+            audio_section: dict = {}
+            if self._request_source_transcript:
+                audio_section["input"] = {
                     "transcription": {"model": "gpt-realtime-whisper"}
                 }
-            }
             if self._request_audio_output:
                 audio_section["output"] = {"language": self._target_language_code}
             await ws.send(json.dumps({
