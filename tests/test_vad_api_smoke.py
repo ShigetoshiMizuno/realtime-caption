@@ -8,6 +8,7 @@ run_smoke_test の mock テストを行う。
 実 API キーは一切使わない。fixture はすべてフェイク値のみ。
 """
 
+import asyncio
 import json
 import sys
 from pathlib import Path
@@ -275,15 +276,8 @@ class TestFormatReport:
 class TestRunSmokeTest:
     """run_smoke_test の mock テスト。実 API には接続しない。"""
 
-    def _run(self, coro):
-        """asyncio コルーチンを同期で実行するヘルパー。"""
-        import asyncio
-        return asyncio.get_event_loop().run_until_complete(coro)
-
     def test_success_scenario_returns_ok_status(self):
         """接続成功・エラーなし → status='ok' が返ること。"""
-        import asyncio
-
         async def fake_connect_and_run(api_key, threshold, silence_ms, prefix_ms,
                                        target_lang, timeout):
             # 接続成功・エラーなしシナリオのスタブ
@@ -306,7 +300,7 @@ class TestRunSmokeTest:
             "test_vad_api_smoke.run_smoke_test",
             side_effect=fake_connect_and_run,
         ):
-            result = asyncio.get_event_loop().run_until_complete(
+            result = asyncio.run(
                 fake_connect_and_run(
                     api_key="sk-test-fake-smoke-0000000000000000",
                     threshold=0.5,
@@ -321,8 +315,6 @@ class TestRunSmokeTest:
 
     def test_error_response_scenario_returns_unsupported(self):
         """エラーレスポンス（Unknown parameter）受信 → status='unsupported' が返ること。"""
-        import asyncio
-
         async def fake_connect_and_run(api_key, threshold, silence_ms, prefix_ms,
                                        target_lang, timeout):
             return {
@@ -344,7 +336,7 @@ class TestRunSmokeTest:
             "test_vad_api_smoke.run_smoke_test",
             side_effect=fake_connect_and_run,
         ):
-            result = asyncio.get_event_loop().run_until_complete(
+            result = asyncio.run(
                 fake_connect_and_run(
                     api_key="sk-test-fake-smoke-0000000000000000",
                     threshold=0.5,
@@ -360,8 +352,6 @@ class TestRunSmokeTest:
 
     def test_timeout_scenario_returns_timeout(self):
         """タイムアウト → status='timeout' が返ること。"""
-        import asyncio
-
         async def fake_connect_and_run(api_key, threshold, silence_ms, prefix_ms,
                                        target_lang, timeout):
             return {
@@ -383,7 +373,7 @@ class TestRunSmokeTest:
             "test_vad_api_smoke.run_smoke_test",
             side_effect=fake_connect_and_run,
         ):
-            result = asyncio.get_event_loop().run_until_complete(
+            result = asyncio.run(
                 fake_connect_and_run(
                     api_key="sk-test-fake-smoke-0000000000000000",
                     threshold=0.5,
@@ -398,8 +388,6 @@ class TestRunSmokeTest:
 
     def test_run_smoke_test_with_websocket_mock_success(self):
         """WebSocket モックを使った run_smoke_test 成功シナリオ。"""
-        import asyncio
-
         # WebSocket 接続と受信をモック
         mock_ws = AsyncMock()
         # session.updated イベントを返す（VAD 設定受入 OK）
@@ -411,7 +399,7 @@ class TestRunSmokeTest:
         mock_ws.__aexit__ = AsyncMock(return_value=None)
 
         with patch("test_vad_api_smoke.websockets_connect", return_value=mock_ws):
-            result = asyncio.get_event_loop().run_until_complete(
+            result = asyncio.run(
                 run_smoke_test(
                     api_key="sk-test-fake-smoke-0000000000000000",
                     threshold=0.5,
@@ -427,8 +415,6 @@ class TestRunSmokeTest:
 
     def test_run_smoke_test_with_websocket_mock_error(self):
         """WebSocket モックを使った run_smoke_test エラーシナリオ（Unknown parameter）。"""
-        import asyncio
-
         mock_ws = AsyncMock()
         mock_ws.recv = AsyncMock(return_value=json.dumps({
             "type": "error",
@@ -441,7 +427,7 @@ class TestRunSmokeTest:
         mock_ws.__aexit__ = AsyncMock(return_value=None)
 
         with patch("test_vad_api_smoke.websockets_connect", return_value=mock_ws):
-            result = asyncio.get_event_loop().run_until_complete(
+            result = asyncio.run(
                 run_smoke_test(
                     api_key="sk-test-fake-smoke-0000000000000000",
                     threshold=0.5,
@@ -457,8 +443,6 @@ class TestRunSmokeTest:
 
     def test_run_smoke_test_with_auth_error(self):
         """WebSocket モックを使った run_smoke_test 認証エラーシナリオ。"""
-        import asyncio
-
         mock_ws = AsyncMock()
         mock_ws.recv = AsyncMock(return_value=json.dumps({
             "type": "error",
@@ -472,7 +456,7 @@ class TestRunSmokeTest:
         mock_ws.__aexit__ = AsyncMock(return_value=None)
 
         with patch("test_vad_api_smoke.websockets_connect", return_value=mock_ws):
-            result = asyncio.get_event_loop().run_until_complete(
+            result = asyncio.run(
                 run_smoke_test(
                     api_key="sk-test-fake-smoke-0000000000000000",
                     threshold=0.5,
@@ -488,8 +472,6 @@ class TestRunSmokeTest:
 
     def test_run_smoke_test_result_contains_params(self):
         """run_smoke_test の戻り値に params が含まれること。"""
-        import asyncio
-
         mock_ws = AsyncMock()
         mock_ws.recv = AsyncMock(return_value=json.dumps({
             "type": "session.updated",
@@ -499,7 +481,7 @@ class TestRunSmokeTest:
         mock_ws.__aexit__ = AsyncMock(return_value=None)
 
         with patch("test_vad_api_smoke.websockets_connect", return_value=mock_ws):
-            result = asyncio.get_event_loop().run_until_complete(
+            result = asyncio.run(
                 run_smoke_test(
                     api_key="sk-test-fake-smoke-0000000000000000",
                     threshold=0.7,
