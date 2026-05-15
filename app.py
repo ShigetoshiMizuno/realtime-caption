@@ -995,7 +995,7 @@ def _on_ptt_press(event) -> None:
         daemon=True,
         name="PttStartRouteB",
     ).start()
-    _update_ptt_visual_feedback()
+    _gui_queue.put({"cmd": "update_ptt_visual"})
 
 
 def _on_ptt_release(event) -> None:
@@ -1015,7 +1015,7 @@ def _on_ptt_release(event) -> None:
         daemon=True,
         name="PttStopRouteB",
     ).start()
-    _update_ptt_visual_feedback()
+    _gui_queue.put({"cmd": "update_ptt_visual"})
 
 
 def _on_ptt_chatter_warning() -> None:
@@ -1297,8 +1297,13 @@ def _update_ptt_visual_feedback() -> None:
     呼び出しタイミング:
     - PTT チェックボックス変更時
     - ホットキー変更時
-    - PTT 押下/離脱時（_on_ptt_press / _on_ptt_release から呼ぶ）
+    - PTT 押下/離脱時（_on_ptt_press / _on_ptt_release が _gui_queue 経由でスケジュール）
     - 毎フレーム更新（_update_konnyaku_level_meters と同タイミング）
+
+    Note:
+        _on_ptt_press / _on_ptt_release は keyboard スレッドから呼ばれるため、
+        この関数を直接呼ばず _gui_queue に "update_ptt_visual" コマンドを put する。
+        _drain_queue() がメインスレッドからこの関数を呼び出す（C-1 対応）。
     """
     if not _dpg_ready:
         return
@@ -1326,7 +1331,7 @@ def _update_ptt_visual_feedback() -> None:
             dpg.set_value(TAG_PTT_STATUS_LABEL, "● 送信中")
             dpg.configure_item(TAG_PTT_STATUS_LABEL, show=True)
         else:
-            dpg.set_value(TAG_PTT_STATUS_LABEL, "○ 待機中（F8 で送信）")
+            dpg.set_value(TAG_PTT_STATUS_LABEL, f"○ 待機中（{_ptt_hotkey.upper()} で送信）")
             dpg.configure_item(TAG_PTT_STATUS_LABEL, show=True)
 
     # 入力デバイスコンボの enabled/disabled 切替（TBD-3）
@@ -1806,6 +1811,9 @@ def _drain_queue():
 
         elif cmd == "start_system":
             _do_start(device_index=item.get("device_index"), model=item.get("model"))
+
+        elif cmd == "update_ptt_visual":
+            _update_ptt_visual_feedback()
 
 
 def _clear_log():
