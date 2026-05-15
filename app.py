@@ -76,11 +76,12 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 import dearpygui.dearpygui as dpg
 
 from main import (
-    CaptionSystem, MultiCaptionSystem, RouteConfig,
+    CaptionSystem, MultiCaptionSystem, RouteConfig, RouteState,
     list_audio_devices, find_device_by_name, load_config,
 )
 from config_utils import decode_api_key, encode_api_key
 from constants import get_language_display_names, get_language_codes
+from ptt_hotkey_manager import PttHotkeyManager
 
 # Windows コンソールの文字化け対策
 if sys.stdout.encoding != "utf-8":
@@ -104,6 +105,11 @@ _rpc_server: HTTPServer | None = None
 # 翻訳こんにゃくモード用
 _konnyaku_system: MultiCaptionSystem | None = None
 _konnyaku_running: bool = False
+
+# PTT (Push-to-Talk) モード用 (issue #82 / ptt-mode-design.md)
+_ptt_manager: PttHotkeyManager | None = None
+_ptt_enabled: bool = False
+_ptt_hotkey: str = "f8"
 
 # プリロードキャッシュ
 _preloaded_system: CaptionSystem | None = None
@@ -318,6 +324,9 @@ def _save_settings():
                 "output_enabled": _get(TAG_ROUTE_B_OUTPUT_ENABLE, True),
                 "output_device":  _get(TAG_ROUTE_B_OUTPUT_DEVICE_COMBO, "(なし)"),
                 "output_volume":  _get(TAG_ROUTE_B_OUTPUT_VOLUME, 1.0),
+                # PTT 設定（ptt-mode-design.md F-5）
+                "ptt_enabled":    _ptt_enabled,
+                "ptt_hotkey":     _ptt_hotkey,
             },
         }
         with open(_SETTINGS_PATH, "w", encoding="utf-8") as f:
@@ -957,6 +966,201 @@ def _on_route_b_enable_change(sender, app_data, user_data) -> None:
         _konnyaku_system.start_route("b")
     else:
         _konnyaku_system.stop_route("b")
+
+
+# ---------------------------------------------------------------------------
+# PTT (Push-to-Talk) コールバック・管理関数 (issue #82 / ptt-mode-design.md)
+# ---------------------------------------------------------------------------
+
+def _on_ptt_press(event) -> None:
+    """PTT ホットキー押下コールバック（keyboard スレッドから呼ばれる）。
+
+    start_route("b") は WebSocket 接続を含むため別スレッドで実行する（F-2.1）。
+    _konnyaku_running=False の場合は no-op（F-7.4）。
+    """
+    if not _konnyaku_running:
+        return
+    if _konnyaku_system is None:
+        return
+    print("[PTT] press: route_b 起動", flush=True)
+    threading.Thread(
+        target=_konnyaku_system.start_route,
+        args=("b",),
+        daemon=True,
+        name="PttStartRouteB",
+    ).start()
+
+
+def _on_ptt_release(event) -> None:
+    """PTT ホットキー離脱コールバック（keyboard スレッドから呼ばれる）。
+
+    stop_route("b") は別スレッドで実行する（F-2.2）。
+    _konnyaku_running=False の場合は no-op。
+    """
+    if not _konnyaku_running:
+        return
+    if _konnyaku_system is None:
+        return
+    print("[PTT] release: route_b 停止", flush=True)
+    threading.Thread(
+        target=_konnyaku_system.stop_route,
+        args=("b",),
+        daemon=True,
+        name="PttStopRouteB",
+    ).start()
+
+
+def _on_ptt_chatter_warning() -> None:
+    """連打上限（10秒内に 5 回以上）検出時のコールバック（F-4.3）。"""
+    print("[PTT] 警告: 連打（chatter）を検出しました。しばらく操作をお待ちください。", flush=True)
+
+
+def _load_ptt_settings(saved: dict) -> dict:
+    """settings.json の saved データから PTT 設定を読み込む純関数。
+
+    Parameters
+    ----------
+    saved : dict
+        _load_settings() で読み込んだ設定辞書。
+
+    Returns
+    -------
+    dict
+        "ptt_enabled" (bool) と "ptt_hotkey" (str) を含む辞書。
+        キーが存在しない場合はデフォルト値（False, "f8"）を返す。
+    """
+    route_b = saved.get("route_b", {})
+    return {
+        "ptt_enabled": bool(route_b.get("ptt_enabled", False)),
+        "ptt_hotkey": str(route_b.get("ptt_hotkey", "f8")),
+    }
+
+
+def _build_ptt_settings_dict(
+    existing_data: dict,
+    ptt_enabled: bool,
+    ptt_hotkey: str,
+) -> dict:
+    """PTT 設定を既存データの route_b にマージした辞書を返す純関数。
+
+    既存の route_b キーを破壊せず、ptt_enabled / ptt_hotkey のみ上書きする。
+
+    Parameters
+    ----------
+    existing_data : dict
+        既存の設定辞書（settings.json 相当）。
+    ptt_enabled : bool
+        保存する PTT 有効フラグ。
+    ptt_hotkey : str
+        保存するホットキー文字列。
+
+    Returns
+    -------
+    dict
+        ptt_enabled / ptt_hotkey がマージされた設定辞書。
+    """
+    import copy
+    data = copy.deepcopy(existing_data)
+    route_b = data.setdefault("route_b", {})
+    route_b["ptt_enabled"] = ptt_enabled
+    route_b["ptt_hotkey"] = ptt_hotkey
+    return data
+
+
+def _init_ptt_manager(
+    ptt_enabled: bool,
+    ptt_hotkey: str,
+    keyboard_module=None,
+    timer_factory=None,
+) -> None:
+    """PttHotkeyManager をインスタンス化し、ptt_enabled=True の場合のみ start() する。
+
+    Parameters
+    ----------
+    ptt_enabled : bool
+        True の場合はホットキーの監視を開始する。
+    ptt_hotkey : str
+        監視するホットキー文字列（例: "f8"）。
+    keyboard_module : optional
+        テスト注入用 keyboard モジュール代替。
+    timer_factory : optional
+        テスト注入用タイマーファクトリー。
+    """
+    global _ptt_manager, _ptt_enabled, _ptt_hotkey
+
+    # 既存の manager があれば停止してから置き換え
+    if _ptt_manager is not None:
+        try:
+            _ptt_manager.stop()
+        except Exception:
+            pass
+
+    _ptt_enabled = ptt_enabled
+    _ptt_hotkey = ptt_hotkey
+
+    kwargs = {
+        "hotkey": ptt_hotkey,
+        "on_press": _on_ptt_press,
+        "on_release": _on_ptt_release,
+        "on_chatter_warning": _on_ptt_chatter_warning,
+    }
+    if keyboard_module is not None:
+        kwargs["keyboard_module"] = keyboard_module
+    if timer_factory is not None:
+        kwargs["timer_factory"] = timer_factory
+
+    _ptt_manager = PttHotkeyManager(**kwargs)
+
+    if ptt_enabled:
+        _ptt_manager.start()
+        print(f"[PTT] 有効化: ホットキー={ptt_hotkey}", flush=True)
+    else:
+        print("[PTT] 無効（ptt_enabled=False）", flush=True)
+
+
+def _cleanup_ptt_manager() -> None:
+    """PttHotkeyManager を停止してリソースを解放する（アプリ終了時に呼ぶ）。
+
+    F-7.5: アプリ終了時のホットキー登録解除。
+    _ptt_manager が None の場合は no-op。
+    """
+    global _ptt_manager
+    if _ptt_manager is None:
+        return
+    try:
+        _ptt_manager.stop()
+    except Exception as e:
+        print(f"[PTT] クリーンアップ中にエラー: {e}", flush=True)
+    finally:
+        _ptt_manager = None
+
+
+def _is_route_b_active_for_meter(ptt_enabled: bool) -> bool:
+    """レベルメーター表示用に系統Bが稼働中かどうかを返す純関数（F-7.1）。
+
+    PTT モード有効時は RouteState.RUNNING で判定し、
+    PTT モード無効時はチェックボックスの値（呼び出し側が提供）に委ねる。
+
+    Parameters
+    ----------
+    ptt_enabled : bool
+        PTT モードが有効かどうか。
+
+    Returns
+    -------
+    bool
+        True = 系統B稼働中（レベルメーターを更新すべき）。
+    """
+    if not ptt_enabled:
+        # PTT 無効時: 呼び出し側がチェックボックス値で判定するため True を返す
+        # （既存の route_b_enabled ロジックを維持）
+        return True
+    if _konnyaku_system is None:
+        return False
+    route_b = _konnyaku_system.route_b_system
+    if route_b is None:
+        return False
+    return route_b.state == RouteState.RUNNING
 
 
 def _on_route_a_device_change(sender, app_data, user_data) -> None:
@@ -2344,10 +2548,15 @@ def _update_konnyaku_level_meters():
         bool(dpg.get_value(TAG_ROUTE_A_ENABLE))
         if dpg.does_item_exist(TAG_ROUTE_A_ENABLE) else True
     )
-    route_b_enabled = (
-        bool(dpg.get_value(TAG_ROUTE_B_ENABLE))
-        if dpg.does_item_exist(TAG_ROUTE_B_ENABLE) else True
-    )
+    # PTT モード ON 時は RouteState.RUNNING で判定する（F-7.1）
+    # PTT モード OFF 時は従来通りチェックボックスの値で判定する
+    if _ptt_enabled:
+        route_b_enabled = _is_route_b_active_for_meter(ptt_enabled=True)
+    else:
+        route_b_enabled = (
+            bool(dpg.get_value(TAG_ROUTE_B_ENABLE))
+            if dpg.does_item_exist(TAG_ROUTE_B_ENABLE) else True
+        )
 
     # 経路A 入力レベル（route_a が None または Enable=OFF なら 0）
     if route_a is not None and route_a_enabled:
@@ -2499,6 +2708,13 @@ def main():
     # 常駐モデル: MultiCaptionSystem を即生成
     _create_konnyaku_system()
 
+    # PTT マネージャー初期化（_konnyaku_system 生成後に行う）
+    _ptt_saved = _load_ptt_settings(_load_settings())
+    _init_ptt_manager(
+        ptt_enabled=_ptt_saved["ptt_enabled"],
+        ptt_hotkey=_ptt_saved["ptt_hotkey"],
+    )
+
     _build_gui()
     dpg.show_viewport()
 
@@ -2557,6 +2773,8 @@ def main():
     _save_settings()
     if _system is not None:
         _system.shutdown()
+    # PTT ホットキー登録解除（terminate より前に行う）（F-7.5）
+    _cleanup_ptt_manager()
     if _konnyaku_system is not None:
         try:
             _konnyaku_system.terminate()
