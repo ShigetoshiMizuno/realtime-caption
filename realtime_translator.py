@@ -66,6 +66,10 @@ class RealtimeTranslator:
         request_audio_output: bool = False,
         on_audio_delta: Callable[[bytes], None] | None = None,
         request_source_transcript: bool = True,
+        vad_enabled: bool = False,
+        vad_threshold: float = 0.5,
+        vad_prefix_padding_ms: int = 300,
+        vad_silence_duration_ms: int = 500,
     ):
         """
         Parameters
@@ -87,6 +91,12 @@ class RealtimeTranslator:
         request_source_transcript: 原文文字起こし（Whisper）を有効化するフラグ。
                                   False のとき audio.input.transcription を session.update から除外し、
                                   Whisper 課金を停止する（W-COST-2）。デフォルト True（後方互換）。
+        vad_enabled:              Server VAD（音声区間検出）を有効化するフラグ（W-COST-3）。
+                                  True のとき session.update の audio.input に turn_detection を追加し、
+                                  無音区間の input トークン課金を停止する。デフォルト False（後方互換）。
+        vad_threshold:            VAD 起動音量閾値（0.0〜1.0）。デフォルト 0.5。
+        vad_prefix_padding_ms:    発話開始前に遡って含める音声バッファ（ms）。デフォルト 300。
+        vad_silence_duration_ms:  この無音が続いたら発話終了と判定（ms）。デフォルト 500。
         """
         self._api_key = api_key
         self._target_language_code = target_language_code
@@ -101,6 +111,11 @@ class RealtimeTranslator:
         self._request_audio_output = request_audio_output
         self._on_audio_delta = on_audio_delta
         self._request_source_transcript = request_source_transcript
+        # W-COST-3: Server VAD によるコスト削減フラグ
+        self._vad_enabled = vad_enabled
+        self._vad_threshold = vad_threshold
+        self._vad_prefix_padding_ms = vad_prefix_padding_ms
+        self._vad_silence_duration_ms = vad_silence_duration_ms
 
         # WebSocket エンドポイント（テスト時はこの属性を上書きする）
         self._ws_url = (
@@ -281,11 +296,24 @@ class RealtimeTranslator:
             # audio.input.transcription.model を明示指定する必要がある。
             # 参照: https://developers.openai.com/cookbook/examples/voice_solutions/realtime_translation_guide
             # W-COST-2: _request_source_transcript=False のとき transcription を除外して Whisper 課金を停止する。
+            # W-COST-3: _vad_enabled=True のとき turn_detection を追加して無音区間 input トークン課金を停止する。
             audio_section: dict = {}
             if self._request_source_transcript:
-                audio_section["input"] = {
-                    "transcription": {"model": "gpt-realtime-whisper"}
-                }
+                input_cfg: dict = {"transcription": {"model": "gpt-realtime-whisper"}}
+                # W-COST-3: VAD 有効時は turn_detection を追加して無音区間の input トークン課金を停止する。
+                # VAD ON 時: 無音区間では session.output_transcript.delta が送られないため
+                # fallback_timer は起動しない（正常動作）。
+                # fallback_timer は done イベントが届かない異常系のセーフティネットとして維持する。
+                # NOTE: gpt-realtime-translate エンドポイントが turn_detection を受け付けるかは
+                # 実機検証必須（TBD-3-1）。API 拒否時は RT_ERROR で Unknown parameter が出る。
+                if self._vad_enabled:
+                    input_cfg["turn_detection"] = {
+                        "type": "server_vad",
+                        "threshold": self._vad_threshold,
+                        "prefix_padding_ms": self._vad_prefix_padding_ms,
+                        "silence_duration_ms": self._vad_silence_duration_ms,
+                    }
+                audio_section["input"] = input_cfg
             if self._request_audio_output:
                 audio_section["output"] = {"language": self._target_language_code}
             await ws.send(json.dumps({
