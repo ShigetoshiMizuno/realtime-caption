@@ -970,7 +970,10 @@ def _on_route_a_device_change(sender, app_data, user_data) -> None:
         return
 
     route_a = _konnyaku_system.route_a_system
-    route_a.set_input_device(new_device)
+    try:
+        route_a.set_input_device(new_device)
+    except Exception as e:
+        print(f"[WARN] 系統1 入力デバイス変更に失敗: {type(e).__name__}: {e}", flush=True)
 
 
 def _on_route_b_device_change(sender, app_data, user_data) -> None:
@@ -984,7 +987,10 @@ def _on_route_b_device_change(sender, app_data, user_data) -> None:
         return
 
     route_b = _konnyaku_system.route_b_system
-    route_b.set_input_device(new_device)
+    try:
+        route_b.set_input_device(new_device)
+    except Exception as e:
+        print(f"[WARN] 系統2 入力デバイス変更に失敗: {type(e).__name__}: {e}", flush=True)
 
 
 def _on_konnyaku_start_stop_click():
