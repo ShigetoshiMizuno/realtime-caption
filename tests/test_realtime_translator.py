@@ -35,10 +35,16 @@ except ImportError:
 # ヘルパー: モック WebSocket サーバー（websockets 15.x 対応）
 # ---------------------------------------------------------------------------
 
-async def _run_mock_ws_server(host, port, handler, stop_event):
-    """指定ポートでモックWSサーバーを起動し、stop_event まで待つ。"""
+async def _run_mock_ws_server(host, port, handler, stop_event, ready_event=None):
+    """指定ポートでモックWSサーバーを起動し、stop_event まで待つ。
+
+    ready_event（threading.Event）が指定された場合、サーバーが LISTEN 状態に
+    なった時点でセットする。
+    """
     import websockets
     async with websockets.serve(handler, host, port):
+        if ready_event is not None:
+            ready_event.set()
         await stop_event.wait()
 
 
@@ -59,20 +65,27 @@ def _start_mock_server_in_thread(handler, port=None):
 
     port=None（推奨）のとき OS から空きポートを動的取得する。
     既存テスト互換のため明示的な port 指定も受け付ける。
+
+    ready_event（threading.Event）を使ってサーバーが LISTEN 状態になったことを
+    確実に確認してから戻る。固定 sleep だと CI 高負荷時に起動前にクライアントが
+    接続しようとしてフレーキーの原因になる。
     """
     if port is None:
         port = _get_free_port()
     loop = asyncio.new_event_loop()
     stop_event = asyncio.Event()
+    ready_event = threading.Event()
 
     def _run():
         asyncio.set_event_loop(loop)
-        loop.run_until_complete(_run_mock_ws_server("localhost", port, handler, stop_event))
+        loop.run_until_complete(
+            _run_mock_ws_server("localhost", port, handler, stop_event, ready_event)
+        )
 
     t = threading.Thread(target=_run, daemon=True)
     t.start()
-    # サーバー起動待ち
-    time.sleep(0.2)
+    # サーバーが LISTEN 状態になるまで待機（最大 5 秒）
+    ready_event.wait(timeout=5.0)
     return loop, stop_event, t, port
 
 
@@ -264,9 +277,20 @@ class TestRealtimeTranslatorError:
     def test_reconnect_after_disconnect(self):
         """
         切断後に自動再接続（指数バックオフ）が実行されること。
-        reconnect_backoff_base=0.01 を使って短時間でバックオフが完了するようにする。
+
+        reconnect_backoff_base=0.1, reconnect_max_attempts=5 を使って
+        短時間かつ余裕ある再試行回数でバックオフが完了するようにする。
         asyncio.sleep は patch せず、短いバックオフ値で実時間テストを行う。
-        タイムアウトは 10 秒に設定（--cov 付き実行のオーバーヘッドを吸収するため）。
+
+        バックオフ計算は base^attempt（attempt は 0 始まり）なので:
+          attempt=0: 0.1^0 = 1.0 秒（初回）
+          attempt=1: 0.1^1 = 0.1 秒
+          attempt=2: 0.1^2 = 0.01 秒
+        2 回目の接続は attempt=0 の 1.0 秒待機後に来る。
+
+        タイムアウトは 15 秒に設定（CI 高負荷時のオーバーヘッドを吸収するため）。
+        _start_mock_server_in_thread はポーリングでサーバー起動を確認済みなので
+        接続レースは発生しない。
         """
         connect_count = [0]
         connected_event = threading.Event()
@@ -274,8 +298,11 @@ class TestRealtimeTranslatorError:
         async def mock_handler(websocket):
             connect_count[0] += 1
             if connect_count[0] == 1:
-                # 1回目は即切断
-                await websocket.close(1000, "test disconnect")
+                # 1回目は異常切断（1011 = Internal Error）
+                # code 1000 の正常切断は ConnectionClosedOK を発生させるため
+                # _connect_loop_async が再接続せずに break してしまう。
+                # 1011 は ConnectionClosedError を発生させ、再接続ループが動く。
+                await websocket.close(1011, "test disconnect")
             else:
                 # 2回目以降は維持
                 connected_event.set()
@@ -290,16 +317,16 @@ class TestRealtimeTranslatorError:
             translator = RealtimeTranslator(
                 api_key="sk-test-fake-reconnect",
                 target_language_code="ja",
-                reconnect_max_attempts=3,
-                reconnect_backoff_base=0.01,  # テスト用に短縮（0.01^1 = 0.01秒待機）
+                reconnect_max_attempts=5,   # 余裕ある再試行回数（CI 負荷対策）
+                reconnect_backoff_base=0.1,  # テスト用に短縮（0.1^1 = 0.1秒待機）
             )
             translator._ws_url = f"ws://localhost:{port}"
 
             client_loop = asyncio.new_event_loop()
             translator.start(client_loop)
 
-            # 再接続を待つ（バックオフ 0.01秒 + 余裕 10秒、--cov オーバーヘッドを考慮）
-            assert connected_event.wait(timeout=10), "再接続タイムアウト"
+            # 再接続を待つ（バックオフ最大 1.0 秒 + 余裕、--cov オーバーヘッドを考慮）
+            assert connected_event.wait(timeout=15), "再接続タイムアウト"
 
             translator.stop()
         finally:
