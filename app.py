@@ -218,6 +218,15 @@ TAG_KEY_SHOW_DEEPL = "key_show_deepl"
 TAG_KEY_SAVE_BTN = "key_save_btn"
 TAG_KEY_STATUS = "key_status"
 
+# PTT 設定 UI タグ (issue #82 / ptt-mode-design.md F-5)
+TAG_PTT_SECTION = "ptt_section"
+TAG_PTT_ENABLED = "ptt_enabled_checkbox"
+TAG_PTT_HOTKEY = "ptt_hotkey_input"
+
+# PTT 視覚フィードバック用タグ (ptt-mode-design.md F-6)
+TAG_ROUTE_B_LABEL = "route_b_label"       # 系統2 見出しテキスト（ラベル動的切替用）
+TAG_PTT_STATUS_LABEL = "ptt_status_label"  # 押下中ステータス表示ラベル
+
 # Verbose ロギング状態（settings.json で永続化）
 _verbose_state: bool = False
 
@@ -317,18 +326,22 @@ def _save_settings():
                 "output_device":  _get(TAG_ROUTE_A_OUTPUT_DEVICE_COMBO, "(なし)"),
                 "output_volume":  _get(TAG_ROUTE_A_OUTPUT_VOLUME, 1.0),
             },
-            "route_b": {
-                "enabled":        _get(TAG_ROUTE_B_ENABLE, True),
-                "device":         _get(TAG_ROUTE_B_DEVICE_COMBO, ""),
-                "lang":           _get(TAG_ROUTE_B_LANG_COMBO, ""),
-                "output_enabled": _get(TAG_ROUTE_B_OUTPUT_ENABLE, True),
-                "output_device":  _get(TAG_ROUTE_B_OUTPUT_DEVICE_COMBO, "(なし)"),
-                "output_volume":  _get(TAG_ROUTE_B_OUTPUT_VOLUME, 1.0),
-                # PTT 設定（ptt-mode-design.md F-5）
-                "ptt_enabled":    _ptt_enabled,
-                "ptt_hotkey":     _ptt_hotkey,
-            },
         }
+        # PTT 設定を route_b にマージ（W-3: _build_ptt_settings_dict 経由で統一）
+        # route_b の GUI 値を先に構築してから PTT 設定をマージする
+        _route_b_base = {
+            "enabled":        _get(TAG_ROUTE_B_ENABLE, True),
+            "device":         _get(TAG_ROUTE_B_DEVICE_COMBO, ""),
+            "lang":           _get(TAG_ROUTE_B_LANG_COMBO, ""),
+            "output_enabled": _get(TAG_ROUTE_B_OUTPUT_ENABLE, True),
+            "output_device":  _get(TAG_ROUTE_B_OUTPUT_DEVICE_COMBO, "(なし)"),
+            "output_volume":  _get(TAG_ROUTE_B_OUTPUT_VOLUME, 1.0),
+        }
+        data["route_b"] = _build_ptt_settings_dict(
+            existing_data={"route_b": _route_b_base},
+            ptt_enabled=_ptt_enabled,
+            ptt_hotkey=_ptt_hotkey,
+        )["route_b"]
         with open(_SETTINGS_PATH, "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False, indent=2)
     except Exception:
@@ -957,15 +970,8 @@ def _on_route_a_enable_change(sender, app_data, user_data) -> None:
 
 
 def _on_route_b_enable_change(sender, app_data, user_data) -> None:
-    """系統2 有効チェック変更時。稼働中なら即時反映（B-14）。"""
-    print(f"[USER] 系統2 有効チェック {'ON' if app_data else 'OFF'}", flush=True)
-    _save_settings()
-    if _konnyaku_system is None:
-        return
-    if app_data:
-        _konnyaku_system.start_route("b")
-    else:
-        _konnyaku_system.stop_route("b")
+    """系統2 有効チェック変更時。PTT 対応版に委譲（B-14 / TBD-4）。"""
+    _on_route_b_enable_change_ptt_aware(enabled=bool(app_data))
 
 
 # ---------------------------------------------------------------------------
@@ -989,6 +995,7 @@ def _on_ptt_press(event) -> None:
         daemon=True,
         name="PttStartRouteB",
     ).start()
+    _update_ptt_visual_feedback()
 
 
 def _on_ptt_release(event) -> None:
@@ -1008,6 +1015,7 @@ def _on_ptt_release(event) -> None:
         daemon=True,
         name="PttStopRouteB",
     ).start()
+    _update_ptt_visual_feedback()
 
 
 def _on_ptt_chatter_warning() -> None:
@@ -1161,6 +1169,169 @@ def _is_route_b_active_for_meter(ptt_enabled: bool) -> bool:
     if route_b is None:
         return False
     return route_b.state == RouteState.RUNNING
+
+
+def _is_ptt_pressing() -> bool:
+    """PTT ホットキー押下中（系統Bが STARTING または RUNNING 状態）かどうかを返す。
+
+    PTT モード OFF の場合、または _konnyaku_system が None の場合は False を返す。
+    TBD-3: 押下中はデバイスコンボを disable する判定に使用する（F-7.2）。
+
+    Returns
+    -------
+    bool
+        True = PTT ホットキー押下中（系統B稼働中 or 起動中）。
+    """
+    if not _ptt_enabled:
+        return False
+    if _konnyaku_system is None:
+        return False
+    route_b = _konnyaku_system.route_b_system
+    if route_b is None:
+        return False
+    return route_b.state in (RouteState.STARTING, RouteState.RUNNING)
+
+
+def _on_ptt_enabled_change(enabled: bool) -> None:
+    """PTT モード有効チェックボックス変更時のコールバック（F-5）。
+
+    ON 時: _ptt_manager.start() を呼んでホットキーを有効化。
+    OFF 時: _cleanup_ptt_manager() を呼んでホットキーを解除。
+    変更は即座に _save_settings() で永続化する。
+
+    Parameters
+    ----------
+    enabled : bool
+        チェックボックスの新しい値。
+    """
+    global _ptt_enabled
+    _ptt_enabled = enabled
+    print(f"[PTT] モード変更: {'ON' if enabled else 'OFF'}", flush=True)
+
+    if enabled:
+        if _ptt_manager is not None and not _ptt_manager.running:
+            _ptt_manager.start()
+            print(f"[PTT] 有効化: ホットキー={_ptt_hotkey}", flush=True)
+        elif _ptt_manager is None:
+            print("[PTT] _ptt_manager が None のため start() をスキップ", flush=True)
+        # 既に running の場合は冪等性保証のため no-op
+    else:
+        _cleanup_ptt_manager()
+
+    _save_settings()
+    _update_ptt_visual_feedback()
+
+
+def _on_ptt_hotkey_change(new_hotkey: str) -> None:
+    """PTT ホットキー入力欄変更時のコールバック（F-5）。
+
+    _ptt_manager が起動中の場合は change_hotkey() でホットキーを切り替える。
+    停止中の場合は hotkey 属性の更新のみ（次回 start() 時に反映）。
+    変更は即座に _save_settings() で永続化する。
+
+    Parameters
+    ----------
+    new_hotkey : str
+        新しいホットキー名（keyboard ライブラリのキー名形式）。
+    """
+    global _ptt_hotkey
+    _ptt_hotkey = new_hotkey
+    print(f"[PTT] ホットキー変更: {new_hotkey}", flush=True)
+
+    if _ptt_manager is not None and _ptt_manager.running:
+        _ptt_manager.change_hotkey(new_hotkey)
+
+    _save_settings()
+    _update_ptt_visual_feedback()
+
+
+def _on_route_b_enable_change_ptt_aware(enabled: bool) -> None:
+    """系統2 有効チェックボックス変更時の PTT 対応コールバック（TBD-4）。
+
+    PTT モード ON の場合:
+      - OFF にすると PTT モードも自動的に OFF になる（TBD-4 仕様）
+      - ON にしてもここでは PTT を再起動しない（UI 側の PTT チェックボックスで操作）
+    PTT モード OFF の場合:
+      - 従来通り start_route/stop_route を呼ぶ
+
+    Parameters
+    ----------
+    enabled : bool
+        チェックボックスの新しい値。
+    """
+    global _ptt_enabled
+    print(f"[USER] 系統2 有効チェック {'ON' if enabled else 'OFF'} "
+          f"(PTT={'ON' if _ptt_enabled else 'OFF'})", flush=True)
+    _save_settings()
+
+    if _ptt_enabled:
+        if not enabled:
+            # PTT ON 状態で系統B を OFF → PTT モードも OFF にする（TBD-4）
+            _ptt_enabled = False
+            _cleanup_ptt_manager()
+            print("[PTT] 系統2 OFF により PTT モードを自動無効化", flush=True)
+            # PTT チェックボックスの表示を同期（dpg_ready 時のみ）
+            if _dpg_ready and dpg.does_item_exist(TAG_PTT_ENABLED):
+                dpg.set_value(TAG_PTT_ENABLED, False)
+        # PTT ON 中に系統B を ON にしても何もしない（PTT が制御を持つ）
+    else:
+        # PTT OFF 時は従来通り
+        if _konnyaku_system is not None:
+            if enabled:
+                _konnyaku_system.start_route("b")
+            else:
+                _konnyaku_system.stop_route("b")
+
+    _update_ptt_visual_feedback()
+
+
+def _update_ptt_visual_feedback() -> None:
+    """PTT の視覚フィードバックを更新する（F-6）。
+
+    dpg が未初期化の場合は何もしない（テスト環境での安全性確保）。
+    以下の要素を更新する:
+    - TAG_ROUTE_B_LABEL: 系統2 見出しのラベルテキスト
+    - TAG_PTT_STATUS_LABEL: PTT 押下中ステータス表示
+    - TAG_STATUS_STATE: ステータスバーの PTT 状態
+
+    呼び出しタイミング:
+    - PTT チェックボックス変更時
+    - ホットキー変更時
+    - PTT 押下/離脱時（_on_ptt_press / _on_ptt_release から呼ぶ）
+    - 毎フレーム更新（_update_konnyaku_level_meters と同タイミング）
+    """
+    if not _dpg_ready:
+        return
+
+    pressing = _is_ptt_pressing()
+
+    # 系統2 見出しラベルの更新（F-6.1 / F-6.2 / F-5.3）
+    if dpg.does_item_exist(TAG_ROUTE_B_LABEL):
+        if not _ptt_enabled:
+            new_label = "【系統2】自分→相手（同時通訳）  I speak, they hear"
+        elif pressing:
+            new_label = f"【系統2 [送信中]】自分→相手（同時通訳）  I speak, they hear"
+        else:
+            new_label = (
+                f"【系統2 (PTT: {_ptt_hotkey} 押下中)】"
+                "自分→相手（同時通訳）  I speak, they hear"
+            )
+        dpg.set_value(TAG_ROUTE_B_LABEL, new_label)
+
+    # PTT ステータスラベルの更新（F-6.1 / F-6.2）
+    if dpg.does_item_exist(TAG_PTT_STATUS_LABEL):
+        if not _ptt_enabled:
+            dpg.configure_item(TAG_PTT_STATUS_LABEL, show=False)
+        elif pressing:
+            dpg.set_value(TAG_PTT_STATUS_LABEL, "● 送信中")
+            dpg.configure_item(TAG_PTT_STATUS_LABEL, show=True)
+        else:
+            dpg.set_value(TAG_PTT_STATUS_LABEL, "○ 待機中（F8 で送信）")
+            dpg.configure_item(TAG_PTT_STATUS_LABEL, show=True)
+
+    # 入力デバイスコンボの enabled/disabled 切替（TBD-3）
+    if dpg.does_item_exist(TAG_ROUTE_B_DEVICE_COMBO):
+        dpg.configure_item(TAG_ROUTE_B_DEVICE_COMBO, enabled=not pressing)
 
 
 def _on_route_a_device_change(sender, app_data, user_data) -> None:
@@ -2216,6 +2387,35 @@ def _build_gui():
                 )
                 dpg.add_text("  ※ 同名デバイスが重複する場合は「all」に切り替え")
 
+            dpg.add_separator()
+
+            # --- PTT 設定グループ（issue #82 / ptt-mode-design.md F-5） ---
+            _ptt_saved_settings = _load_ptt_settings(saved)
+            _ptt_default_enabled = _ptt_saved_settings["ptt_enabled"]
+            _ptt_default_hotkey = _ptt_saved_settings["ptt_hotkey"]
+
+            with dpg.group(tag=TAG_PTT_SECTION, horizontal=False):
+                dpg.add_text("PTT (Push-to-Talk) 設定  系統2を F8 押下中のみ稼働させてコストを削減")
+                with dpg.group(horizontal=True):
+                    dpg.add_checkbox(
+                        tag=TAG_PTT_ENABLED,
+                        label="PTT モード有効",
+                        default_value=_ptt_default_enabled,
+                        callback=lambda s, a, u: _on_ptt_enabled_change(enabled=bool(a)),
+                    )
+                    dpg.add_text("  ※ ON にするとキー押下中のみ系統2が起動します")
+                with dpg.group(horizontal=True):
+                    dpg.add_text("ホットキー:")
+                    dpg.add_input_text(
+                        tag=TAG_PTT_HOTKEY,
+                        default_value=_ptt_default_hotkey,
+                        width=80,
+                        hint="f8",
+                        on_enter=True,
+                        callback=lambda s, a, u: _on_ptt_hotkey_change(new_hotkey=str(a).strip()),
+                    )
+                    dpg.add_text("  (Enter で確定。例: f8, f9, ctrl+shift+t)")
+
         dpg.add_separator()
 
         # --- 翻訳こんにゃくモード（メインコンテンツ） ---
@@ -2376,7 +2576,22 @@ def _build_gui():
                     default_value=bool(route_b_saved.get("enabled", True)),
                     callback=_on_route_b_enable_change,
                 )
-                dpg.add_text("【系統2】自分→相手（同時通訳）  I speak, they hear")
+                # PTT モード時はラベルを動的に切替（F-5.3 / F-6）
+                _route_b_initial_label = (
+                    f"【系統2 (PTT: {_ptt_hotkey} 押下中)】自分→相手（同時通訳）  I speak, they hear"
+                    if _ptt_enabled
+                    else "【系統2】自分→相手（同時通訳）  I speak, they hear"
+                )
+                dpg.add_text(
+                    _route_b_initial_label,
+                    tag=TAG_ROUTE_B_LABEL,
+                )
+                # PTT 押下中ステータス表示（F-6）
+                dpg.add_text(
+                    "",
+                    tag=TAG_PTT_STATUS_LABEL,
+                    show=_ptt_enabled,
+                )
             with dpg.group(horizontal=True):
                 dpg.add_text("入力デバイス:")
                 dpg.add_combo(
