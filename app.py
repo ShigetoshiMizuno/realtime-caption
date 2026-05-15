@@ -107,6 +107,9 @@ _rpc_server: HTTPServer | None = None
 _konnyaku_system: MultiCaptionSystem | None = None
 _konnyaku_running: bool = False
 
+# 系統毎の再起動連打防御ロック（W-COST-1 PR4 / refactor/restart-route-helper）
+_restart_locks: dict[str, threading.Lock] = {"a": threading.Lock(), "b": threading.Lock()}
+
 # PTT (Push-to-Talk) モード用 (issue #82 / ptt-mode-design.md)
 _ptt_manager: PttHotkeyManager | None = None
 _ptt_enabled: bool = False
@@ -649,29 +652,50 @@ def _on_route_b_output_device_change(sender, app_data, user_data):
         print(f"[ERROR] route_b 出力デバイス変更失敗: {e}", flush=True)
 
 
-def _restart_route_for_audio_output_change(route_id: str) -> None:
-    """音声出力 ON/OFF 変更後の再起動をバックグラウンドスレッドで実行する（W-COST-1 案B PR3）。
+def _restart_route_for_change(route_id: str, reason_label: str) -> None:
+    """系統の再起動を行う共通ヘルパー（W-COST-1 PR4 / refactor/restart-route-helper）。
 
-    stop_route -> start_route の順に呼ぶことで、新しい _audio_output_mode を反映した
-    接続を再確立し、API 側の音声トークン課金を制御する。
+    stop_route -> start_route の順に呼ぶことで、設定変更を API 側に即反映する。
+    系統毎の _restart_locks により連打防御（同時に複数の再起動スレッドが走らない）。
     ステータスのリセットは _gui_queue 経由でメインスレッドに委ねる。
 
     Parameters
     ----------
     route_id:
         再起動する系統 ("a" | "b")。
+    reason_label:
+        ステータスバーおよびログに表示する切替理由（例: "音声出力 ON/OFF 切替"）。
     """
     if _konnyaku_system is None:
         return
-    print(f"[INFO] route_{route_id} 音声出力 ON/OFF 切替のため再起動開始", flush=True)
+
+    lock = _restart_locks[route_id]
+    if not lock.acquire(blocking=False):
+        # 既に同系統の再起動が進行中 → スキップして通知
+        _gui_queue.put({
+            "cmd": "set_status",
+            "text": f"系統{route_id.upper()} 再起動中のため別の切替はスキップしました",
+        })
+        return
+
     try:
+        print(f"[INFO] route_{route_id} {reason_label}のため再起動開始", flush=True)
         _konnyaku_system.stop_route(route_id)
         _konnyaku_system.start_route(route_id)
     except Exception as e:
-        print(f"[ERROR] route_{route_id} 音声出力切替再起動失敗: {e}", flush=True)
+        print(f"[ERROR] route_{route_id} {reason_label}再起動失敗: {e}", flush=True)
     finally:
+        lock.release()
         # dpg は GUI スレッドからのみ安全に呼べるため _gui_queue 経由でリセット
         _gui_queue.put({"cmd": "set_status", "text": ""})
+
+
+def _restart_route_for_audio_output_change(route_id: str) -> None:
+    """音声出力 ON/OFF 変更後の再起動（後方互換ラッパー）。
+
+    _restart_route_for_change の薄いラッパー。既存の呼び出し箇所との互換性維持用。
+    """
+    _restart_route_for_change(route_id, "音声出力 ON/OFF 切替")
 
 
 def _on_route_a_output_enable_change(sender, app_data, user_data):
@@ -709,8 +733,8 @@ def _on_route_a_output_enable_change(sender, app_data, user_data):
             except Exception:
                 pass
         threading.Thread(
-            target=_restart_route_for_audio_output_change,
-            args=("a",),
+            target=_restart_route_for_change,
+            args=("a", "音声出力 ON/OFF 切替"),
             daemon=True,
             name="RestartRouteAForAudioOutput",
         ).start()
@@ -751,41 +775,65 @@ def _on_route_b_output_enable_change(sender, app_data, user_data):
             except Exception:
                 pass
         threading.Thread(
-            target=_restart_route_for_audio_output_change,
-            args=("b",),
+            target=_restart_route_for_change,
+            args=("b", "音声出力 ON/OFF 切替"),
             daemon=True,
             name="RestartRouteBForAudioOutput",
         ).start()
 
 
 def _on_route_a_source_transcript_change(sender, app_data):
-    """経路A 原文表示 ON/OFF 変更時。次回起動時に反映（W-COST-2）。
+    """経路A 原文表示 ON/OFF 変更時。稼働中なら即時再起動して反映（W-COST-2）。
 
-    稼働中の場合はステータスバーに「次回起動時に反映されます」と通知する。
-    再起動結線は別 PR 対応のため、ここでは設定保存のみ行う。
+    稼働中（_konnyaku_running=True かつ route_a が RUNNING）の場合は
+    _restart_route_for_change で stop_route -> start_route を実行し、
+    Whisper コスト削減を即時反映する。
     """
     _save_settings()
-    if _konnyaku_running:
+    if (
+        _konnyaku_running
+        and _konnyaku_system is not None
+        and _konnyaku_system.route_a_system is not None
+        and _konnyaku_system.route_a_system.state == RouteState.RUNNING
+    ):
         if dpg.does_item_exist(TAG_STATUS_STATE):
             try:
-                dpg.set_value(TAG_STATUS_STATE, "次回起動時に反映されます")
+                dpg.set_value(TAG_STATUS_STATE, "系統1 原文表示 ON/OFF 切替中...")
             except Exception:
                 pass
+        threading.Thread(
+            target=_restart_route_for_change,
+            args=("a", "原文表示 ON/OFF 切替"),
+            daemon=True,
+            name="RestartRouteAForSourceTranscript",
+        ).start()
 
 
 def _on_route_b_source_transcript_change(sender, app_data):
-    """経路B 原文表示 ON/OFF 変更時。次回起動時に反映（W-COST-2）。
+    """経路B 原文表示 ON/OFF 変更時。稼働中なら即時再起動して反映（W-COST-2）。
 
-    稼働中の場合はステータスバーに「次回起動時に反映されます」と通知する。
-    再起動結線は別 PR 対応のため、ここでは設定保存のみ行う。
+    稼働中（_konnyaku_running=True かつ route_b が RUNNING）の場合は
+    _restart_route_for_change で stop_route -> start_route を実行し、
+    Whisper コスト削減を即時反映する。
     """
     _save_settings()
-    if _konnyaku_running:
+    if (
+        _konnyaku_running
+        and _konnyaku_system is not None
+        and _konnyaku_system.route_b_system is not None
+        and _konnyaku_system.route_b_system.state == RouteState.RUNNING
+    ):
         if dpg.does_item_exist(TAG_STATUS_STATE):
             try:
-                dpg.set_value(TAG_STATUS_STATE, "次回起動時に反映されます")
+                dpg.set_value(TAG_STATUS_STATE, "系統2 原文表示 ON/OFF 切替中...")
             except Exception:
                 pass
+        threading.Thread(
+            target=_restart_route_for_change,
+            args=("b", "原文表示 ON/OFF 切替"),
+            daemon=True,
+            name="RestartRouteBForSourceTranscript",
+        ).start()
 
 
 def _find_zoom_preset_output(devices: list[dict]) -> int | None:
