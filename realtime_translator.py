@@ -40,6 +40,27 @@ _SENTENCE_END_CHARS = frozenset("。！？.!?,;、")
 _FALLBACK_TIMEOUT_SEC = 3.0
 
 
+def _clamp_with_warning(value, lo, hi, name: str):
+    """範囲外の値をクランプして警告ログを出す。
+
+    Parameters
+    ----------
+    value : 検証対象の値
+    lo    : 許容下限（inclusive）
+    hi    : 許容上限（inclusive）
+    name  : ログに出力するパラメータ名
+
+    Returns
+    -------
+    範囲内に収めた値。範囲内ならそのまま返す。
+    """
+    if value < lo or value > hi:
+        clamped = max(lo, min(hi, value))
+        print(f"[WARN] {name} が範囲外 ({value}) → {clamped} にクランプ", flush=True)
+        return clamped
+    return value
+
+
 class RealtimeTranslator:
     """
     gpt-realtime-translate WebSocket クライアント。
@@ -116,6 +137,19 @@ class RealtimeTranslator:
         self._vad_threshold = vad_threshold
         self._vad_prefix_padding_ms = vad_prefix_padding_ms
         self._vad_silence_duration_ms = vad_silence_duration_ms
+
+        # VAD パラメータの境界値バリデーション (PR #97 W-2 対応)
+        # vad_enabled=False のときは送信されないのでクランプしない
+        if self._vad_enabled:
+            self._vad_threshold = _clamp_with_warning(
+                self._vad_threshold, 0.0, 1.0, "vad_threshold"
+            )
+            self._vad_prefix_padding_ms = _clamp_with_warning(
+                self._vad_prefix_padding_ms, 50, 5000, "vad_prefix_padding_ms"
+            )
+            self._vad_silence_duration_ms = _clamp_with_warning(
+                self._vad_silence_duration_ms, 100, 10000, "vad_silence_duration_ms"
+            )
 
         # WebSocket エンドポイント（テスト時はこの属性を上書きする）
         self._ws_url = (
