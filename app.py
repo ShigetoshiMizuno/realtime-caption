@@ -643,8 +643,33 @@ def _on_route_b_output_device_change(sender, app_data, user_data):
         print(f"[ERROR] route_b 出力デバイス変更失敗: {e}", flush=True)
 
 
+def _restart_route_for_audio_output_change(route_id: str) -> None:
+    """音声出力 ON/OFF 変更後の再起動をバックグラウンドスレッドで実行する（W-COST-1 案B PR3）。
+
+    stop_route -> start_route の順に呼ぶことで、新しい _audio_output_mode を反映した
+    接続を再確立し、API 側の音声トークン課金を制御する。
+    ステータスのリセットは _gui_queue 経由でメインスレッドに委ねる。
+
+    Parameters
+    ----------
+    route_id:
+        再起動する系統 ("a" | "b")。
+    """
+    if _konnyaku_system is None:
+        return
+    print(f"[INFO] route_{route_id} 音声出力 ON/OFF 切替のため再起動開始", flush=True)
+    try:
+        _konnyaku_system.stop_route(route_id)
+        _konnyaku_system.start_route(route_id)
+    except Exception as e:
+        print(f"[ERROR] route_{route_id} 音声出力切替再起動失敗: {e}", flush=True)
+    finally:
+        # dpg は GUI スレッドからのみ安全に呼べるため _gui_queue 経由でリセット
+        _gui_queue.put({"cmd": "set_status", "text": ""})
+
+
 def _on_route_a_output_enable_change(sender, app_data, user_data):
-    """経路A 音声出力 ON/OFF 変更時。稼働中なら即反映。"""
+    """経路A 音声出力 ON/OFF 変更時。稼働中なら再起動して API 側を即反映（W-COST-1 案B）。"""
     print(f"[USER] 系統1 音声出力 {'ON' if app_data else 'OFF'}", flush=True)
     _save_settings()
     if _konnyaku_system is None or _konnyaku_system.route_a_system is None:
@@ -667,9 +692,26 @@ def _on_route_a_output_enable_change(sender, app_data, user_data):
         except Exception as e:
             print(f"[ERROR] route_a 出力 OFF 失敗: {e}", flush=True)
 
+    # 稼働中の場合は stop_route -> start_route で再起動し API 側を即反映（W-COST-1 §4.3）
+    if (
+        _konnyaku_running
+        and _konnyaku_system.route_a_system.state == RouteState.RUNNING
+    ):
+        if dpg.does_item_exist(TAG_STATUS_STATE):
+            try:
+                dpg.set_value(TAG_STATUS_STATE, "系統1 音声出力 ON/OFF 切替中...")
+            except Exception:
+                pass
+        threading.Thread(
+            target=_restart_route_for_audio_output_change,
+            args=("a",),
+            daemon=True,
+            name="RestartRouteAForAudioOutput",
+        ).start()
+
 
 def _on_route_b_output_enable_change(sender, app_data, user_data):
-    """経路B 音声出力 ON/OFF 変更時。稼働中なら即反映。"""
+    """経路B 音声出力 ON/OFF 変更時。稼働中なら再起動して API 側を即反映（W-COST-1 案B）。"""
     print(f"[USER] 系統2 音声出力 {'ON' if app_data else 'OFF'}", flush=True)
     _save_settings()
     if _konnyaku_system is None or _konnyaku_system.route_b_system is None:
@@ -691,6 +733,23 @@ def _on_route_b_output_enable_change(sender, app_data, user_data):
             _konnyaku_system.route_b_system.set_output_device(None)
         except Exception as e:
             print(f"[ERROR] route_b 出力 OFF 失敗: {e}", flush=True)
+
+    # 稼働中の場合は stop_route -> start_route で再起動し API 側を即反映（W-COST-1 §4.3）
+    if (
+        _konnyaku_running
+        and _konnyaku_system.route_b_system.state == RouteState.RUNNING
+    ):
+        if dpg.does_item_exist(TAG_STATUS_STATE):
+            try:
+                dpg.set_value(TAG_STATUS_STATE, "系統2 音声出力 ON/OFF 切替中...")
+            except Exception:
+                pass
+        threading.Thread(
+            target=_restart_route_for_audio_output_change,
+            args=("b",),
+            daemon=True,
+            name="RestartRouteBForAudioOutput",
+        ).start()
 
 
 def _find_zoom_preset_output(devices: list[dict]) -> int | None:
