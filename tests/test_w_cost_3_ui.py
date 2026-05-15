@@ -357,6 +357,56 @@ class TestVadCallbackRestartWhenRunning:
             f"メッセージに「切替中」が含まれること。got={message!r}"
         )
 
+    def test_route_b_vad_silence_ms_shows_status_when_running(self):
+        """稼働中に系統B の silence_ms スライダーを変更すると
+        TAG_STATUS_STATE に「切替中」メッセージが設定されること。（W-2 追加）"""
+        from main import RouteState
+        app._konnyaku_running = True
+        app._konnyaku_system = self._make_running_system(route_b_state=RouteState.RUNNING)
+        mock_dpg = MagicMock()
+        mock_dpg.does_item_exist.return_value = True
+
+        with patch("app.dpg", mock_dpg):
+            app._on_route_b_vad_silence_ms_change(sender=None, app_data=800)
+
+        set_value_calls = [
+            c for c in mock_dpg.set_value.call_args_list
+            if c.args and c.args[0] == app.TAG_STATUS_STATE
+        ]
+        assert len(set_value_calls) >= 1, (
+            "稼働中 B silence_ms 切替時に TAG_STATUS_STATE へ set_value が呼ばれること。"
+            f"set_value calls={mock_dpg.set_value.call_args_list}"
+        )
+        message = set_value_calls[0].args[1]
+        assert "切替中" in message, (
+            f"メッセージに「切替中」が含まれること。got={message!r}"
+        )
+
+    def test_route_a_vad_threshold_shows_status_when_running(self):
+        """稼働中に系統A の threshold スライダーを変更すると
+        TAG_STATUS_STATE に「切替中」メッセージが設定されること。（W-2 追加）"""
+        from main import RouteState
+        app._konnyaku_running = True
+        app._konnyaku_system = self._make_running_system(route_a_state=RouteState.RUNNING)
+        mock_dpg = MagicMock()
+        mock_dpg.does_item_exist.return_value = True
+
+        with patch("app.dpg", mock_dpg):
+            app._on_route_a_vad_threshold_change(sender=None, app_data=0.7)
+
+        set_value_calls = [
+            c for c in mock_dpg.set_value.call_args_list
+            if c.args and c.args[0] == app.TAG_STATUS_STATE
+        ]
+        assert len(set_value_calls) >= 1, (
+            "稼働中 A threshold 切替時に TAG_STATUS_STATE へ set_value が呼ばれること。"
+            f"set_value calls={mock_dpg.set_value.call_args_list}"
+        )
+        message = set_value_calls[0].args[1]
+        assert "切替中" in message, (
+            f"メッセージに「切替中」が含まれること。got={message!r}"
+        )
+
     def test_route_a_vad_enable_no_status_when_not_running(self):
         """停止中（_konnyaku_running=False）に VAD enable 切替しても
         TAG_STATUS_STATE に「次回起動時」メッセージは出ないこと。"""
@@ -373,6 +423,130 @@ class TestVadCallbackRestartWhenRunning:
                 assert "次回起動時" not in msg, (
                     f"停止中は「次回起動時」メッセージを出さないこと。got={msg!r}"
                 )
+
+    def test_route_a_vad_enable_on_enables_sliders(self):
+        """系統A VAD チェックを ON にするとスライダー 2 つの enabled が True になること。（W-1）"""
+        app._konnyaku_running = False
+        mock_dpg = MagicMock()
+        mock_dpg.does_item_exist.return_value = True
+
+        with patch("app.dpg", mock_dpg):
+            app._on_route_a_vad_enable_change(sender=None, app_data=True)
+
+        configure_calls = {
+            call.args[0]: call.kwargs
+            for call in mock_dpg.configure_item.call_args_list
+            if call.args
+        }
+        assert app.TAG_ROUTE_A_VAD_SILENCE_MS in configure_calls, (
+            f"TAG_ROUTE_A_VAD_SILENCE_MS に configure_item が呼ばれること。"
+            f"configure calls={list(configure_calls.keys())}"
+        )
+        assert configure_calls[app.TAG_ROUTE_A_VAD_SILENCE_MS].get("enabled") is True, (
+            f"VAD ON 時に silence_ms スライダーが enabled=True になること。"
+            f"got={configure_calls[app.TAG_ROUTE_A_VAD_SILENCE_MS]}"
+        )
+        assert app.TAG_ROUTE_A_VAD_THRESHOLD in configure_calls, (
+            f"TAG_ROUTE_A_VAD_THRESHOLD に configure_item が呼ばれること。"
+            f"configure calls={list(configure_calls.keys())}"
+        )
+        assert configure_calls[app.TAG_ROUTE_A_VAD_THRESHOLD].get("enabled") is True, (
+            f"VAD ON 時に threshold スライダーが enabled=True になること。"
+            f"got={configure_calls[app.TAG_ROUTE_A_VAD_THRESHOLD]}"
+        )
+
+    def test_route_a_vad_enable_off_disables_sliders(self):
+        """系統A VAD チェックを OFF にするとスライダー 2 つの enabled が False になること。（W-1）"""
+        app._konnyaku_running = False
+        mock_dpg = MagicMock()
+        mock_dpg.does_item_exist.return_value = True
+
+        with patch("app.dpg", mock_dpg):
+            app._on_route_a_vad_enable_change(sender=None, app_data=False)
+
+        configure_calls = {
+            call.args[0]: call.kwargs
+            for call in mock_dpg.configure_item.call_args_list
+            if call.args
+        }
+        assert app.TAG_ROUTE_A_VAD_SILENCE_MS in configure_calls, (
+            f"TAG_ROUTE_A_VAD_SILENCE_MS に configure_item が呼ばれること。"
+            f"configure calls={list(configure_calls.keys())}"
+        )
+        assert configure_calls[app.TAG_ROUTE_A_VAD_SILENCE_MS].get("enabled") is False, (
+            f"VAD OFF 時に silence_ms スライダーが enabled=False になること。"
+            f"got={configure_calls[app.TAG_ROUTE_A_VAD_SILENCE_MS]}"
+        )
+        assert app.TAG_ROUTE_A_VAD_THRESHOLD in configure_calls, (
+            f"TAG_ROUTE_A_VAD_THRESHOLD に configure_item が呼ばれること。"
+            f"configure calls={list(configure_calls.keys())}"
+        )
+        assert configure_calls[app.TAG_ROUTE_A_VAD_THRESHOLD].get("enabled") is False, (
+            f"VAD OFF 時に threshold スライダーが enabled=False になること。"
+            f"got={configure_calls[app.TAG_ROUTE_A_VAD_THRESHOLD]}"
+        )
+
+    def test_route_b_vad_enable_on_enables_sliders(self):
+        """系統B VAD チェックを ON にするとスライダー 2 つの enabled が True になること。（W-1）"""
+        app._konnyaku_running = False
+        mock_dpg = MagicMock()
+        mock_dpg.does_item_exist.return_value = True
+
+        with patch("app.dpg", mock_dpg):
+            app._on_route_b_vad_enable_change(sender=None, app_data=True)
+
+        configure_calls = {
+            call.args[0]: call.kwargs
+            for call in mock_dpg.configure_item.call_args_list
+            if call.args
+        }
+        assert app.TAG_ROUTE_B_VAD_SILENCE_MS in configure_calls, (
+            f"TAG_ROUTE_B_VAD_SILENCE_MS に configure_item が呼ばれること。"
+            f"configure calls={list(configure_calls.keys())}"
+        )
+        assert configure_calls[app.TAG_ROUTE_B_VAD_SILENCE_MS].get("enabled") is True, (
+            f"VAD ON 時に silence_ms スライダーが enabled=True になること。"
+            f"got={configure_calls[app.TAG_ROUTE_B_VAD_SILENCE_MS]}"
+        )
+        assert app.TAG_ROUTE_B_VAD_THRESHOLD in configure_calls, (
+            f"TAG_ROUTE_B_VAD_THRESHOLD に configure_item が呼ばれること。"
+            f"configure calls={list(configure_calls.keys())}"
+        )
+        assert configure_calls[app.TAG_ROUTE_B_VAD_THRESHOLD].get("enabled") is True, (
+            f"VAD ON 時に threshold スライダーが enabled=True になること。"
+            f"got={configure_calls[app.TAG_ROUTE_B_VAD_THRESHOLD]}"
+        )
+
+    def test_route_b_vad_enable_off_disables_sliders(self):
+        """系統B VAD チェックを OFF にするとスライダー 2 つの enabled が False になること。（W-1）"""
+        app._konnyaku_running = False
+        mock_dpg = MagicMock()
+        mock_dpg.does_item_exist.return_value = True
+
+        with patch("app.dpg", mock_dpg):
+            app._on_route_b_vad_enable_change(sender=None, app_data=False)
+
+        configure_calls = {
+            call.args[0]: call.kwargs
+            for call in mock_dpg.configure_item.call_args_list
+            if call.args
+        }
+        assert app.TAG_ROUTE_B_VAD_SILENCE_MS in configure_calls, (
+            f"TAG_ROUTE_B_VAD_SILENCE_MS に configure_item が呼ばれること。"
+            f"configure calls={list(configure_calls.keys())}"
+        )
+        assert configure_calls[app.TAG_ROUTE_B_VAD_SILENCE_MS].get("enabled") is False, (
+            f"VAD OFF 時に silence_ms スライダーが enabled=False になること。"
+            f"got={configure_calls[app.TAG_ROUTE_B_VAD_SILENCE_MS]}"
+        )
+        assert app.TAG_ROUTE_B_VAD_THRESHOLD in configure_calls, (
+            f"TAG_ROUTE_B_VAD_THRESHOLD に configure_item が呼ばれること。"
+            f"configure calls={list(configure_calls.keys())}"
+        )
+        assert configure_calls[app.TAG_ROUTE_B_VAD_THRESHOLD].get("enabled") is False, (
+            f"VAD OFF 時に threshold スライダーが enabled=False になること。"
+            f"got={configure_calls[app.TAG_ROUTE_B_VAD_THRESHOLD]}"
+        )
 
 
 # ---------------------------------------------------------------------------
