@@ -236,6 +236,12 @@ TAG_ROUTE_B_VAD_SILENCE_MS = "route_b_vad_silence_ms"
 TAG_ROUTE_A_VAD_THRESHOLD = "route_a_vad_threshold"
 TAG_ROUTE_B_VAD_THRESHOLD = "route_b_vad_threshold"
 
+# W-COST-4: アイドル切断設定ウィジェットタグ（issue #81）
+TAG_IDLE_DISCONNECT_ENABLED = "idle_disconnect_enabled_checkbox"
+TAG_IDLE_TIMEOUT_SEC = "idle_timeout_sec_slider"
+TAG_IDLE_AUDIO_THRESHOLD = "idle_audio_threshold_slider"
+TAG_IDLE_RESUME_BUTTON = "idle_resume_button"
+
 # こんにゃくモード コンテナ
 TAG_KONNYAKU_SECTION = "konnyaku_section"
 TAG_KONNYAKU_START_BTN = "konnyaku_start_btn"
@@ -398,6 +404,17 @@ def _save_settings():
             ptt_enabled=_ptt_enabled,
             ptt_hotkey=_ptt_hotkey,
         )["route_b"]
+        # W-COST-4: アイドル切断設定を保存（系統共通設定としてトップレベルに保存）
+        # _get は ''（空文字）を返す可能性があるため、安全な変換ヘルパーを使う
+        def _safe_get_int(tag: str, default: int) -> int:
+            try:
+                return int(_get(tag, default))
+            except (TypeError, ValueError):
+                return default
+
+        data["idle_disconnect_enabled"] = bool(_get(TAG_IDLE_DISCONNECT_ENABLED, False))
+        data["idle_timeout_sec"] = _safe_get_int(TAG_IDLE_TIMEOUT_SEC, 300)
+        data["idle_audio_threshold"] = _safe_get_int(TAG_IDLE_AUDIO_THRESHOLD, 100)
         with open(_SETTINGS_PATH, "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False, indent=2)
     except Exception:
@@ -1024,6 +1041,64 @@ def _on_route_b_vad_threshold_change(sender, app_data):
         ).start()
 
 
+# ---------------------------------------------------------------------------
+# W-COST-4: アイドル切断設定コールバック（issue #81 PR3）
+# ---------------------------------------------------------------------------
+
+def _on_idle_disconnect_enabled_change(sender, app_data, user_data=None) -> None:
+    """アイドル切断有効化チェックボックス変更時。設定を保存する。
+
+    稼働中の場合は設定変更を次回起動時に反映（セッション再起動不要の軽量設定）。
+    """
+    print(f"[USER] アイドル切断 {'ON' if app_data else 'OFF'}", flush=True)
+    _save_settings()
+
+
+def _on_idle_timeout_change(sender, app_data, user_data=None) -> None:
+    """アイドルタイムアウト スライダー変更時。設定を保存する。"""
+    _save_settings()
+
+
+def _on_idle_audio_threshold_change(sender, app_data, user_data=None) -> None:
+    """音声検知閾値 スライダー変更時。設定を保存する。"""
+    _save_settings()
+
+
+def _on_idle_resume_click(sender, app_data, user_data=None) -> None:
+    """「再開」ボタンクリック → 両系統 resume_from_idle()。"""
+    print("[USER] アイドル切断から再開ボタン押下", flush=True)
+    if _konnyaku_system is None:
+        return
+    if _konnyaku_system.route_a_system is not None:
+        _konnyaku_system.route_a_system.resume_from_idle()
+    if _konnyaku_system.route_b_system is not None:
+        _konnyaku_system.route_b_system.resume_from_idle()
+
+
+def _update_idle_status() -> None:
+    """アイドル切断状態を検知して再開ボタンの enabled を更新するヘルパー。
+
+    _update_konnyaku_level_meters レンダリングループから毎フレーム呼ばれる。
+    """
+    if not _dpg_ready:
+        return
+    if _konnyaku_system is None:
+        return
+    a_idle = (
+        _konnyaku_system.route_a_system is not None
+        and _konnyaku_system.route_a_system._idle_monitor is not None
+        and _konnyaku_system.route_a_system._idle_monitor.is_disconnected()
+    )
+    b_idle = (
+        _konnyaku_system.route_b_system is not None
+        and _konnyaku_system.route_b_system._idle_monitor is not None
+        and _konnyaku_system.route_b_system._idle_monitor.is_disconnected()
+    )
+    any_idle = a_idle or b_idle
+    if dpg.does_item_exist(TAG_IDLE_RESUME_BUTTON):
+        dpg.configure_item(TAG_IDLE_RESUME_BUTTON, enabled=any_idle)
+
+
 def _on_route_a_language_change(sender, app_data, user_data) -> None:
     """系統A 翻訳先言語変更時。稼働中なら即時再起動して反映（Fix 2, issue #102）。
 
@@ -1365,6 +1440,11 @@ def _create_konnyaku_system() -> None:
     b_vad_prefix_padding_ms = _safe_int(route_b_saved.get("vad_prefix_padding_ms", 300), 300)
     b_vad_silence_duration_ms = _safe_int(route_b_saved.get("vad_silence_duration_ms", 500), 500)
 
+    # W-COST-4: アイドル切断設定を保存設定から読み込む（系統共通設定、トップレベルキー）
+    idle_disconnect_enabled = bool(saved.get("idle_disconnect_enabled", False))
+    idle_timeout_sec = _safe_int(saved.get("idle_timeout_sec", 300), 300)
+    idle_audio_threshold = _safe_int(saved.get("idle_audio_threshold", 100), 100)
+
     route_a_cfg = RouteConfig(
         route_id="a",
         input_device_info=route_a_device,
@@ -1377,6 +1457,9 @@ def _create_konnyaku_system() -> None:
         vad_threshold=a_vad_threshold,
         vad_prefix_padding_ms=a_vad_prefix_padding_ms,
         vad_silence_duration_ms=a_vad_silence_duration_ms,
+        idle_disconnect_enabled=idle_disconnect_enabled,
+        idle_timeout_sec=float(idle_timeout_sec),
+        idle_audio_threshold=idle_audio_threshold,
     )
     route_b_cfg = RouteConfig(
         route_id="b",
@@ -1390,6 +1473,9 @@ def _create_konnyaku_system() -> None:
         vad_threshold=b_vad_threshold,
         vad_prefix_padding_ms=b_vad_prefix_padding_ms,
         vad_silence_duration_ms=b_vad_silence_duration_ms,
+        idle_disconnect_enabled=idle_disconnect_enabled,
+        idle_timeout_sec=float(idle_timeout_sec),
+        idle_audio_threshold=idle_audio_threshold,
     )
 
     _konnyaku_system = MultiCaptionSystem(
@@ -1440,6 +1526,9 @@ def _on_ptt_press(event) -> None:
         return
     if _konnyaku_system is None:
         return
+    # W-COST-4 PR3: PTT 押下時にアイドル切断中なら自動再開（系統 B のみ）
+    if _konnyaku_system.route_b_system is not None:
+        _konnyaku_system.route_b_system.resume_from_idle()
     print("[PTT] press: route_b 起動", flush=True)
     threading.Thread(
         target=_konnyaku_system.start_route,
@@ -3281,6 +3370,48 @@ def _build_gui():
 
         dpg.add_separator()
 
+        # --- W-COST-4: アイドル切断設定セクション（全系統共通）（issue #81）---
+        _idle_disconnect_enabled_saved = bool(saved.get("idle_disconnect_enabled", False))
+        _idle_timeout_sec_saved = int(saved.get("idle_timeout_sec", 300))
+        _idle_audio_threshold_saved = int(saved.get("idle_audio_threshold", 100))
+        dpg.add_text("アイドル切断設定（全系統共通）:", color=(200, 200, 255))
+        with dpg.group(horizontal=True):
+            dpg.add_text("自動切断:")
+            dpg.add_checkbox(
+                tag=TAG_IDLE_DISCONNECT_ENABLED,
+                label="アイドル時に自動切断（コスト削減）",
+                default_value=_idle_disconnect_enabled_saved,
+                callback=_on_idle_disconnect_enabled_change,
+            )
+        with dpg.group(horizontal=True):
+            dpg.add_text("タイムアウト:")
+            dpg.add_slider_int(
+                tag=TAG_IDLE_TIMEOUT_SEC,
+                label="無発話タイムアウト (秒)",
+                default_value=_idle_timeout_sec_saved,
+                min_value=60, max_value=1800,
+                width=200,
+                callback=_on_idle_timeout_change,
+            )
+        with dpg.group(horizontal=True):
+            dpg.add_text("無音閾値:")
+            dpg.add_slider_int(
+                tag=TAG_IDLE_AUDIO_THRESHOLD,
+                label="無音判定閾値 (PCM RMS)",
+                default_value=_idle_audio_threshold_saved,
+                min_value=50, max_value=500,
+                width=200,
+                callback=_on_idle_audio_threshold_change,
+            )
+        dpg.add_button(
+            tag=TAG_IDLE_RESUME_BUTTON,
+            label="アイドル切断から再開",
+            callback=_on_idle_resume_click,
+            enabled=False,
+        )
+
+        dpg.add_separator()
+
         # --- ログエリア（ウィンドウ高さに追従） ---
         # height=-60 はステータスバー + プログレスバー + separator 分の余白
         with dpg.child_window(tag=TAG_LOG_SCROLL, height=-60, border=True,
@@ -3385,6 +3516,8 @@ def _update_konnyaku_level_meters():
     # 課金状態ランプは konnyaku_system の有無にかかわらず更新する (Issue #99, QA 仕切り直し W-1)
     # _get_billing_state() は _konnyaku_system is None のとき "none" を返すので副作用なし
     _update_billing_lamp()
+    # W-COST-4: アイドル切断状態を検知して再開ボタンの enabled を更新する (issue #81 PR3)
+    _update_idle_status()
     if _konnyaku_system is None:
         return
 
