@@ -840,7 +840,17 @@ def _on_route_a_language_change(sender, app_data, user_data) -> None:
     _restart_route_for_change で stop_route -> start_route を実行し、
     最新の target_language_code を RealtimeTranslator に反映する。
     """
+    print(f"[USER] 系統1 翻訳先言語 -> {app_data}", flush=True)
     _save_settings()
+
+    # 表示名 → 言語コードに変換して _config を更新（W-1 修正: set_target_language 配線）
+    if _konnyaku_system is not None and _konnyaku_system.route_a_system is not None:
+        _lang_names = get_language_display_names()
+        _lang_codes = get_language_codes()
+        if app_data in _lang_names:
+            new_code = _lang_codes[_lang_names.index(app_data)]
+            _konnyaku_system.route_a_system.set_target_language(new_code)
+
     if (
         _konnyaku_running
         and _konnyaku_system is not None
@@ -867,7 +877,17 @@ def _on_route_b_language_change(sender, app_data, user_data) -> None:
     _restart_route_for_change で stop_route -> start_route を実行し、
     最新の target_language_code を RealtimeTranslator に反映する。
     """
+    print(f"[USER] 系統2 翻訳先言語 -> {app_data}", flush=True)
     _save_settings()
+
+    # 表示名 → 言語コードに変換して _config を更新（W-1 修正: set_target_language 配線）
+    if _konnyaku_system is not None and _konnyaku_system.route_b_system is not None:
+        _lang_names = get_language_display_names()
+        _lang_codes = get_language_codes()
+        if app_data in _lang_names:
+            new_code = _lang_codes[_lang_names.index(app_data)]
+            _konnyaku_system.route_b_system.set_target_language(new_code)
+
     if (
         _konnyaku_running
         and _konnyaku_system is not None
