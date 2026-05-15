@@ -1156,6 +1156,15 @@ def _is_route_b_active_for_meter(ptt_enabled: bool) -> bool:
     PTT モード有効時は RouteState.RUNNING で判定し、
     PTT モード無効時はチェックボックスの値（呼び出し側が提供）に委ねる。
 
+    設計意図（W-2 PR4 — _is_ptt_pressing との差異）:
+      この関数は RUNNING のみ True を返す（STARTING は False）。
+      レベルメーターは音声データが実際に流れている場合のみ更新すべきであり、
+      STARTING 中（WebSocket 接続待ち、音声未入力）は 0 表示が妥当なため。
+
+      一方、_is_ptt_pressing() は STARTING + RUNNING の両方で True を返す。
+      これは PTT 押下中のデバイスコンボ disable 判定に使うため、
+      起動途中も含めて「押下操作中」として扱う必要があるから（TBD-3）。
+
     Parameters
     ----------
     ptt_enabled : bool
@@ -1164,7 +1173,8 @@ def _is_route_b_active_for_meter(ptt_enabled: bool) -> bool:
     Returns
     -------
     bool
-        True = 系統B稼働中（レベルメーターを更新すべき）。
+        True = 系統B が RUNNING 状態（レベルメーターを更新すべき）。
+        STARTING / IDLE / STOPPING / ERROR は False。
     """
     if not ptt_enabled:
         # PTT 無効時: 呼び出し側がチェックボックス値で判定するため True を返す
@@ -1184,10 +1194,18 @@ def _is_ptt_pressing() -> bool:
     PTT モード OFF の場合、または _konnyaku_system が None の場合は False を返す。
     TBD-3: 押下中はデバイスコンボを disable する判定に使用する（F-7.2）。
 
+    設計意図（W-2 PR4 — _is_route_b_active_for_meter との差異）:
+      STARTING + RUNNING の両方で True を返す。
+      PTT ホットキーを押している操作中（起動途中含む）はデバイスコンボを disable し続ける
+      必要があるため、接続待ち中（STARTING）でも押下中として扱う（TBD-3）。
+
+      一方、_is_route_b_active_for_meter() は RUNNING のみ True を返す
+      （音声が実際に流れている場合のみレベルメーターを更新するため）。
+
     Returns
     -------
     bool
-        True = PTT ホットキー押下中（系統B稼働中 or 起動中）。
+        True = PTT ホットキー押下中（系統B稼働中 or 起動中: STARTING or RUNNING）。
     """
     if not _ptt_enabled:
         return False
@@ -1269,12 +1287,11 @@ def _on_route_b_enable_change_ptt_aware(enabled: bool) -> None:
     global _ptt_enabled
     print(f"[USER] 系統2 有効チェック {'ON' if enabled else 'OFF'} "
           f"(PTT={'ON' if _ptt_enabled else 'OFF'})", flush=True)
-    _save_settings()
 
     if _ptt_enabled:
         if not enabled:
             # PTT ON 状態で系統B を OFF → PTT モードも OFF にする（TBD-4）
-            _ptt_enabled = False
+            _ptt_enabled = False  # S-1 PR4: 状態更新を _save_settings() より先に行う
             _cleanup_ptt_manager()
             print("[PTT] 系統2 OFF により PTT モードを自動無効化", flush=True)
             # PTT チェックボックスの表示を同期（dpg_ready 時のみ）
@@ -1289,6 +1306,8 @@ def _on_route_b_enable_change_ptt_aware(enabled: bool) -> None:
             else:
                 _konnyaku_system.stop_route("b")
 
+    # S-1 PR4: 状態更新（_ptt_enabled 等）完了後に永続化する
+    _save_settings()
     _update_ptt_visual_feedback()
 
 

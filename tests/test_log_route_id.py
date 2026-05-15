@@ -50,6 +50,7 @@ def _make_cs(route_id: str = "a") -> "CaptionSystem":  # type: ignore[name-defin
     cs._owns_broadcaster = False
     cs._broadcaster = MagicMock()
     cs._on_ready = None
+    cs._model_name = "tiny"  # W-7: Whisper モデルロード時間を短縮するため "tiny" を設定
     return cs
 
 

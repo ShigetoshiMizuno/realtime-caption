@@ -638,6 +638,14 @@ class CaptionSystem:
         - asyncio イベントループスレッドを生成して asyncio.run(self.run()) を実行
         - STARTING / RUNNING 中は no-op（冪等性保証）
         - API キー未設定の場合は state=ERROR に遷移して on_error を呼ぶ
+
+        状態遷移タイミング（W-6）:
+          IDLE/ERROR → STARTING（start() 冒頭）
+                     → RUNNING（非同期スレッド起動完了後、このメソッドの末尾で遷移）
+
+        Note: スレッド起動完了時点で RUNNING に遷移するため、
+        実際の WebSocket 接続確立よりも前に RUNNING 状態になる。
+        on_connected コールバックが呼ばれるタイミング（WS 接続完了）とは異なる。
         """
         # 冪等性ガード
         if self.state in (RouteState.STARTING, RouteState.RUNNING):
