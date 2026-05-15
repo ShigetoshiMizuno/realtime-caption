@@ -885,6 +885,11 @@ def _on_route_a_vad_enable_change(sender, app_data):
     停止中なら _save_settings のみ実行する。
     """
     _save_settings()
+    # スライダーの enabled 状態を VAD ON/OFF に連動して切替（W-1 対応）
+    if dpg.does_item_exist(TAG_ROUTE_A_VAD_SILENCE_MS):
+        dpg.configure_item(TAG_ROUTE_A_VAD_SILENCE_MS, enabled=bool(app_data))
+    if dpg.does_item_exist(TAG_ROUTE_A_VAD_THRESHOLD):
+        dpg.configure_item(TAG_ROUTE_A_VAD_THRESHOLD, enabled=bool(app_data))
     if (
         _konnyaku_running
         and _konnyaku_system is not None
@@ -907,6 +912,11 @@ def _on_route_a_vad_enable_change(sender, app_data):
 def _on_route_b_vad_enable_change(sender, app_data):
     """系統B VAD 有効化 ON/OFF 変更時。稼働中なら即時再起動して反映（W-COST-3）。"""
     _save_settings()
+    # スライダーの enabled 状態を VAD ON/OFF に連動して切替（W-1 対応）
+    if dpg.does_item_exist(TAG_ROUTE_B_VAD_SILENCE_MS):
+        dpg.configure_item(TAG_ROUTE_B_VAD_SILENCE_MS, enabled=bool(app_data))
+    if dpg.does_item_exist(TAG_ROUTE_B_VAD_THRESHOLD):
+        dpg.configure_item(TAG_ROUTE_B_VAD_THRESHOLD, enabled=bool(app_data))
     if (
         _konnyaku_running
         and _konnyaku_system is not None

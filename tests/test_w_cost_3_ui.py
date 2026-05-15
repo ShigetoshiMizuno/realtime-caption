@@ -182,16 +182,22 @@ class TestVadCallbackSaveSettings:
     def test_route_a_vad_enable_calls_save_settings(self):
         """_on_route_a_vad_enable_change が _save_settings を呼ぶこと。"""
         app._dpg_ready = False
+        mock_dpg = MagicMock()
+        mock_dpg.does_item_exist.return_value = False
 
-        with patch.object(app, "_save_settings") as mock_save:
+        with patch("app.dpg", mock_dpg), \
+             patch.object(app, "_save_settings") as mock_save:
             app._on_route_a_vad_enable_change(sender=None, app_data=True)
             mock_save.assert_called_once()
 
     def test_route_b_vad_enable_calls_save_settings(self):
         """_on_route_b_vad_enable_change が _save_settings を呼ぶこと。"""
         app._dpg_ready = False
+        mock_dpg = MagicMock()
+        mock_dpg.does_item_exist.return_value = False
 
-        with patch.object(app, "_save_settings") as mock_save:
+        with patch("app.dpg", mock_dpg), \
+             patch.object(app, "_save_settings") as mock_save:
             app._on_route_b_vad_enable_change(sender=None, app_data=True)
             mock_save.assert_called_once()
 
