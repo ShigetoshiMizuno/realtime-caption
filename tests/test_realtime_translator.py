@@ -976,3 +976,124 @@ class TestRealtimeTranslatorSourceTranscript:
 
         assert errors == [], \
             f"on_source_transcript=None のときエラーが発生してはいけない: {errors}"
+
+
+# ---------------------------------------------------------------------------
+# W-COST-1 PR1: session.update の audio.output モダリティ条件分岐テスト
+# ---------------------------------------------------------------------------
+
+@pytest.mark.skipif(not _MODULE_AVAILABLE, reason="realtime_translator モジュール未実装")
+class TestSessionUpdateAudioOutputModality:
+    """
+    W-COST-1 案 B: _request_audio_output フラグに応じて
+    session.update の audio.output キーを条件分岐するテスト。
+
+    SPEC: docs/spec/cost-w-cost-1-design.md §4.1 / §5.1
+    """
+
+    def test_session_update_excludes_audio_output_when_disabled(self):
+        """
+        request_audio_output=False のとき、接続時の session.update に
+        audio.output キー自体が含まれないこと。
+
+        これにより API 側が音声を生成せず、音声トークン課金を防止できる。
+        """
+        sent_messages = []
+
+        async def mock_handler(websocket):
+            msg = await asyncio.wait_for(websocket.recv(), timeout=5)
+            sent_messages.append(json.loads(msg))
+            try:
+                await websocket.wait_closed()
+            except Exception:
+                pass
+
+        server_loop, stop_event, _, port = _start_mock_server_in_thread(mock_handler)
+
+        try:
+            translator = RealtimeTranslator(
+                api_key="sk-test-fake-cost-w1-disabled",
+                target_language_code="ja",
+                request_audio_output=False,
+                reconnect_max_attempts=0,
+            )
+            translator._ws_url = f"ws://localhost:{port}"
+
+            client_loop = asyncio.new_event_loop()
+            translator.start(client_loop)
+
+            deadline = time.time() + 5
+            while not sent_messages and time.time() < deadline:
+                time.sleep(0.1)
+
+            translator.stop()
+        finally:
+            _stop_mock_server(server_loop, stop_event)
+
+        assert len(sent_messages) >= 1, "session.update が送信されなかった"
+        update_msg = sent_messages[0]
+        assert update_msg.get("type") == "session.update"
+
+        audio_section = update_msg.get("session", {}).get("audio", {})
+        # audio.input は常に存在すること（原文トランスクリプト受信に必要）
+        assert "input" in audio_section, \
+            f"audio.input が存在しない: {audio_section}"
+        # audio.output キー自体が存在しないこと（W-COST-1 の修正箇所）
+        assert "output" not in audio_section, \
+            f"request_audio_output=False のとき audio.output は除外されるべき: {audio_section}"
+
+    def test_session_update_includes_audio_output_when_enabled(self):
+        """
+        request_audio_output=True のとき、接続時の session.update に
+        audio.output.language が含まれること。
+
+        既存の動作（True 時は言語設定を送る）が壊れていないことを確認する。
+        """
+        sent_messages = []
+
+        async def mock_handler(websocket):
+            msg = await asyncio.wait_for(websocket.recv(), timeout=5)
+            sent_messages.append(json.loads(msg))
+            try:
+                await websocket.wait_closed()
+            except Exception:
+                pass
+
+        server_loop, stop_event, _, port = _start_mock_server_in_thread(mock_handler)
+
+        try:
+            translator = RealtimeTranslator(
+                api_key="sk-test-fake-cost-w1-enabled",
+                target_language_code="ja",
+                request_audio_output=True,
+                reconnect_max_attempts=0,
+            )
+            translator._ws_url = f"ws://localhost:{port}"
+
+            client_loop = asyncio.new_event_loop()
+            translator.start(client_loop)
+
+            deadline = time.time() + 5
+            while not sent_messages and time.time() < deadline:
+                time.sleep(0.1)
+
+            translator.stop()
+        finally:
+            _stop_mock_server(server_loop, stop_event)
+
+        assert len(sent_messages) >= 1, "session.update が送信されなかった"
+        update_msg = sent_messages[0]
+        assert update_msg.get("type") == "session.update"
+
+        audio_section = update_msg.get("session", {}).get("audio", {})
+        # audio.input は常に存在すること
+        assert "input" in audio_section, \
+            f"audio.input が存在しない: {audio_section}"
+        # audio.output.language が含まれること
+        assert "output" in audio_section, \
+            f"request_audio_output=True のとき audio.output が存在すること: {audio_section}"
+        assert audio_section["output"].get("language") == "ja", \
+            f"audio.output.language は target_language_code と一致すること: {audio_section}"
+        # format キーは引き続き含まれないこと（API 未対応のため）
+        assert "format" not in audio_section.get("output", {}), \
+            f"audio.output.format は API 未対応のため含めてはいけない: {audio_section}"
