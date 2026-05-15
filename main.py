@@ -428,7 +428,11 @@ class CaptionSystem:
                  shared_broadcaster: "SubtitleBroadcaster | None" = None,
                  pa_instance: "pyaudio.PyAudio | None" = None,
                  on_realtime_error_external: "Callable[[str], None] | None" = None,
-                 request_source_transcript: bool = True):
+                 request_source_transcript: bool = True,
+                 vad_enabled: bool = False,
+                 vad_threshold: float = 0.5,
+                 vad_prefix_padding_ms: int = 300,
+                 vad_silence_duration_ms: int = 500):
         self._config = config
         self._device_info = device_info
         self._model_name = model_name
@@ -439,6 +443,11 @@ class CaptionSystem:
         self._on_realtime_error_external = on_realtime_error_external  # callable(str) | None
         # W-COST-2: 原文文字起こし（Whisper）有効フラグ。False にすると Whisper 課金を停止する。
         self._request_source_transcript: bool = request_source_transcript
+        # W-COST-3: Server VAD によるコスト削減フラグ。False（デフォルト）で既存挙動維持。
+        self._vad_enabled: bool = vad_enabled
+        self._vad_threshold: float = vad_threshold
+        self._vad_prefix_padding_ms: int = vad_prefix_padding_ms
+        self._vad_silence_duration_ms: int = vad_silence_duration_ms
 
         # 翻訳モード判定
         trans_model = config.get("translation", {}).get("translation_model", "openai").lower()
@@ -627,6 +636,10 @@ class CaptionSystem:
             request_audio_output=self._audio_output_mode,
             on_audio_delta=self._on_audio_delta,
             request_source_transcript=self._request_source_transcript,
+            vad_enabled=self._vad_enabled,
+            vad_threshold=self._vad_threshold,
+            vad_prefix_padding_ms=self._vad_prefix_padding_ms,
+            vad_silence_duration_ms=self._vad_silence_duration_ms,
         )
         from cost_monitor import CostMonitor
         max_min = rt_cfg.get("max_session_minutes", 60)
@@ -1549,6 +1562,10 @@ class RouteConfig:
     output_device_index: int | None
     output_volume: float                # 0.0〜2.0
     request_source_transcript: bool = True  # W-COST-2: 原文表示（Whisper）有効フラグ。デフォルト True（後方互換）
+    vad_enabled: bool = False               # W-COST-3: Server VAD 有効フラグ。デフォルト False（後方互換・安全側）
+    vad_threshold: float = 0.5             # W-COST-3: VAD 起動音量閾値（0.0〜1.0）
+    vad_prefix_padding_ms: int = 300        # W-COST-3: 発話開始前に遡るバッファ（ms）
+    vad_silence_duration_ms: int = 500      # W-COST-3: 無音判定時間（ms）
 
 
 class MultiCaptionSystem:
@@ -1615,6 +1632,10 @@ class MultiCaptionSystem:
                 pa_instance=self._pa,     # 共有 PyAudio を注入
                 on_realtime_error_external=_wrap_error(route_a.route_id),
                 request_source_transcript=route_a.request_source_transcript,
+                vad_enabled=route_a.vad_enabled,
+                vad_threshold=route_a.vad_threshold,
+                vad_prefix_padding_ms=route_a.vad_prefix_padding_ms,
+                vad_silence_duration_ms=route_a.vad_silence_duration_ms,
             )
         else:
             self._route_a = None
@@ -1637,6 +1658,10 @@ class MultiCaptionSystem:
                 pa_instance=self._pa,       # 共有 PyAudio を注入
                 on_realtime_error_external=_wrap_error(route_b.route_id),
                 request_source_transcript=route_b.request_source_transcript,
+                vad_enabled=route_b.vad_enabled,
+                vad_threshold=route_b.vad_threshold,
+                vad_prefix_padding_ms=route_b.vad_prefix_padding_ms,
+                vad_silence_duration_ms=route_b.vad_silence_duration_ms,
             )
         else:
             self._route_b = None
