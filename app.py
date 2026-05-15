@@ -65,6 +65,7 @@ os.environ["RC_MODELS_CONFIGURED"] = "1"
 
 import argparse
 import asyncio
+from contextlib import contextmanager
 import io
 import json
 import queue
@@ -88,6 +89,31 @@ from ptt_hotkey_manager import PttHotkeyManager
 if sys.stdout.encoding != "utf-8":
     sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
     sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding="utf-8", errors="replace")
+
+
+# ---------------------------------------------------------------------------
+# 起動進捗ログ (issue #101)
+# ---------------------------------------------------------------------------
+
+@contextmanager
+def _startup_step(label: str):
+    """起動ステップを [STARTUP] ログ + 所要時間でラップする。
+
+    使用例:
+        with _startup_step("PyAudio 初期化"):
+            pa = pyaudio.PyAudio()
+    """
+    print(f"[STARTUP] {label} 開始 ...", flush=True)
+    t0 = time.monotonic()
+    try:
+        yield
+    except Exception as e:
+        dt = time.monotonic() - t0
+        print(f"[STARTUP][ERROR] {label} 失敗 ({dt:.2f}s): {e}", flush=True)
+        raise
+    else:
+        dt = time.monotonic() - t0
+        print(f"[STARTUP] {label} 完了 ({dt:.2f}s)", flush=True)
 
 
 # ---------------------------------------------------------------------------
@@ -3289,25 +3315,37 @@ def main():
         global _verbose_state
         _verbose_state = True
 
-    _config = load_config("config.yaml")
-    _host_api = _config.get("audio", {}).get("host_api", "wasapi")
-    _devices = list_audio_devices(host_api=_host_api)
+    _app_start_time = time.monotonic()
+
+    with _startup_step("設定ファイル読み込み"):
+        _config = load_config("config.yaml")
+
+    with _startup_step("入力デバイス列挙"):
+        _host_api = _config.get("audio", {}).get("host_api", "wasapi")
+        _devices = list_audio_devices(host_api=_host_api)
 
     rpc_port = _config.get("rpc", {}).get("port", 8767)
     _start_rpc_server(rpc_port)
 
+    with _startup_step("settings.json 状態復元"):
+        _ptt_saved = _load_ptt_settings(_load_settings())
+
     # 常駐モデル: MultiCaptionSystem を即生成
-    _create_konnyaku_system()
+    with _startup_step("MultiCaptionSystem 常駐生成"):
+        _create_konnyaku_system()
 
     # PTT マネージャー初期化（_konnyaku_system 生成後に行う）
-    _ptt_saved = _load_ptt_settings(_load_settings())
     _init_ptt_manager(
         ptt_enabled=_ptt_saved["ptt_enabled"],
         ptt_hotkey=_ptt_saved["ptt_hotkey"],
     )
 
-    _build_gui()
+    with _startup_step("GUI 構築"):
+        _build_gui()
     dpg.show_viewport()
+
+    _app_startup_dt = time.monotonic() - _app_start_time
+    print(f"[STARTUP] 全体起動時間: {_app_startup_dt:.2f}s", flush=True)
 
     # Windows 上でウィンドウタイトルを UTF-16 で上書きして日本語化
     try:
