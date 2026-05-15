@@ -22,6 +22,7 @@ models/
 *_translate.txt
 *_verbose.txt
 *.log
+logs_archive/
 
 # その他
 *.docx
