@@ -78,6 +78,7 @@ import dearpygui.dearpygui as dpg
 from main import (
     CaptionSystem, MultiCaptionSystem, RouteConfig, RouteState,
     list_audio_devices, find_device_by_name, load_config,
+    _open_quota_usage_page,
 )
 from config_utils import decode_api_key, encode_api_key
 from constants import get_language_display_names, get_language_codes
@@ -217,6 +218,7 @@ TAG_KEY_SHOW_OPENAI = "key_show_openai"
 TAG_KEY_SHOW_DEEPL = "key_show_deepl"
 TAG_KEY_SAVE_BTN = "key_save_btn"
 TAG_KEY_STATUS = "key_status"
+TAG_QUOTA_WEB_BTN = "quota_web_btn"  # issue #80: クォータ確認ボタン
 
 # PTT 設定 UI タグ (issue #82 / ptt-mode-design.md F-5)
 TAG_PTT_SECTION = "ptt_section"
@@ -486,6 +488,11 @@ def _on_save_api_keys():
                     dpg.configure_item(TAG_START_BTN, enabled=bool(new_models))
         else:
             dpg.set_value(TAG_KEY_STATUS, "保存に失敗しました")
+
+
+def _on_open_quota_page(sender=None, app_data=None, user_data=None):
+    """クォータを Web で確認ボタンのコールバック。(issue #80)"""
+    _open_quota_usage_page()
 
 
 # ---------------------------------------------------------------------------
@@ -2376,6 +2383,14 @@ def _build_gui():
                     callback=_on_save_api_keys,
                 )
                 dpg.add_text("", tag=TAG_KEY_STATUS)
+
+            # issue #80: クォータ確認ボタン（クォータ超過時以外でもいつでも確認可能）
+            dpg.add_button(
+                tag=TAG_QUOTA_WEB_BTN,
+                label="クォータを Web で確認",
+                width=200,
+                callback=_on_open_quota_page,
+            )
 
             dpg.add_separator()
 

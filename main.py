@@ -1507,6 +1507,24 @@ def _classify_realtime_error(msg: str) -> tuple[str, str]:
     return ("other", f"⚠️ OpenAI API エラー: {truncated}")
 
 
+_QUOTA_USAGE_URL = "https://platform.openai.com/usage"
+
+
+def _open_quota_usage_page(webbrowser_module=None) -> None:
+    """OpenAI クォータ確認ページをデフォルトブラウザで開く。
+
+    Parameters
+    ----------
+    webbrowser_module:
+        テスト時に差し替え可能な webbrowser 互換オブジェクト。
+        None の場合は標準ライブラリの webbrowser を使用する。
+    """
+    if webbrowser_module is None:
+        import webbrowser
+        webbrowser_module = webbrowser
+    webbrowser_module.open(_QUOTA_USAGE_URL)
+
+
 @dataclass
 class RouteConfig:
     """MultiCaptionSystem の1経路分の設定。"""
