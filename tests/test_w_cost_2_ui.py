@@ -159,17 +159,46 @@ class TestSourceTranscriptCallbackSaveSettings:
 # ---------------------------------------------------------------------------
 
 class TestSourceTranscriptRunningNotification:
-    """稼働中にチェックを変更したとき TAG_STATUS_STATE に通知メッセージが設定されること。"""
+    """稼働中にチェックを変更したとき TAG_STATUS_STATE に通知メッセージが設定されること。
+
+    W-COST-2 リファクタリング後: 稼働中切替は即時再起動（「切替中...」メッセージ）。
+    「次回起動時に反映されます」は廃止。
+    """
 
     def _make_mock_dpg(self, item_exists=True):
         mock_dpg = MagicMock()
         mock_dpg.does_item_exist.return_value = item_exists
         return mock_dpg
 
+    def _make_running_system(self, route_a_state=None, route_b_state=None):
+        """稼働中の FakeMultiCaptionSystem を作成するヘルパー。"""
+        from main import RouteState
+        from unittest.mock import MagicMock
+
+        class _FakeRoute:
+            def __init__(self, state):
+                self._state = state
+                self.set_output_device = MagicMock()
+
+            @property
+            def state(self):
+                return self._state
+
+        class _FakeSystem:
+            def __init__(self):
+                self.route_a_system = _FakeRoute(route_a_state or RouteState.RUNNING)
+                self.route_b_system = _FakeRoute(route_b_state or RouteState.RUNNING)
+                self.stop_route = MagicMock()
+                self.start_route = MagicMock()
+
+        return _FakeSystem()
+
     def test_route_a_shows_status_message_when_running(self):
-        """稼働中（_konnyaku_running=True）に系統 A チェックを変更すると
-        TAG_STATUS_STATE に「次回起動時に反映されます」が設定されること。"""
+        """稼働中（_konnyaku_running=True, route_a=RUNNING）に系統 A チェックを変更すると
+        TAG_STATUS_STATE に「切替中」メッセージが設定されること（W-COST-2 即時再起動）。"""
+        from main import RouteState
         app._konnyaku_running = True
+        app._konnyaku_system = self._make_running_system(route_a_state=RouteState.RUNNING)
         mock_dpg = self._make_mock_dpg()
 
         with patch("app.dpg", mock_dpg):
@@ -185,14 +214,16 @@ class TestSourceTranscriptRunningNotification:
             f"set_value calls={mock_dpg.set_value.call_args_list}"
         )
         message = set_value_calls[0].args[1]
-        assert "次回起動時" in message, (
-            f"メッセージに「次回起動時」が含まれること。got={message!r}"
+        assert "切替中" in message, (
+            f"メッセージに「切替中」が含まれること。got={message!r}"
         )
 
     def test_route_b_shows_status_message_when_running(self):
-        """稼働中（_konnyaku_running=True）に系統 B チェックを変更すると
-        TAG_STATUS_STATE に「次回起動時に反映されます」が設定されること。"""
+        """稼働中（_konnyaku_running=True, route_b=RUNNING）に系統 B チェックを変更すると
+        TAG_STATUS_STATE に「切替中」メッセージが設定されること（W-COST-2 即時再起動）。"""
+        from main import RouteState
         app._konnyaku_running = True
+        app._konnyaku_system = self._make_running_system(route_b_state=RouteState.RUNNING)
         mock_dpg = self._make_mock_dpg()
 
         with patch("app.dpg", mock_dpg):
@@ -207,8 +238,8 @@ class TestSourceTranscriptRunningNotification:
             f"set_value calls={mock_dpg.set_value.call_args_list}"
         )
         message = set_value_calls[0].args[1]
-        assert "次回起動時" in message, (
-            f"メッセージに「次回起動時」が含まれること。got={message!r}"
+        assert "切替中" in message, (
+            f"メッセージに「切替中」が含まれること。got={message!r}"
         )
 
     def test_route_a_no_status_message_when_not_running(self):
