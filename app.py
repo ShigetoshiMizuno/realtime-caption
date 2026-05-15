@@ -1891,9 +1891,15 @@ def _get_billing_state() -> str:
 
 
 _BILLING_LAMP_LABELS = {
-    "none": "🟢 課金なし",
-    "single": "🟡 片方課金",
-    "both": "🔴 両方課金",
+    "none": "● 課金なし",
+    "single": "● 片方課金",
+    "both": "● 両方課金",
+}
+
+_BILLING_LAMP_COLORS = {
+    "none": (0, 200, 0, 255),      # 緑
+    "single": (255, 200, 0, 255),  # 黄/オレンジ
+    "both": (220, 0, 0, 255),      # 赤
 }
 
 
@@ -1905,7 +1911,9 @@ def _update_billing_lamp() -> None:
         return
     state = _get_billing_state()
     label = _BILLING_LAMP_LABELS.get(state, _BILLING_LAMP_LABELS["none"])
+    color = _BILLING_LAMP_COLORS.get(state, _BILLING_LAMP_COLORS["none"])
     _gui_set_value(TAG_BILLING_LAMP, label)
+    dpg.configure_item(TAG_BILLING_LAMP, color=color)
 
 
 def _classify_preload_cache(cached_system, cached_key, requested_key) -> tuple[str, object | None]:
@@ -2925,7 +2933,7 @@ def _build_gui():
 
         # --- ステータスバー ---
         with dpg.group(horizontal=True):
-            dpg.add_text("🟢 課金なし", tag=TAG_BILLING_LAMP)
+            dpg.add_text("● 課金なし", tag=TAG_BILLING_LAMP)
             dpg.add_text("  ", )
             dpg.add_text("■ 待機中", tag=TAG_STATUS_STATE)
             dpg.add_text("  |  認識 ○", tag=TAG_STATUS_STT)
