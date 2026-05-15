@@ -158,6 +158,9 @@ TAG_ZOOM_PRESET_BTN = "zoom_preset_btn"
 TAG_STATUS_COST = "status_cost"
 TAG_HOST_API_COMBO = "host_api_combo"
 
+# 課金状態ランプ (Issue #99)
+TAG_BILLING_LAMP = "billing_lamp"
+
 # ---------------------------------------------------------------------------
 # 翻訳こんにゃくモード GUI タグ (Issue #38 Phase 4)
 # ---------------------------------------------------------------------------
@@ -1860,6 +1863,51 @@ def _gui_set_label(tag: str, new_label: str, name: str | None = None,
         dpg.configure_item(tag, label=new_label, **other_kwargs)
 
 
+# ---------------------------------------------------------------------------
+# 課金状態ランプ (Issue #99)
+# ---------------------------------------------------------------------------
+
+def _get_billing_state() -> str:
+    """課金状態を判定して 'none' / 'single' / 'both' を返す。
+
+    STARTING / RUNNING のいずれかを課金中とみなす。
+    """
+    system = _konnyaku_system
+    if system is None:
+        return "none"
+    a_active = (
+        system.route_a_system is not None
+        and system.route_a_system.state in (RouteState.STARTING, RouteState.RUNNING)
+    )
+    b_active = (
+        system.route_b_system is not None
+        and system.route_b_system.state in (RouteState.STARTING, RouteState.RUNNING)
+    )
+    if a_active and b_active:
+        return "both"
+    if a_active or b_active:
+        return "single"
+    return "none"
+
+
+_BILLING_LAMP_LABELS = {
+    "none": "🟢 課金なし",
+    "single": "🟡 片方課金",
+    "both": "🔴 両方課金",
+}
+
+
+def _update_billing_lamp() -> None:
+    """課金ランプを現在の状態に更新する。dpg は GUI スレッド前提。"""
+    if not _dpg_ready:
+        return
+    if not dpg.does_item_exist(TAG_BILLING_LAMP):
+        return
+    state = _get_billing_state()
+    label = _BILLING_LAMP_LABELS.get(state, _BILLING_LAMP_LABELS["none"])
+    _gui_set_value(TAG_BILLING_LAMP, label)
+
+
 def _classify_preload_cache(cached_system, cached_key, requested_key) -> tuple[str, object | None]:
     """プリロードキャッシュを分類する純関数（テスト可能性のために切り出し）。
 
@@ -2877,6 +2925,8 @@ def _build_gui():
 
         # --- ステータスバー ---
         with dpg.group(horizontal=True):
+            dpg.add_text("🟢 課金なし", tag=TAG_BILLING_LAMP)
+            dpg.add_text("  ", )
             dpg.add_text("■ 待機中", tag=TAG_STATUS_STATE)
             dpg.add_text("  |  認識 ○", tag=TAG_STATUS_STT)
             dpg.add_text("  翻訳 ○", tag=TAG_STATUS_TRL)
@@ -3022,6 +3072,9 @@ def _update_konnyaku_level_meters():
     if dpg.does_item_exist(TAG_LEVEL_METER_B_OUT):
         dpg.set_value(TAG_LEVEL_METER_B_OUT, level_b_out)
         dpg.configure_item(TAG_LEVEL_METER_B_OUT, overlay=f"{int(level_b_out * 100)}%")
+
+    # 課金状態ランプを同じタイミングで更新 (Issue #99)
+    _update_billing_lamp()
 
 
 # ---------------------------------------------------------------------------
