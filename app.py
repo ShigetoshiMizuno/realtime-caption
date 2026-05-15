@@ -690,14 +690,6 @@ def _restart_route_for_change(route_id: str, reason_label: str) -> None:
         _gui_queue.put({"cmd": "set_status", "text": ""})
 
 
-def _restart_route_for_audio_output_change(route_id: str) -> None:
-    """音声出力 ON/OFF 変更後の再起動（後方互換ラッパー）。
-
-    _restart_route_for_change の薄いラッパー。既存の呼び出し箇所との互換性維持用。
-    """
-    _restart_route_for_change(route_id, "音声出力 ON/OFF 切替")
-
-
 def _on_route_a_output_enable_change(sender, app_data, user_data):
     """経路A 音声出力 ON/OFF 変更時。稼働中なら再起動して API 側を即反映（W-COST-1 案B）。"""
     print(f"[USER] 系統1 音声出力 {'ON' if app_data else 'OFF'}", flush=True)
