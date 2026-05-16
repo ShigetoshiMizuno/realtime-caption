@@ -53,6 +53,11 @@ def _make_minimal_caption_system(route_id: str = "test") -> CaptionSystem:
     cs._audio_output_mode = False
     cs._pa_instance = None
     cs._realtime_mode = True
+    # verbose ログ（_set_state から _log_verbose が呼ばれるため必要）
+    cs.verbose = False
+    cs._verbose_log_path = None
+    cs._verbose_lock = threading.Lock()
+    cs._idle_monitor = None
     return cs
 
 

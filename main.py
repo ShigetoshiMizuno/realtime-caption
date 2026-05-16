@@ -558,6 +558,7 @@ class CaptionSystem:
                 f" {old.value} -> {new_state.value}",
                 flush=True,
             )
+            self._log_verbose("STATE_TRANSITION", old=old.value, new=new_state.value)
 
     def get_asyncio_thread(self) -> "threading.Thread | None":
         """start() で生成された asyncio スレッドを返す (terminate での join 用)。
@@ -673,6 +674,16 @@ class CaptionSystem:
             f" request_audio_output={self._audio_output_mode}",
             flush=True,
         )
+        self._log_verbose(
+            "RT_INIT",
+            request_source_transcript=self._request_source_transcript,
+            vad_enabled=self._vad_enabled,
+            request_audio_output=self._audio_output_mode,
+            target_language_code=rt_cfg.get("target_language_code", "ja"),
+            model=rt_cfg.get("model", "gpt-realtime-translate"),
+        )
+        # verbose コールバックを繋ぐ
+        self._realtime_translator._verbose_callback = self._log_verbose
 
     def start(self) -> None:
         """IDLE / ERROR 状態から RUNNING へ遷移する。
@@ -894,7 +905,11 @@ class CaptionSystem:
         return self._verbose_log_path
 
     def _log_verbose(self, event: str, **fields):
-        """verbose=True のときのみ、verbose ログにイベントを書く。"""
+        """verbose=True のときのみ、verbose ログにイベントを書く。
+
+        payload キーのみ最大 5000 文字まで許容（WS 全文記録用）。
+        その他フィールドは従来通り最大 500 文字。
+        """
         if not self.verbose:
             return
         try:
@@ -906,8 +921,10 @@ class CaptionSystem:
                     f.write(f"[{ts}] {route_prefix} {event}\n")
                     for k, v in fields.items():
                         s = str(v).replace("\n", "\\n")
-                        if len(s) > 500:
-                            s = s[:500] + "..."
+                        # payload フィールドは 5000 文字まで許容（WS 全文記録用）
+                        limit = 5000 if k == "payload" else 500
+                        if len(s) > limit:
+                            s = s[:limit] + "..."
                         f.write(f"  {k}: {s}\n")
                     f.write("\n")
         except Exception:
@@ -1039,6 +1056,7 @@ class CaptionSystem:
         旧実装で _latest_source とペアリングしていたため、同じ翻訳が複数の原文に
         重複表示される問題があった。
         """
+        self._log_verbose("CALLBACK", name="_on_realtime_transcript")
         if not text:
             return
         self._latest_translation = text
@@ -1053,6 +1071,7 @@ class CaptionSystem:
         原文確定時は翻訳側を空文字にしてブロードキャストし、UI/ログ側で
         EN ストリームとして独立表示する。
         """
+        self._log_verbose("CALLBACK", name="_on_realtime_source_transcript")
         if not text:
             return
         self._latest_source = text

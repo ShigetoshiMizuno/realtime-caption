@@ -78,6 +78,11 @@ def _make_minimal_caption_system() -> CaptionSystem:
     # PR-1: RouteState 管理フィールド
     cs._state = RouteState.IDLE
     cs._state_lock = threading.Lock()
+    # verbose ログ（_set_state から _log_verbose が呼ばれるため必要）
+    cs.verbose = False
+    cs._verbose_log_path = None
+    cs._verbose_lock = threading.Lock()
+    cs._idle_monitor = None
     return cs
 
 

@@ -120,22 +120,51 @@ def _startup_step(label: str):
 # ログヘルパー — [USER] / [RPC] / [ACTION] プリフィックス (issue #121-B)
 # ---------------------------------------------------------------------------
 
+# アプリレベル verbose ログファイルのパス。
+# _verbose_state=True かつ このパスが設定されている場合に _verbose_write が書き出す。
+# 起動時 / verbose ON 時に設定する（テストでは tmp_path に差し替える）。
+_app_verbose_path: "_Path | None" = None
+
+
+def _verbose_write(category: str, line: str) -> None:
+    """アプリレベルの verbose ログを _app_verbose_path に書き出す。
+
+    _verbose_state=True のときのみ動作。タイムスタンプ付き。
+    """
+    if not _verbose_state:
+        return
+    if _app_verbose_path is None:
+        return
+    try:
+        ts = datetime.now().strftime("%H:%M:%S.%f")[:-3]
+        with open(_app_verbose_path, "a", encoding="utf-8") as f:
+            f.write(f"[{ts}] [{category}] {line}\n")
+    except Exception:
+        pass  # ロギング自体で失敗してもアプリは止めない
+
+
 def _log_user(event: str, **kwargs) -> None:
     """ボタン押下・UI イベント受信ログ。dpg コールバックの入口で必ず呼ぶ。"""
     detail = " ".join(f"{k}={v}" for k, v in kwargs.items())
-    print(f"[USER] {event}{(' ' + detail) if detail else ''}", flush=True)
+    line = f"[USER] {event}{(' ' + detail) if detail else ''}"
+    print(line, flush=True)
+    _verbose_write("USER", line)
 
 
 def _log_rpc(event: str, **kwargs) -> None:
     """RPC リクエスト受信ログ。_RPCHandler の各 do_GET/do_POST 分岐で呼ぶ。"""
     detail = " ".join(f"{k}={v}" for k, v in kwargs.items())
-    print(f"[RPC] {event}{(' ' + detail) if detail else ''}", flush=True)
+    line = f"[RPC] {event}{(' ' + detail) if detail else ''}"
+    print(line, flush=True)
+    _verbose_write("RPC", line)
 
 
 def _log_action(event: str, **kwargs) -> None:
     """処理実行ログ。実際の処理ロジック（再起動、設定更新、API呼出等）の前後で呼ぶ。"""
     detail = " ".join(f"{k}={v}" for k, v in kwargs.items())
-    print(f"[ACTION] {event}{(' ' + detail) if detail else ''}", flush=True)
+    line = f"[ACTION] {event}{(' ' + detail) if detail else ''}"
+    print(line, flush=True)
+    _verbose_write("ACTION", line)
 
 
 # ---------------------------------------------------------------------------

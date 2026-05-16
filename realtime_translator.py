@@ -350,10 +350,13 @@ class RealtimeTranslator:
                 audio_section["input"] = input_cfg
             if self._request_audio_output:
                 audio_section["output"] = {"language": self._target_language_code}
-            await ws.send(json.dumps({
+            session_payload = json.dumps({
                 "type": "session.update",
                 "session": {"audio": audio_section}
-            }))
+            }, ensure_ascii=False)
+            self._log_verbose("RT_SESSION_UPDATE_SEND", payload=session_payload)
+            await ws.send(session_payload)
+            self._log_verbose("RT_SESSION_UPDATE_SENT")
 
             if self._on_connected:
                 self._on_connected()
@@ -431,6 +434,8 @@ class RealtimeTranslator:
                     continue
 
                 event_type = msg.get("type", "")
+                # 全受信イベントを verbose 記録（payload 全文。type 不明含む）
+                self._log_verbose("RT_WS_RECV", event_type=event_type, payload=raw)
                 self._log_verbose("RT_RAW", type=event_type)
 
                 if event_type == "session.output_transcript.delta":

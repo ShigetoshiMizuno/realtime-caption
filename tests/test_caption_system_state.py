@@ -46,6 +46,11 @@ def _make_minimal_caption_system():
     cs._audio_stats = AudioStats()
     # route_id（ログ出力用）
     cs._route_id = "test"
+    # verbose ログ（_set_state から _log_verbose が呼ばれるため必要）
+    cs.verbose = False
+    cs._verbose_log_path = None
+    cs._verbose_lock = threading.Lock()
+    cs._idle_monitor = None
     return cs
 
 
