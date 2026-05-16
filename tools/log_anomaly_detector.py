@@ -10,6 +10,7 @@
   Rule 2: [STATE] stopping → 次の N 行以内に -> idle がなければ異常
   Rule 4: [RPC] → 次の N 行以内に [ACTION] がなければ異常
   Rule 5: [翻訳(RT)] → 前後 N 行以内に [原文(RT)] がなければ異常
+  Rule 6: [GUI_CALLBACK] start=X → 対応する end=X または error=X がなければ異常
 """
 
 import argparse
@@ -217,6 +218,68 @@ def check_state_transitions(events: list, window: int = 20) -> list:
 
 
 # ---------------------------------------------------------------------------
+# Rule 6: GUI_CALLBACK ペアリング検出
+# ---------------------------------------------------------------------------
+
+_RE_GUI_CALLBACK_START = re.compile(r"start=(\S+)")
+_RE_GUI_CALLBACK_END = re.compile(r"(?:end|error)=(\S+)")
+
+
+def check_gui_callback_pairs(events: list, window: int = 50) -> list:
+    """Rule 6: GUI_CALLBACK start=X に対応する end=X または error=X がなければ異常。
+
+    対応しない場合は「コールバックがハング・タイムアウトした」と判定。
+
+    Args:
+        events: parse_log_lines の結果
+        window: 未使用（将来の行数ウィンドウ制限用に予約。現在は全ログを対象とする）
+
+    Returns:
+        anomaly リスト。各要素は dict:
+          - rule: str
+          - lineno: int (start の行番号)
+          - name: str (コールバック名)
+          - description: str
+    """
+    anomalies = []
+    # 未マッチの start スタック: {"name": str, "lineno": int, "idx": int}
+    starts: list[dict] = []
+
+    for i, ev in enumerate(events):
+        if ev["prefix"] != "GUI_CALLBACK":
+            continue
+        msg = ev["message"]
+
+        m_start = _RE_GUI_CALLBACK_START.match(msg)
+        if m_start:
+            starts.append({"name": m_start.group(1), "lineno": ev["lineno"], "idx": i})
+            continue
+
+        m_end = _RE_GUI_CALLBACK_END.match(msg)
+        if m_end:
+            name = m_end.group(1)
+            # 同名の start を後ろから探して取り除く（最も近い start を消費）
+            for j in range(len(starts) - 1, -1, -1):
+                if starts[j]["name"] == name:
+                    starts.pop(j)
+                    break
+
+    # 残った starts はすべて anomaly
+    for s in starts:
+        anomalies.append({
+            "rule": "Rule 6: GUI_CALLBACK ペアリング欠落",
+            "lineno": s["lineno"],
+            "name": s["name"],
+            "description": (
+                f"GUI_CALLBACK start={s['name']} に対応する end/error が"
+                f" window 行以内に出ていない"
+            ),
+        })
+
+    return anomalies
+
+
+# ---------------------------------------------------------------------------
 # Rule 5: 翻訳(RT) ← 原文(RT) 欠落
 # ---------------------------------------------------------------------------
 
@@ -303,7 +366,8 @@ def format_report(anomalies: list, output_json: bool = False) -> str:
     for i, a in enumerate(anomalies, start=1):
         lines.append(f"[ANOMALY {i}] {a['rule']}")
         lines.append(f"  行番号: {a['lineno']}")
-        lines.append(f"  {a['trigger']}")
+        detail = a.get("trigger") or a.get("description", "")
+        lines.append(f"  {detail}")
         lines.append("")
 
     return "\n".join(lines)
@@ -408,6 +472,9 @@ def _run_checks(text: str, args: argparse.Namespace) -> list:
 
     if all_rules or "5" in rules:
         anomalies.extend(check_translation_without_source(events, window=window * 3))
+
+    if all_rules or "6" in rules:
+        anomalies.extend(check_gui_callback_pairs(events, window=window))
 
     # 行番号順にソート
     anomalies.sort(key=lambda a: a["lineno"])
