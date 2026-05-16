@@ -1380,6 +1380,13 @@ class CaptionSystem:
 
         except Exception as e:
             self._log("ERROR", f"キャプチャ中にエラー: {e}")
+            import traceback as _tb_mod
+            self._log_verbose(
+                "CAPTURE_ERROR",
+                error_type=type(e).__name__,
+                error_msg=str(e),
+                traceback=_tb_mod.format_exc(),
+            )
         finally:
             # インスタンス変数を先に None に戻す（shutdown の二重 stop_stream を防ぐ）
             self._capture_stream = None

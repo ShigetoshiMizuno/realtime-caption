@@ -70,8 +70,10 @@ import functools
 import io
 import json
 import queue
+import re as _re_top
 import threading
 import time
+import traceback as _traceback
 from datetime import datetime
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
@@ -183,10 +185,12 @@ def _verbose_callback(name: str = None):
                 return result
             except Exception as e:
                 dt_ms = (time.monotonic() - t0) * 1000
+                tb = _traceback.format_exc()
                 _verbose_write(
                     "GUI_CALLBACK",
                     f"error={cb_name} duration_ms={dt_ms:.2f} "
-                    f"error_type={type(e).__name__} error_msg={e!r}",
+                    f"error_type={type(e).__name__} error_msg={e!r} "
+                    f"traceback={tb[:5000]}",
                 )
                 raise
 
@@ -531,6 +535,15 @@ def _save_settings():
 import re as _re
 import logging as _app_logging
 _app_logger = _app_logging.getLogger(__name__)
+
+
+def _redact_secrets(body_str: str) -> str:
+    """body 文字列から API キー候補を redact する。
+
+    "api_key": "..." パターンを "<redacted>" に置換。
+    漏洩防止のため verbose ログへの書き出し前に必ず適用すること。
+    """
+    return _re.sub(r'"api_key"\s*:\s*"[^"]*"', '"api_key": "<redacted>"', body_str)
 
 
 def _save_api_keys_to_config(
@@ -2881,6 +2894,8 @@ class _RPCHandler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         t0 = time.monotonic()
+        _verbose_write("RPC", f"start GET {self.path}")
+        response_status = 200
         try:
             if self.path == "/api/status":
                 _log_rpc("GET /api/status")
@@ -2922,13 +2937,32 @@ class _RPCHandler(BaseHTTPRequestHandler):
                 })
 
             else:
+                response_status = 404
                 self._send_json({"error": "not found"}, status=404)
+        except Exception as e:
+            if _verbose_state:
+                tb = _traceback.format_exc()
+                _verbose_write(
+                    "RPC",
+                    f"error GET {self.path} error_type={type(e).__name__} traceback={tb[:5000]}",
+                )
+            raise
         finally:
             dt_ms = (time.monotonic() - t0) * 1000
-            _verbose_write("RPC", f"end={self.path} duration_ms={dt_ms:.2f}")
+            _verbose_write("RPC", f"end GET {self.path} duration_ms={dt_ms:.2f} status={response_status}")
 
     def do_POST(self):
         t0 = time.monotonic()
+        # リクエスト body を先読み（verbose 記録 + 既存ロジックへの流用）
+        body_len = int(self.headers.get("Content-Length", 0))
+        body_bytes = self.rfile.read(body_len) if body_len else b""
+        if _verbose_state:
+            body_str = _redact_secrets(body_bytes.decode("utf-8", errors="replace"))
+            _verbose_write(
+                "RPC",
+                f"start POST {self.path} body_len={body_len} body={body_str[:5000]!r}",
+            )
+        response_status = 200
         try:
             if self.path == "/api/stop":
                 _log_rpc("POST /api/stop")
@@ -2936,10 +2970,9 @@ class _RPCHandler(BaseHTTPRequestHandler):
                 self._send_json({"ok": True})
             elif self.path == "/api/start":
                 body = {}
-                length = int(self.headers.get("Content-Length", 0))
-                if length:
+                if body_bytes:
                     try:
-                        body = json.loads(self.rfile.read(length))
+                        body = json.loads(body_bytes)
                     except Exception:
                         pass
                 _log_rpc("POST /api/start", device_index=body.get("device_index"))
@@ -2947,10 +2980,19 @@ class _RPCHandler(BaseHTTPRequestHandler):
                          model=body.get("model"))
                 self._send_json({"ok": True})
             else:
+                response_status = 404
                 self._send_json({"error": "not found"}, status=404)
+        except Exception as e:
+            if _verbose_state:
+                tb = _traceback.format_exc()
+                _verbose_write(
+                    "RPC",
+                    f"error POST {self.path} error_type={type(e).__name__} traceback={tb[:5000]}",
+                )
+            raise
         finally:
             dt_ms = (time.monotonic() - t0) * 1000
-            _verbose_write("RPC", f"end={self.path} duration_ms={dt_ms:.2f}")
+            _verbose_write("RPC", f"end POST {self.path} duration_ms={dt_ms:.2f} status={response_status}")
 
 
 def _start_rpc_server(port: int):

@@ -51,6 +51,10 @@ def _make_cs(route_id: str = "a") -> "CaptionSystem":  # type: ignore[name-defin
     cs._broadcaster = MagicMock()
     cs._on_ready = None
     cs._model_name = "tiny"  # W-7: Whisper モデルロード時間を短縮するため "tiny" を設定
+    # PR3: _log_verbose が参照する属性（verbose OFF でトレースバック記録なし）
+    cs.verbose = False
+    cs._verbose_log_path = None
+    cs._verbose_lock = threading.Lock()
     return cs
 
 

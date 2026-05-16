@@ -29,6 +29,7 @@ import hashlib
 import json
 import logging
 import threading
+import traceback as _traceback
 from typing import Callable
 
 logger = logging.getLogger(__name__)
@@ -580,9 +581,15 @@ class RealtimeTranslator:
     # 内部ヘルパー
     # ------------------------------------------------------------------
 
-    def _fire_error(self, msg: str):
-        """on_error コールバックを呼ぶ。"""
+    def _fire_error(self, msg: str, exc: Exception | None = None):
+        """on_error コールバックを呼ぶ。
+
+        exc が指定された場合、traceback を verbose ログに記録する。
+        """
         self._log_verbose("RT_ERROR", message=msg)
+        if exc is not None and self._verbose_callback is not None:
+            tb = _traceback.format_exc()
+            self._log_verbose("RT_ERROR_TB", traceback=tb)
         if self._on_error:
             self._on_error(msg)
         else:
