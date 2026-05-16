@@ -656,3 +656,198 @@ class TestIntegrationWithRealLikeLog:
         report = lad.format_report(anomalies, output_json=False)
         assert isinstance(report, str)
         assert len(report) > 0
+
+
+# ---------------------------------------------------------------------------
+# 12. Rule 6: GUI_CALLBACK ペアリング検出
+# ---------------------------------------------------------------------------
+
+class TestRule6GuiCallback:
+    """GUI_CALLBACK start=X に対応する end/error がない場合を検出すること。"""
+
+    # --- サンプルログ（秘密情報なし・フェイクデータのみ）---
+
+    LOG_START_END_PAIR = """\
+[GUI_CALLBACK] start=on_route_a_language_change sender=fake_sender app_data=ja
+[GUI_CALLBACK] end=on_route_a_language_change duration_ms=2.50
+"""
+
+    LOG_START_ONLY = """\
+[GUI_CALLBACK] start=on_route_a_language_change sender=fake_sender app_data=ja
+[STATE] CaptionSystem(route_id=a) idle -> starting
+[翻訳(RT)] Hello.
+"""
+
+    LOG_START_ERROR_PAIR = """\
+[GUI_CALLBACK] start=on_route_b_start_button sender=fake_btn app_data=None
+[GUI_CALLBACK] error=on_route_b_start_button duration_ms=0.05 error_type=ValueError msg=fake_error
+"""
+
+    LOG_MULTIPLE_DIFFERENT_NAMES = """\
+[GUI_CALLBACK] start=on_route_a_language_change sender=s1 app_data=ja
+[GUI_CALLBACK] end=on_route_a_language_change duration_ms=1.00
+[GUI_CALLBACK] start=on_route_b_start_button sender=s2 app_data=None
+[GUI_CALLBACK] end=on_route_b_start_button duration_ms=2.00
+"""
+
+    LOG_MULTIPLE_ONE_MISSING = """\
+[GUI_CALLBACK] start=on_route_a_language_change sender=s1 app_data=ja
+[GUI_CALLBACK] end=on_route_a_language_change duration_ms=1.00
+[GUI_CALLBACK] start=on_route_b_start_button sender=s2 app_data=None
+[STATE] CaptionSystem(route_id=b) idle -> starting
+"""
+
+    LOG_NESTED_SAME_NAME = """\
+[GUI_CALLBACK] start=on_route_a_language_change sender=s1 app_data=en
+[GUI_CALLBACK] start=on_route_a_language_change sender=s2 app_data=ja
+[GUI_CALLBACK] end=on_route_a_language_change duration_ms=1.00
+[GUI_CALLBACK] end=on_route_a_language_change duration_ms=2.00
+"""
+
+    LOG_LARGE_MANY_PAIRS = "\n".join(
+        f"[GUI_CALLBACK] start=on_cb_{i} sender=s app_data=x\n"
+        f"[GUI_CALLBACK] end=on_cb_{i} duration_ms=1.00"
+        for i in range(30)
+    )
+
+    LOG_NO_GUI_CALLBACK = """\
+[USER] 開始ボタン押下 (running=False)
+[ACTION] route_a 再起動開始 reason=開始ボタン押下
+[STATE] CaptionSystem(route_id=a) idle -> starting
+"""
+
+    LOG_START_WITH_INTERLEAVED_OTHER = """\
+[GUI_CALLBACK] start=on_route_a_language_change sender=fake_sender app_data=ja
+[USER] 開始ボタン押下 (running=False)
+[ACTION] route_a 再起動開始 reason=開始ボタン押下
+[STATE] CaptionSystem(route_id=a) idle -> starting
+[STATE] CaptionSystem(route_id=a) starting -> running
+[GUI_CALLBACK] end=on_route_a_language_change duration_ms=5.00
+"""
+
+    LOG_END_WITHOUT_START = """\
+[GUI_CALLBACK] end=on_route_a_language_change duration_ms=1.00
+[GUI_CALLBACK] start=on_route_b_start_button sender=s app_data=None
+[GUI_CALLBACK] end=on_route_b_start_button duration_ms=2.00
+"""
+
+    LOG_THREE_STARTS_ONE_END = """\
+[GUI_CALLBACK] start=on_cb_x sender=s app_data=1
+[GUI_CALLBACK] start=on_cb_x sender=s app_data=2
+[GUI_CALLBACK] start=on_cb_x sender=s app_data=3
+[GUI_CALLBACK] end=on_cb_x duration_ms=1.00
+"""
+
+    # 1. start/end 正常ペア → 異常なし
+    def test_start_end_pair_no_anomaly(self):
+        """start=X と end=X が揃っている場合、anomaly が 0 であること。"""
+        events = lad.parse_log_lines(self.LOG_START_END_PAIR)
+        anomalies = lad.check_gui_callback_pairs(events, window=50)
+        assert len(anomalies) == 0
+
+    # 2. start のみ → 異常 1 件
+    def test_start_only_is_anomaly(self):
+        """start=X に対応する end/error がない場合、anomaly が 1 件返ること。"""
+        events = lad.parse_log_lines(self.LOG_START_ONLY)
+        anomalies = lad.check_gui_callback_pairs(events, window=50)
+        assert len(anomalies) == 1
+
+    # 3. start/error ペア → 異常なし（エラー終了でもペア成立）
+    def test_start_error_pair_no_anomaly(self):
+        """start=X と error=X が揃っている場合（エラー終了）、anomaly が 0 であること。"""
+        events = lad.parse_log_lines(self.LOG_START_ERROR_PAIR)
+        anomalies = lad.check_gui_callback_pairs(events, window=50)
+        assert len(anomalies) == 0
+
+    # 4. 複数の異なるコールバック名（各ペア成立）→ 異常なし
+    def test_multiple_different_names_all_paired_no_anomaly(self):
+        """複数の異なるコールバック名でそれぞれペアが成立する場合、anomaly が 0 であること。"""
+        events = lad.parse_log_lines(self.LOG_MULTIPLE_DIFFERENT_NAMES)
+        anomalies = lad.check_gui_callback_pairs(events, window=50)
+        assert len(anomalies) == 0
+
+    # 5. 複数のうち 1 件だけ end がない → 異常 1 件
+    def test_multiple_one_missing_is_one_anomaly(self):
+        """複数のコールバックのうち 1 件だけ end がない場合、anomaly が 1 件であること。"""
+        events = lad.parse_log_lines(self.LOG_MULTIPLE_ONE_MISSING)
+        anomalies = lad.check_gui_callback_pairs(events, window=50)
+        assert len(anomalies) == 1
+
+    # 6. 同名の入れ子（depth-2）→ 最も近い start から消費
+    def test_nested_same_name_consumes_nearest_start(self):
+        """同名コールバックが 2 回 start された場合、end が 2 件あれば anomaly 0 であること。"""
+        events = lad.parse_log_lines(self.LOG_NESTED_SAME_NAME)
+        anomalies = lad.check_gui_callback_pairs(events, window=50)
+        assert len(anomalies) == 0
+
+    # 7. 大量メッセージで全ペアリングが正しく機能する
+    def test_large_log_all_paired_no_anomaly(self):
+        """大量のペアが存在する場合でも全て正常にペアリングされ、anomaly が 0 であること。"""
+        events = lad.parse_log_lines(self.LOG_LARGE_MANY_PAIRS)
+        anomalies = lad.check_gui_callback_pairs(events, window=50)
+        assert len(anomalies) == 0
+
+    # 8. GUI_CALLBACK が全くない場合 → 異常なし
+    def test_no_gui_callback_events_no_anomaly(self):
+        """GUI_CALLBACK プリフィックスが存在しない場合、anomaly が 0 であること。"""
+        events = lad.parse_log_lines(self.LOG_NO_GUI_CALLBACK)
+        anomalies = lad.check_gui_callback_pairs(events, window=50)
+        assert len(anomalies) == 0
+
+    # 9. 他のプリフィックスが挟まっても start/end はペアになる
+    def test_interleaved_other_events_still_pairs(self):
+        """start と end の間に他プリフィックスのイベントが挟まってもペア成立すること。"""
+        events = lad.parse_log_lines(self.LOG_START_WITH_INTERLEAVED_OTHER)
+        anomalies = lad.check_gui_callback_pairs(events, window=50)
+        assert len(anomalies) == 0
+
+    # 10. end のみ（対応する start なし）→ anomaly にならない（start が起点）
+    def test_end_without_start_not_anomaly(self):
+        """start のない end は anomaly を生成しないこと（start が起点のルール）。"""
+        events = lad.parse_log_lines(self.LOG_END_WITHOUT_START)
+        anomalies = lad.check_gui_callback_pairs(events, window=50)
+        # end=on_route_a_language_change には対応する start がないが、
+        # それ自体は anomaly ではない（start=on_route_b_start_button はペア成立）
+        assert len(anomalies) == 0
+
+    # 11. anomaly に rule, lineno, name, description が含まれること
+    def test_anomaly_fields(self):
+        """anomaly が rule, lineno, name, description フィールドを持つこと。"""
+        events = lad.parse_log_lines(self.LOG_START_ONLY)
+        anomalies = lad.check_gui_callback_pairs(events, window=50)
+        assert len(anomalies) >= 1
+        a = anomalies[0]
+        assert "rule" in a
+        assert "lineno" in a
+        assert "name" in a
+        assert "description" in a
+
+    # 12. rule フィールドが Rule 6 を示すこと
+    def test_anomaly_rule_is_rule6(self):
+        """anomaly の rule フィールドに 'Rule 6' または 'GUI_CALLBACK' が含まれること。"""
+        events = lad.parse_log_lines(self.LOG_START_ONLY)
+        anomalies = lad.check_gui_callback_pairs(events, window=50)
+        for a in anomalies:
+            assert "6" in a["rule"] or "GUI_CALLBACK" in a["rule"]
+
+    # 13. anomaly の name がコールバック名と一致すること
+    def test_anomaly_name_matches_callback_name(self):
+        """anomaly の name がペア未成立のコールバック名と一致すること。"""
+        events = lad.parse_log_lines(self.LOG_START_ONLY)
+        anomalies = lad.check_gui_callback_pairs(events, window=50)
+        assert anomalies[0]["name"] == "on_route_a_language_change"
+
+    # 14. 3 回 start、1 回 end → 2 件の anomaly
+    def test_three_starts_one_end_two_anomalies(self):
+        """同名コールバックが 3 回 start で 1 回 end なら anomaly が 2 件であること。"""
+        events = lad.parse_log_lines(self.LOG_THREE_STARTS_ONE_END)
+        anomalies = lad.check_gui_callback_pairs(events, window=50)
+        assert len(anomalies) == 2
+
+    # 15. _run_checks で --rule 6 を指定したとき check_gui_callback_pairs が走ること
+    def test_run_checks_rule6_included(self):
+        """_run_checks に rule=6 を指定すると GUI_CALLBACK チェックが実行されること。"""
+        import argparse
+        args = argparse.Namespace(threshold=2.0, rule="6")
+        anomalies = lad._run_checks(self.LOG_START_ONLY, args)
+        assert len(anomalies) >= 1
