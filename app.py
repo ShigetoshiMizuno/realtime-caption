@@ -378,6 +378,11 @@ TAG_PTT_HOTKEY = "ptt_hotkey_input"
 TAG_ROUTE_B_LABEL = "route_b_label"       # 系統2 見出しテキスト（ラベル動的切替用）
 TAG_PTT_STATUS_LABEL = "ptt_status_label"  # 押下中ステータス表示ラベル
 
+# 系統1/2 TabBar タグ（GUI縦長解消 第3弾）
+TAG_ROUTE_TAB_BAR = "route_tab_bar"       # 系統タブバーコンテナ
+TAG_ROUTE_A_TAB = "route_a_tab"           # 系統1 タブ
+TAG_ROUTE_B_TAB = "route_b_tab"           # 系統2 タブ
+
 # Verbose ロギング状態（settings.json で永続化）
 _verbose_state: bool = False
 
@@ -3153,225 +3158,227 @@ def _build_gui():
 
             _lang_display_names = get_language_display_names()
 
-            # --- 系統1: 相手→自分（聞き取り字幕）経路 ---
-            _route_a_default_loopback = next(
-                (lbl for lbl in device_labels if "[Loopback]" in lbl),
-                device_labels[0] if device_labels else "",
-            )
-            _route_a_saved_device = route_a_saved.get("device", "")
-            if _route_a_saved_device and _route_a_saved_device in device_labels:
-                _route_a_default_device = _route_a_saved_device
-                print(f"[INFO] route_a device restored: '{_route_a_default_device}'", flush=True)
-            elif _route_a_saved_device:
-                _route_a_default_device = _route_a_default_loopback
-                print(f"[WARN] route_a saved device not in list. "
-                      f"saved='{_route_a_saved_device}', fallback='{_route_a_default_device}'", flush=True)
-                print(f"[WARN] available device_labels: {device_labels}", flush=True)
-            else:
-                _route_a_default_device = _route_a_default_loopback
-                print(f"[INFO] route_a no saved device, using default: '{_route_a_default_device}'", flush=True)
-            _route_a_default_lang = route_a_saved.get("lang", _lang_display_names[0] if _lang_display_names else "")
-            if _route_a_default_lang not in _lang_display_names:
-                _route_a_default_lang = _lang_display_names[0] if _lang_display_names else ""
-            _route_a_saved_out_dev = route_a_saved.get("output_device", "(なし)")
-            _route_a_default_out_dev = (
-                _route_a_saved_out_dev if _route_a_saved_out_dev in output_device_labels
-                else "(なし)"
-            )
-            with dpg.group(horizontal=True):
-                dpg.add_checkbox(
-                    tag=TAG_ROUTE_A_ENABLE,
-                    label="",
-                    default_value=bool(route_a_saved.get("enabled", True)),
-                    callback=_on_route_a_enable_change,
-                )
-                dpg.add_text("【系統1】相手→自分（聞き取り字幕）  You speak, I hear")
-            with dpg.group(horizontal=True):
-                dpg.add_text("入力デバイス:")
-                dpg.add_combo(
-                    tag=TAG_ROUTE_A_DEVICE_COMBO,
-                    items=device_labels,
-                    default_value=_route_a_default_device,
-                    width=360,
-                    callback=_on_route_a_device_change,
-                )
-            with dpg.group(horizontal=True):
-                dpg.add_text("入力レベル:")
-                dpg.add_progress_bar(
-                    tag=TAG_LEVEL_METER_A_IN,
-                    default_value=0.0,
-                    width=200, overlay="0%",
-                )
-            with dpg.group(horizontal=True):
-                dpg.add_text("翻訳先言語:")
-                dpg.add_combo(
-                    tag=TAG_ROUTE_A_LANG_COMBO,
-                    items=_lang_display_names,
-                    default_value=_route_a_default_lang,
-                    width=120,
-                    callback=_on_route_a_language_change,
-                )
-            with dpg.group(horizontal=True):
-                dpg.add_text("音声出力:")
-                dpg.add_checkbox(
-                    tag=TAG_ROUTE_A_OUTPUT_ENABLE,
-                    label="有効",
-                    default_value=bool(route_a_saved.get("output_enabled", False)),
-                    callback=_on_route_a_output_enable_change,
-                )
-            with dpg.group(horizontal=True):
-                dpg.add_text("原文表示:")
-                dpg.add_checkbox(
-                    tag=TAG_ROUTE_A_SOURCE_TRANSCRIPT_ENABLE,
-                    label="原文も表示する（Whisper 課金あり）",
-                    default_value=bool(route_a_saved.get("source_transcript_enabled", True)),
-                    callback=_on_route_a_source_transcript_change,
-                )
-            with dpg.group(horizontal=True):
-                dpg.add_text("出力デバイス:")
-                dpg.add_combo(
-                    tag=TAG_ROUTE_A_OUTPUT_DEVICE_COMBO,
-                    items=output_device_labels,
-                    default_value=_route_a_default_out_dev,
-                    width=300,
-                    callback=_on_route_a_output_device_change,
-                )
-            with dpg.group(horizontal=True):
-                dpg.add_text("出力音量:")
-                dpg.add_slider_float(
-                    tag=TAG_ROUTE_A_OUTPUT_VOLUME,
-                    default_value=float(route_a_saved.get("output_volume", 1.0)),
-                    min_value=0.0, max_value=2.0,
-                    width=200, format="%.2f",
-                    callback=_on_route_a_volume_change,
-                )
-            with dpg.group(horizontal=True):
-                dpg.add_text("出力レベル:")
-                dpg.add_progress_bar(
-                    tag=TAG_LEVEL_METER_A_OUT,
-                    default_value=0.0,
-                    width=200, overlay="0%",
-                )
+            # --- 系統1/2 TabBar（GUI縦長解消 第3弾）---
+            with dpg.tab_bar(tag=TAG_ROUTE_TAB_BAR):
+                with dpg.tab(label="系統1: 相手→自分 (聞き取り字幕)", tag=TAG_ROUTE_A_TAB):
+                    # --- 系統1: 相手→自分（聞き取り字幕）経路 ---
+                    _route_a_default_loopback = next(
+                        (lbl for lbl in device_labels if "[Loopback]" in lbl),
+                        device_labels[0] if device_labels else "",
+                    )
+                    _route_a_saved_device = route_a_saved.get("device", "")
+                    if _route_a_saved_device and _route_a_saved_device in device_labels:
+                        _route_a_default_device = _route_a_saved_device
+                        print(f"[INFO] route_a device restored: '{_route_a_default_device}'", flush=True)
+                    elif _route_a_saved_device:
+                        _route_a_default_device = _route_a_default_loopback
+                        print(f"[WARN] route_a saved device not in list. "
+                              f"saved='{_route_a_saved_device}', fallback='{_route_a_default_device}'", flush=True)
+                        print(f"[WARN] available device_labels: {device_labels}", flush=True)
+                    else:
+                        _route_a_default_device = _route_a_default_loopback
+                        print(f"[INFO] route_a no saved device, using default: '{_route_a_default_device}'", flush=True)
+                    _route_a_default_lang = route_a_saved.get("lang", _lang_display_names[0] if _lang_display_names else "")
+                    if _route_a_default_lang not in _lang_display_names:
+                        _route_a_default_lang = _lang_display_names[0] if _lang_display_names else ""
+                    _route_a_saved_out_dev = route_a_saved.get("output_device", "(なし)")
+                    _route_a_default_out_dev = (
+                        _route_a_saved_out_dev if _route_a_saved_out_dev in output_device_labels
+                        else "(なし)"
+                    )
+                    with dpg.group(horizontal=True):
+                        dpg.add_checkbox(
+                            tag=TAG_ROUTE_A_ENABLE,
+                            label="",
+                            default_value=bool(route_a_saved.get("enabled", True)),
+                            callback=_on_route_a_enable_change,
+                        )
+                        dpg.add_text("【系統1】相手→自分（聞き取り字幕）  You speak, I hear")
+                    with dpg.group(horizontal=True):
+                        dpg.add_text("入力デバイス:")
+                        dpg.add_combo(
+                            tag=TAG_ROUTE_A_DEVICE_COMBO,
+                            items=device_labels,
+                            default_value=_route_a_default_device,
+                            width=360,
+                            callback=_on_route_a_device_change,
+                        )
+                    with dpg.group(horizontal=True):
+                        dpg.add_text("入力レベル:")
+                        dpg.add_progress_bar(
+                            tag=TAG_LEVEL_METER_A_IN,
+                            default_value=0.0,
+                            width=200, overlay="0%",
+                        )
+                    with dpg.group(horizontal=True):
+                        dpg.add_text("翻訳先言語:")
+                        dpg.add_combo(
+                            tag=TAG_ROUTE_A_LANG_COMBO,
+                            items=_lang_display_names,
+                            default_value=_route_a_default_lang,
+                            width=120,
+                            callback=_on_route_a_language_change,
+                        )
+                    with dpg.group(horizontal=True):
+                        dpg.add_text("音声出力:")
+                        dpg.add_checkbox(
+                            tag=TAG_ROUTE_A_OUTPUT_ENABLE,
+                            label="有効",
+                            default_value=bool(route_a_saved.get("output_enabled", False)),
+                            callback=_on_route_a_output_enable_change,
+                        )
+                    with dpg.group(horizontal=True):
+                        dpg.add_text("原文表示:")
+                        dpg.add_checkbox(
+                            tag=TAG_ROUTE_A_SOURCE_TRANSCRIPT_ENABLE,
+                            label="原文も表示する（Whisper 課金あり）",
+                            default_value=bool(route_a_saved.get("source_transcript_enabled", True)),
+                            callback=_on_route_a_source_transcript_change,
+                        )
+                    with dpg.group(horizontal=True):
+                        dpg.add_text("出力デバイス:")
+                        dpg.add_combo(
+                            tag=TAG_ROUTE_A_OUTPUT_DEVICE_COMBO,
+                            items=output_device_labels,
+                            default_value=_route_a_default_out_dev,
+                            width=300,
+                            callback=_on_route_a_output_device_change,
+                        )
+                    with dpg.group(horizontal=True):
+                        dpg.add_text("出力音量:")
+                        dpg.add_slider_float(
+                            tag=TAG_ROUTE_A_OUTPUT_VOLUME,
+                            default_value=float(route_a_saved.get("output_volume", 1.0)),
+                            min_value=0.0, max_value=2.0,
+                            width=200, format="%.2f",
+                            callback=_on_route_a_volume_change,
+                        )
+                    with dpg.group(horizontal=True):
+                        dpg.add_text("出力レベル:")
+                        dpg.add_progress_bar(
+                            tag=TAG_LEVEL_METER_A_OUT,
+                            default_value=0.0,
+                            width=200, overlay="0%",
+                        )
 
-            dpg.add_separator()
-
-            # --- 系統2: 自分→相手（同時通訳）経路 ---
-            _route_b_default_non_loopback = next(
-                (lbl for lbl in device_labels if "[Loopback]" not in lbl),
-                device_labels[0] if device_labels else "",
-            )
-            _route_b_saved_device = route_b_saved.get("device", "")
-            if _route_b_saved_device and _route_b_saved_device in device_labels:
-                _route_b_default_device = _route_b_saved_device
-                print(f"[INFO] route_b device restored: '{_route_b_default_device}'", flush=True)
-            elif _route_b_saved_device:
-                _route_b_default_device = _route_b_default_non_loopback
-                print(f"[WARN] route_b saved device not in list. "
-                      f"saved='{_route_b_saved_device}', fallback='{_route_b_default_device}'", flush=True)
-            else:
-                _route_b_default_device = _route_b_default_non_loopback
-                print(f"[INFO] route_b no saved device, using default: '{_route_b_default_device}'", flush=True)
-            _route_b_default_lang = route_b_saved.get("lang", _lang_display_names[-1] if _lang_display_names else "")
-            if _route_b_default_lang not in _lang_display_names:
-                _route_b_default_lang = _lang_display_names[-1] if _lang_display_names else ""
-            _route_b_default_cable = next(
-                (lbl for lbl in output_device_labels if "cable input" in lbl.lower()),
-                "(なし)",
-            )
-            _route_b_saved_out_dev = route_b_saved.get("output_device", "")
-            _route_b_default_out_dev = (
-                _route_b_saved_out_dev if _route_b_saved_out_dev in output_device_labels
-                else _route_b_default_cable
-            )
-            with dpg.group(horizontal=True):
-                dpg.add_checkbox(
-                    tag=TAG_ROUTE_B_ENABLE,
-                    label="",
-                    default_value=bool(route_b_saved.get("enabled", True)),
-                    callback=_on_route_b_enable_change,
-                )
-                # PTT モード時はラベルを動的に切替（F-5.3 / F-6）
-                _route_b_initial_label = (
-                    f"【系統2 (PTT: {_ptt_hotkey} 押下中)】自分→相手（同時通訳）  I speak, they hear"
-                    if _ptt_enabled
-                    else "【系統2】自分→相手（同時通訳）  I speak, they hear"
-                )
-                dpg.add_text(
-                    _route_b_initial_label,
-                    tag=TAG_ROUTE_B_LABEL,
-                )
-                # PTT 押下中ステータス表示（F-6）
-                dpg.add_text(
-                    "",
-                    tag=TAG_PTT_STATUS_LABEL,
-                    show=_ptt_enabled,
-                )
-            with dpg.group(horizontal=True):
-                dpg.add_text("入力デバイス:")
-                dpg.add_combo(
-                    tag=TAG_ROUTE_B_DEVICE_COMBO,
-                    items=device_labels,
-                    default_value=_route_b_default_device,
-                    width=360,
-                    callback=_on_route_b_device_change,
-                )
-            with dpg.group(horizontal=True):
-                dpg.add_text("入力レベル:")
-                dpg.add_progress_bar(
-                    tag=TAG_LEVEL_METER_B_IN,
-                    default_value=0.0,
-                    width=200, overlay="0%",
-                )
-            with dpg.group(horizontal=True):
-                dpg.add_text("翻訳先言語:")
-                dpg.add_combo(
-                    tag=TAG_ROUTE_B_LANG_COMBO,
-                    items=_lang_display_names,
-                    default_value=_route_b_default_lang,
-                    width=120,
-                    callback=_on_route_b_language_change,
-                )
-            with dpg.group(horizontal=True):
-                dpg.add_text("音声出力:")
-                dpg.add_checkbox(
-                    tag=TAG_ROUTE_B_OUTPUT_ENABLE,
-                    label="有効",
-                    default_value=bool(route_b_saved.get("output_enabled", True)),
-                    callback=_on_route_b_output_enable_change,
-                )
-            with dpg.group(horizontal=True):
-                dpg.add_text("原文表示:")
-                dpg.add_checkbox(
-                    tag=TAG_ROUTE_B_SOURCE_TRANSCRIPT_ENABLE,
-                    label="原文も表示する（Whisper 課金あり）",
-                    default_value=bool(route_b_saved.get("source_transcript_enabled", True)),
-                    callback=_on_route_b_source_transcript_change,
-                )
-            with dpg.group(horizontal=True):
-                dpg.add_text("出力デバイス:")
-                dpg.add_combo(
-                    tag=TAG_ROUTE_B_OUTPUT_DEVICE_COMBO,
-                    items=output_device_labels,
-                    default_value=_route_b_default_out_dev,
-                    width=300,
-                    callback=_on_route_b_output_device_change,
-                )
-            with dpg.group(horizontal=True):
-                dpg.add_text("出力音量:")
-                dpg.add_slider_float(
-                    tag=TAG_ROUTE_B_OUTPUT_VOLUME,
-                    default_value=float(route_b_saved.get("output_volume", 1.0)),
-                    min_value=0.0, max_value=2.0,
-                    width=200, format="%.2f",
-                    callback=_on_route_b_volume_change,
-                )
-            with dpg.group(horizontal=True):
-                dpg.add_text("出力レベル:")
-                dpg.add_progress_bar(
-                    tag=TAG_LEVEL_METER_B_OUT,
-                    default_value=0.0,
-                    width=200, overlay="0%",
-                )
+                with dpg.tab(label="系統2: 自分→相手 (同時通訳)", tag=TAG_ROUTE_B_TAB):
+                    # --- 系統2: 自分→相手（同時通訳）経路 ---
+                    _route_b_default_non_loopback = next(
+                        (lbl for lbl in device_labels if "[Loopback]" not in lbl),
+                        device_labels[0] if device_labels else "",
+                    )
+                    _route_b_saved_device = route_b_saved.get("device", "")
+                    if _route_b_saved_device and _route_b_saved_device in device_labels:
+                        _route_b_default_device = _route_b_saved_device
+                        print(f"[INFO] route_b device restored: '{_route_b_default_device}'", flush=True)
+                    elif _route_b_saved_device:
+                        _route_b_default_device = _route_b_default_non_loopback
+                        print(f"[WARN] route_b saved device not in list. "
+                              f"saved='{_route_b_saved_device}', fallback='{_route_b_default_device}'", flush=True)
+                    else:
+                        _route_b_default_device = _route_b_default_non_loopback
+                        print(f"[INFO] route_b no saved device, using default: '{_route_b_default_device}'", flush=True)
+                    _route_b_default_lang = route_b_saved.get("lang", _lang_display_names[-1] if _lang_display_names else "")
+                    if _route_b_default_lang not in _lang_display_names:
+                        _route_b_default_lang = _lang_display_names[-1] if _lang_display_names else ""
+                    _route_b_default_cable = next(
+                        (lbl for lbl in output_device_labels if "cable input" in lbl.lower()),
+                        "(なし)",
+                    )
+                    _route_b_saved_out_dev = route_b_saved.get("output_device", "")
+                    _route_b_default_out_dev = (
+                        _route_b_saved_out_dev if _route_b_saved_out_dev in output_device_labels
+                        else _route_b_default_cable
+                    )
+                    with dpg.group(horizontal=True):
+                        dpg.add_checkbox(
+                            tag=TAG_ROUTE_B_ENABLE,
+                            label="",
+                            default_value=bool(route_b_saved.get("enabled", True)),
+                            callback=_on_route_b_enable_change,
+                        )
+                        # PTT モード時はラベルを動的に切替（F-5.3 / F-6）
+                        _route_b_initial_label = (
+                            f"【系統2 (PTT: {_ptt_hotkey} 押下中)】自分→相手（同時通訳）  I speak, they hear"
+                            if _ptt_enabled
+                            else "【系統2】自分→相手（同時通訳）  I speak, they hear"
+                        )
+                        dpg.add_text(
+                            _route_b_initial_label,
+                            tag=TAG_ROUTE_B_LABEL,
+                        )
+                        # PTT 押下中ステータス表示（F-6）
+                        dpg.add_text(
+                            "",
+                            tag=TAG_PTT_STATUS_LABEL,
+                            show=_ptt_enabled,
+                        )
+                    with dpg.group(horizontal=True):
+                        dpg.add_text("入力デバイス:")
+                        dpg.add_combo(
+                            tag=TAG_ROUTE_B_DEVICE_COMBO,
+                            items=device_labels,
+                            default_value=_route_b_default_device,
+                            width=360,
+                            callback=_on_route_b_device_change,
+                        )
+                    with dpg.group(horizontal=True):
+                        dpg.add_text("入力レベル:")
+                        dpg.add_progress_bar(
+                            tag=TAG_LEVEL_METER_B_IN,
+                            default_value=0.0,
+                            width=200, overlay="0%",
+                        )
+                    with dpg.group(horizontal=True):
+                        dpg.add_text("翻訳先言語:")
+                        dpg.add_combo(
+                            tag=TAG_ROUTE_B_LANG_COMBO,
+                            items=_lang_display_names,
+                            default_value=_route_b_default_lang,
+                            width=120,
+                            callback=_on_route_b_language_change,
+                        )
+                    with dpg.group(horizontal=True):
+                        dpg.add_text("音声出力:")
+                        dpg.add_checkbox(
+                            tag=TAG_ROUTE_B_OUTPUT_ENABLE,
+                            label="有効",
+                            default_value=bool(route_b_saved.get("output_enabled", True)),
+                            callback=_on_route_b_output_enable_change,
+                        )
+                    with dpg.group(horizontal=True):
+                        dpg.add_text("原文表示:")
+                        dpg.add_checkbox(
+                            tag=TAG_ROUTE_B_SOURCE_TRANSCRIPT_ENABLE,
+                            label="原文も表示する（Whisper 課金あり）",
+                            default_value=bool(route_b_saved.get("source_transcript_enabled", True)),
+                            callback=_on_route_b_source_transcript_change,
+                        )
+                    with dpg.group(horizontal=True):
+                        dpg.add_text("出力デバイス:")
+                        dpg.add_combo(
+                            tag=TAG_ROUTE_B_OUTPUT_DEVICE_COMBO,
+                            items=output_device_labels,
+                            default_value=_route_b_default_out_dev,
+                            width=300,
+                            callback=_on_route_b_output_device_change,
+                        )
+                    with dpg.group(horizontal=True):
+                        dpg.add_text("出力音量:")
+                        dpg.add_slider_float(
+                            tag=TAG_ROUTE_B_OUTPUT_VOLUME,
+                            default_value=float(route_b_saved.get("output_volume", 1.0)),
+                            min_value=0.0, max_value=2.0,
+                            width=200, format="%.2f",
+                            callback=_on_route_b_volume_change,
+                        )
+                    with dpg.group(horizontal=True):
+                        dpg.add_text("出力レベル:")
+                        dpg.add_progress_bar(
+                            tag=TAG_LEVEL_METER_B_OUT,
+                            default_value=0.0,
+                            width=200, overlay="0%",
+                        )
 
         dpg.add_separator()
 
