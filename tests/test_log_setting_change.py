@@ -98,8 +98,10 @@ class TestSourceTranscriptChangeLog:
 
 # ---------------------------------------------------------------------------
 # 2. _on_route_a/b_vad_enable_change — [USER] ログに新値を含む
+# DEPRECATED: W-COST-3 UI 廃止 (GA で動作不能) — refactor/remove-vad-ui-ga-cleanup
 # ---------------------------------------------------------------------------
 
+@pytest.mark.skip(reason="W-COST-3 UI 廃止 (GA で動作不能) — refactor/remove-vad-ui-ga-cleanup")
 class TestVadEnableChangeLog:
     """_on_route_a/b_vad_enable_change が [USER] ログで新値を出力すること。"""
 
@@ -156,8 +158,10 @@ class TestVadEnableChangeLog:
 
 # ---------------------------------------------------------------------------
 # 3. _on_route_a/b_vad_silence_ms_change — [USER] ログに新値を含む
+# DEPRECATED: W-COST-3 UI 廃止 (GA で動作不能) — refactor/remove-vad-ui-ga-cleanup
 # ---------------------------------------------------------------------------
 
+@pytest.mark.skip(reason="W-COST-3 UI 廃止 (GA で動作不能) — refactor/remove-vad-ui-ga-cleanup")
 class TestVadSilenceMsChangeLog:
     """_on_route_a/b_vad_silence_ms_change が [USER] ログで値を出力すること。"""
 
@@ -192,8 +196,10 @@ class TestVadSilenceMsChangeLog:
 
 # ---------------------------------------------------------------------------
 # 4. _on_route_a/b_vad_threshold_change — [USER] ログに新値を含む
+# DEPRECATED: W-COST-3 UI 廃止 (GA で動作不能) — refactor/remove-vad-ui-ga-cleanup
 # ---------------------------------------------------------------------------
 
+@pytest.mark.skip(reason="W-COST-3 UI 廃止 (GA で動作不能) — refactor/remove-vad-ui-ga-cleanup")
 class TestVadThresholdChangeLog:
     """_on_route_a/b_vad_threshold_change が [USER] ログで値を出力すること。"""
 

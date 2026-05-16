@@ -261,6 +261,7 @@ class TestAppVadForceOff:
             f"saved vad_enabled=False は False のまま渡されること。got={created_route_a_vad}"
         )
 
+    @pytest.mark.skip(reason="W-COST-3 UI 廃止: _create_konnyaku_system の VAD 警告コードを削除 — refactor/remove-vad-ui-ga-cleanup")
     def test_create_konnyaku_system_vad_true_prints_warning(self, capsys):
         """saved vad_enabled=True のとき _create_konnyaku_system が WARN を出力すること。"""
         fake_devices = [{"name": "Mic1", "index": 0, "samplerate": 16000}]

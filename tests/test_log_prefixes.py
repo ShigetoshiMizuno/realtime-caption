@@ -188,6 +188,7 @@ class TestUserAndActionBothEmitted:
         assert "[ACTION]" in captured.out, \
             f"[ACTION] が出力されること。got: {captured.out!r}"
 
+    @pytest.mark.skip(reason="W-COST-3 UI 廃止 (GA で動作不能) — refactor/remove-vad-ui-ga-cleanup")
     def test_vad_enable_change_emits_user(self, capsys):
         """_on_route_a_vad_enable_change が [USER] ログを出力すること。"""
         app._konnyaku_running = False
