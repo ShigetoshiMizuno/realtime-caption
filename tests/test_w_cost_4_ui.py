@@ -805,3 +805,164 @@ class TestCreateKonnyakuSystemIdleSettings:
         assert route_a_cfg.idle_audio_threshold == 200, (
             f"route_a の idle_audio_threshold が 200 であること。got={route_a_cfg.idle_audio_threshold}"
         )
+
+
+# ---------------------------------------------------------------------------
+# 12. アイドル切断設定が「詳細設定」collapsing_header 内に配置されること
+# ---------------------------------------------------------------------------
+
+class TestIdleSettingsInsideDetailHeader:
+    """アイドル切断設定ウィジェットが「詳細設定」折りたたみヘッダー内に配置されること。
+
+    GUI リファクタリング（PR: refactor/move-idle-ptt-to-detail）で
+    アイドル切断設定をルートレベルから詳細設定コンテナ内に移動した。
+    この変更を検証するテスト。
+    """
+
+    def _run_build_gui_track_context(self):
+        """_build_gui を実行し、各ウィジェット追加時のコンテキスト（詳細設定内かどうか）を記録する。
+
+        collapsing_header("詳細設定") のコンテキストマネージャー内で
+        TAG_IDLE_* ウィジェットが追加されることを確認する。
+        """
+        # 詳細設定コンテキストの深さを追跡
+        detail_header_depth = [0]
+        # 各TAGが詳細設定内で追加されたかを記録
+        added_in_detail_header: dict[str, bool] = {}
+
+        original_collapsing_header = None
+
+        class FakeCollapsingHeaderCM:
+            """collapsing_header のコンテキストマネージャー偽実装。"""
+            def __init__(self, label="", **kwargs):
+                self.label = label
+
+            def __enter__(self):
+                if self.label == "詳細設定":
+                    detail_header_depth[0] += 1
+                return self
+
+            def __exit__(self, *args):
+                if self.label == "詳細設定":
+                    detail_header_depth[0] -= 1
+                return False
+
+        def fake_add_checkbox(tag=None, **kwargs):
+            if tag is not None:
+                added_in_detail_header[tag] = detail_header_depth[0] > 0
+
+        def fake_add_slider_int(tag=None, **kwargs):
+            if tag is not None:
+                added_in_detail_header[tag] = detail_header_depth[0] > 0
+
+        def fake_add_button(tag=None, **kwargs):
+            if tag is not None:
+                added_in_detail_header[tag] = detail_header_depth[0] > 0
+
+        fake_settings = {
+            "idle_disconnect_enabled": False,
+            "idle_timeout_sec": 300,
+            "idle_audio_threshold": 200,
+            "route_a": {
+                "source_transcript_enabled": True,
+                "enabled": True,
+                "output_enabled": False,
+                "vad_enabled": False,
+                "vad_silence_duration_ms": 500,
+                "vad_threshold": 0.5,
+            },
+            "route_b": {
+                "source_transcript_enabled": True,
+                "enabled": True,
+                "output_enabled": True,
+                "vad_enabled": False,
+                "vad_silence_duration_ms": 500,
+                "vad_threshold": 0.5,
+            },
+        }
+
+        mock_dpg = MagicMock()
+        mock_dpg.add_checkbox.side_effect = fake_add_checkbox
+        mock_dpg.add_slider_int.side_effect = fake_add_slider_int
+        mock_dpg.add_button.side_effect = fake_add_button
+        mock_dpg.collapsing_header.side_effect = FakeCollapsingHeaderCM
+
+        cm = MagicMock()
+        cm.__enter__ = MagicMock(return_value=cm)
+        cm.__exit__ = MagicMock(return_value=False)
+        mock_dpg.group.return_value = cm
+        mock_dpg.child_window.return_value = cm
+        mock_dpg.window.return_value = cm
+        mock_dpg.tab_bar.return_value = cm
+        mock_dpg.tab.return_value = cm
+        mock_dpg.menu_bar.return_value = cm
+        mock_dpg.menu.return_value = cm
+        mock_dpg.get_item_configuration.return_value = {"items": []}
+        mock_dpg.get_value.return_value = ""
+        mock_dpg.does_item_exist.return_value = False
+        mock_dpg.add_slider_float.side_effect = lambda **kw: None
+
+        with patch("app.dpg", mock_dpg), \
+             patch("app._load_settings", return_value=fake_settings), \
+             patch("app._devices", [{"name": "TestMic", "index": 0, "samplerate": 16000}]), \
+             patch("app.list_audio_devices", return_value=[]), \
+             patch("app._config", {}), \
+             patch("app._dpg_ready", False):
+            try:
+                app._build_gui()
+            except Exception:
+                pass
+
+        return added_in_detail_header
+
+    def test_idle_disconnect_enabled_inside_detail_header(self):
+        """TAG_IDLE_DISCONNECT_ENABLED が「詳細設定」collapsing_header 内に配置されること。"""
+        result = self._run_build_gui_track_context()
+        tag = app.TAG_IDLE_DISCONNECT_ENABLED
+        assert tag in result, (
+            f"TAG_IDLE_DISCONNECT_ENABLED が _build_gui で追加されること。"
+            f"found tags={list(result.keys())}"
+        )
+        assert result[tag] is True, (
+            f"TAG_IDLE_DISCONNECT_ENABLED が詳細設定コンテナ内に配置されること。"
+            f"got in_detail_header={result[tag]}"
+        )
+
+    def test_idle_timeout_sec_inside_detail_header(self):
+        """TAG_IDLE_TIMEOUT_SEC が「詳細設定」collapsing_header 内に配置されること。"""
+        result = self._run_build_gui_track_context()
+        tag = app.TAG_IDLE_TIMEOUT_SEC
+        assert tag in result, (
+            f"TAG_IDLE_TIMEOUT_SEC が _build_gui で追加されること。"
+            f"found tags={list(result.keys())}"
+        )
+        assert result[tag] is True, (
+            f"TAG_IDLE_TIMEOUT_SEC が詳細設定コンテナ内に配置されること。"
+            f"got in_detail_header={result[tag]}"
+        )
+
+    def test_idle_audio_threshold_inside_detail_header(self):
+        """TAG_IDLE_AUDIO_THRESHOLD が「詳細設定」collapsing_header 内に配置されること。"""
+        result = self._run_build_gui_track_context()
+        tag = app.TAG_IDLE_AUDIO_THRESHOLD
+        assert tag in result, (
+            f"TAG_IDLE_AUDIO_THRESHOLD が _build_gui で追加されること。"
+            f"found tags={list(result.keys())}"
+        )
+        assert result[tag] is True, (
+            f"TAG_IDLE_AUDIO_THRESHOLD が詳細設定コンテナ内に配置されること。"
+            f"got in_detail_header={result[tag]}"
+        )
+
+    def test_idle_resume_button_inside_detail_header(self):
+        """TAG_IDLE_RESUME_BUTTON が「詳細設定」collapsing_header 内に配置されること。"""
+        result = self._run_build_gui_track_context()
+        tag = app.TAG_IDLE_RESUME_BUTTON
+        assert tag in result, (
+            f"TAG_IDLE_RESUME_BUTTON が _build_gui で追加されること。"
+            f"found tags={list(result.keys())}"
+        )
+        assert result[tag] is True, (
+            f"TAG_IDLE_RESUME_BUTTON が詳細設定コンテナ内に配置されること。"
+            f"got in_detail_header={result[tag]}"
+        )

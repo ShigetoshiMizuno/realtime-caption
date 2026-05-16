@@ -3080,6 +3080,48 @@ def _build_gui():
                     )
                     dpg.add_text("  (Enter で確定。例: f8, f9, ctrl+shift+t)")
 
+            dpg.add_separator()
+
+            # --- W-COST-4: アイドル切断設定（全系統共通）（issue #81）---
+            _idle_disconnect_enabled_saved = bool(saved.get("idle_disconnect_enabled", False))
+            _idle_timeout_sec_saved = int(saved.get("idle_timeout_sec", 300))
+            _idle_audio_threshold_saved = int(saved.get("idle_audio_threshold", 200))  # TBD-4-2: 100→200
+            dpg.add_text("アイドル切断設定（全系統共通）:", color=(200, 200, 255))
+            with dpg.group(horizontal=True):
+                dpg.add_text("自動切断:")
+                dpg.add_checkbox(
+                    tag=TAG_IDLE_DISCONNECT_ENABLED,
+                    label="アイドル時に自動切断（コスト削減）",
+                    default_value=_idle_disconnect_enabled_saved,
+                    callback=_on_idle_disconnect_enabled_change,
+                )
+            with dpg.group(horizontal=True):
+                dpg.add_text("タイムアウト:")
+                dpg.add_slider_int(
+                    tag=TAG_IDLE_TIMEOUT_SEC,
+                    label="無発話タイムアウト (秒)",
+                    default_value=_idle_timeout_sec_saved,
+                    min_value=60, max_value=1800,
+                    width=200,
+                    callback=_on_idle_timeout_change,
+                )
+            with dpg.group(horizontal=True):
+                dpg.add_text("無音閾値:")
+                dpg.add_slider_int(
+                    tag=TAG_IDLE_AUDIO_THRESHOLD,
+                    label="無音判定閾値 (PCM RMS)",
+                    default_value=_idle_audio_threshold_saved,
+                    min_value=50, max_value=500,
+                    width=200,
+                    callback=_on_idle_audio_threshold_change,
+                )
+            dpg.add_button(
+                tag=TAG_IDLE_RESUME_BUTTON,
+                label="アイドル切断から再開",
+                callback=_on_idle_resume_click,
+                enabled=False,
+            )
+
         dpg.add_separator()
 
         # --- 翻訳こんにゃくモード（メインコンテンツ） ---
@@ -3330,48 +3372,6 @@ def _build_gui():
                     default_value=0.0,
                     width=200, overlay="0%",
                 )
-
-        dpg.add_separator()
-
-        # --- W-COST-4: アイドル切断設定セクション（全系統共通）（issue #81）---
-        _idle_disconnect_enabled_saved = bool(saved.get("idle_disconnect_enabled", False))
-        _idle_timeout_sec_saved = int(saved.get("idle_timeout_sec", 300))
-        _idle_audio_threshold_saved = int(saved.get("idle_audio_threshold", 200))  # TBD-4-2: 100→200
-        dpg.add_text("アイドル切断設定（全系統共通）:", color=(200, 200, 255))
-        with dpg.group(horizontal=True):
-            dpg.add_text("自動切断:")
-            dpg.add_checkbox(
-                tag=TAG_IDLE_DISCONNECT_ENABLED,
-                label="アイドル時に自動切断（コスト削減）",
-                default_value=_idle_disconnect_enabled_saved,
-                callback=_on_idle_disconnect_enabled_change,
-            )
-        with dpg.group(horizontal=True):
-            dpg.add_text("タイムアウト:")
-            dpg.add_slider_int(
-                tag=TAG_IDLE_TIMEOUT_SEC,
-                label="無発話タイムアウト (秒)",
-                default_value=_idle_timeout_sec_saved,
-                min_value=60, max_value=1800,
-                width=200,
-                callback=_on_idle_timeout_change,
-            )
-        with dpg.group(horizontal=True):
-            dpg.add_text("無音閾値:")
-            dpg.add_slider_int(
-                tag=TAG_IDLE_AUDIO_THRESHOLD,
-                label="無音判定閾値 (PCM RMS)",
-                default_value=_idle_audio_threshold_saved,
-                min_value=50, max_value=500,
-                width=200,
-                callback=_on_idle_audio_threshold_change,
-            )
-        dpg.add_button(
-            tag=TAG_IDLE_RESUME_BUTTON,
-            label="アイドル切断から再開",
-            callback=_on_idle_resume_click,
-            enabled=False,
-        )
 
         dpg.add_separator()
 
