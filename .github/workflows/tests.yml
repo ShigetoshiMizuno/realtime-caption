@@ -1,0 +1,59 @@
+name: tests
+
+on:
+  pull_request:
+  push:
+    branches:
+      - master
+      - 'feat/**'
+      - 'fix/**'
+      - 'hotfix/**'
+      - 'chore/**'
+      - 'ci/**'
+      - 'refactor/**'
+
+jobs:
+  pytest:
+    runs-on: windows-latest
+    timeout-minutes: 15
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+
+      - name: Install dependencies
+        shell: pwsh
+        run: |
+          python -m pip install --upgrade pip
+          # 重い ML 依存（faster-whisper / RealtimeSTT 等）と pyaudio はテストで mock 経由のため、
+          # CI では最小限の依存のみインストールしてテストを高速化する
+          pip install pytest pytest-cov pyyaml numpy scipy
+          pip install dearpygui websockets openai keyboard
+          # pyaudiowpatch は Windows 専用ホイールあり、pyaudio とともに必要
+          pip install pyaudio pyaudiowpatch
+          # deepl / RealtimeSTT / faster-whisper は実行時のみ必要なので CI スキップ
+          # ただし import 経路で必要なら追加する
+
+      - name: Show installed packages
+        shell: pwsh
+        run: pip list
+
+      - name: Run pytest
+        shell: pwsh
+        env:
+          PYTHONIOENCODING: utf-8
+        run: |
+          python -m pytest tests/ -q --tb=short --maxfail=10
+
+      - name: Run log_anomaly_detector sanity check
+        shell: pwsh
+        env:
+          PYTHONIOENCODING: utf-8
+        run: |
+          # CLI が起動するかの簡易確認（実ログがないので --help のみ）
+          python tools/log_anomaly_detector.py --help
