@@ -301,25 +301,38 @@ class TestFormatReport:
 # ---------------------------------------------------------------------------
 
 class TestRunE2eVerificationMocked:
-    """run_e2e_verification を subprocess なしで mock してテスト。"""
+    """run_e2e_verification を subprocess なしで mock してテスト。
+
+    実装が mtime ベースに変更されたため、os.path.getmtime / os.path.getsize /
+    time.time も mock する必要がある。
+    """
 
     def _make_mock_proc(self):
         proc = MagicMock()
         proc.wait.return_value = 0
         return proc
 
+    def _setup_mocks_with_log(self, mock_glob, mock_getmtime, mock_getsize, mock_time, log_content):
+        """ログがある場合の共通 mock 設定。"""
+        file_path = "2026-05-16-1_verbose.txt"
+        mock_glob.return_value = [file_path]
+        mock_time.return_value = 1000.0
+        mock_getmtime.return_value = 1001.0  # start_wall_clock (1000.0) より後
+        mock_getsize.return_value = 0
+
     @patch("auto_verify_source_transcript._tts_speak")
     @patch("auto_verify_source_transcript.subprocess.Popen")
     @patch("auto_verify_source_transcript.glob.glob")
+    @patch("auto_verify_source_transcript.os.path.getmtime")
+    @patch("auto_verify_source_transcript.os.path.getsize")
+    @patch("auto_verify_source_transcript.time.time")
     @patch("auto_verify_source_transcript.time.sleep")
     @patch("auto_verify_source_transcript.open", create=True)
-    def test_returns_dict(self, mock_open, mock_sleep, mock_glob, mock_popen, mock_tts):
+    def test_returns_dict(
+        self, mock_open, mock_sleep, mock_time, mock_getsize, mock_getmtime, mock_glob, mock_popen, mock_tts
+    ):
         """run_e2e_verification が dict を返すこと。"""
-        # verbose ログが新規に生成されたかのように見せる
-        mock_glob.side_effect = [
-            [],  # before
-            ["2026-05-16-1_verbose.txt"],  # after
-        ]
+        self._setup_mocks_with_log(mock_glob, mock_getmtime, mock_getsize, mock_time, SAMPLE_VERBOSE_WITH_SOURCE)
         mock_popen.return_value = self._make_mock_proc()
         mock_open.return_value.__enter__ = lambda s: s
         mock_open.return_value.__exit__ = MagicMock(return_value=False)
@@ -335,16 +348,16 @@ class TestRunE2eVerificationMocked:
     @patch("auto_verify_source_transcript._tts_speak")
     @patch("auto_verify_source_transcript.subprocess.Popen")
     @patch("auto_verify_source_transcript.glob.glob")
+    @patch("auto_verify_source_transcript.os.path.getmtime")
+    @patch("auto_verify_source_transcript.os.path.getsize")
+    @patch("auto_verify_source_transcript.time.time")
     @patch("auto_verify_source_transcript.time.sleep")
     @patch("auto_verify_source_transcript.open", create=True)
     def test_source_delta_positive_verdict_client_issue(
-        self, mock_open, mock_sleep, mock_glob, mock_popen, mock_tts
+        self, mock_open, mock_sleep, mock_time, mock_getsize, mock_getmtime, mock_glob, mock_popen, mock_tts
     ):
         """source_delta > 0 のとき verdict が client_issue であること。"""
-        mock_glob.side_effect = [
-            [],
-            ["2026-05-16-1_verbose.txt"],
-        ]
+        self._setup_mocks_with_log(mock_glob, mock_getmtime, mock_getsize, mock_time, SAMPLE_VERBOSE_WITH_SOURCE)
         mock_popen.return_value = self._make_mock_proc()
         mock_open.return_value.__enter__ = lambda s: s
         mock_open.return_value.__exit__ = MagicMock(return_value=False)
@@ -360,16 +373,19 @@ class TestRunE2eVerificationMocked:
     @patch("auto_verify_source_transcript._tts_speak")
     @patch("auto_verify_source_transcript.subprocess.Popen")
     @patch("auto_verify_source_transcript.glob.glob")
+    @patch("auto_verify_source_transcript.os.path.getmtime")
+    @patch("auto_verify_source_transcript.os.path.getsize")
+    @patch("auto_verify_source_transcript.time.time")
     @patch("auto_verify_source_transcript.time.sleep")
     @patch("auto_verify_source_transcript.open", create=True)
     def test_no_source_delta_verdict_api_issue(
-        self, mock_open, mock_sleep, mock_glob, mock_popen, mock_tts
+        self, mock_open, mock_sleep, mock_time, mock_getsize, mock_getmtime, mock_glob, mock_popen, mock_tts
     ):
         """source_delta == 0 のとき verdict が api_issue であること。"""
-        mock_glob.side_effect = [
-            [],
-            ["2026-05-16-2_verbose.txt"],
-        ]
+        mock_glob.return_value = ["2026-05-16-2_verbose.txt"]
+        mock_time.return_value = 1000.0
+        mock_getmtime.return_value = 1001.0
+        mock_getsize.return_value = 0
         mock_popen.return_value = self._make_mock_proc()
         mock_open.return_value.__enter__ = lambda s: s
         mock_open.return_value.__exit__ = MagicMock(return_value=False)
@@ -385,15 +401,16 @@ class TestRunE2eVerificationMocked:
     @patch("auto_verify_source_transcript._tts_speak")
     @patch("auto_verify_source_transcript.subprocess.Popen")
     @patch("auto_verify_source_transcript.glob.glob")
+    @patch("auto_verify_source_transcript.os.path.getmtime")
+    @patch("auto_verify_source_transcript.os.path.getsize")
+    @patch("auto_verify_source_transcript.time.time")
     @patch("auto_verify_source_transcript.time.sleep")
     def test_no_verbose_log_returns_error_status(
-        self, mock_sleep, mock_glob, mock_popen, mock_tts
+        self, mock_sleep, mock_time, mock_getsize, mock_getmtime, mock_glob, mock_popen, mock_tts
     ):
         """verbose ログが生成されなかった場合、status が no_verbose_log であること。"""
-        mock_glob.side_effect = [
-            [],  # before
-            [],  # after（新規ファイルなし）
-        ]
+        mock_glob.return_value = []  # ファイルなし
+        mock_time.return_value = 1000.0
         mock_popen.return_value = self._make_mock_proc()
 
         result = avst.run_e2e_verification(
@@ -406,16 +423,16 @@ class TestRunE2eVerificationMocked:
     @patch("auto_verify_source_transcript._tts_speak")
     @patch("auto_verify_source_transcript.subprocess.Popen")
     @patch("auto_verify_source_transcript.glob.glob")
+    @patch("auto_verify_source_transcript.os.path.getmtime")
+    @patch("auto_verify_source_transcript.os.path.getsize")
+    @patch("auto_verify_source_transcript.time.time")
     @patch("auto_verify_source_transcript.time.sleep")
     @patch("auto_verify_source_transcript.open", create=True)
     def test_result_contains_event_counts(
-        self, mock_open, mock_sleep, mock_glob, mock_popen, mock_tts
+        self, mock_open, mock_sleep, mock_time, mock_getsize, mock_getmtime, mock_glob, mock_popen, mock_tts
     ):
         """result に event_counts が含まれること。"""
-        mock_glob.side_effect = [
-            [],
-            ["2026-05-16-1_verbose.txt"],
-        ]
+        self._setup_mocks_with_log(mock_glob, mock_getmtime, mock_getsize, mock_time, SAMPLE_VERBOSE_WITH_SOURCE)
         mock_popen.return_value = self._make_mock_proc()
         mock_open.return_value.__enter__ = lambda s: s
         mock_open.return_value.__exit__ = MagicMock(return_value=False)
@@ -432,16 +449,16 @@ class TestRunE2eVerificationMocked:
     @patch("auto_verify_source_transcript._tts_speak")
     @patch("auto_verify_source_transcript.subprocess.Popen")
     @patch("auto_verify_source_transcript.glob.glob")
+    @patch("auto_verify_source_transcript.os.path.getmtime")
+    @patch("auto_verify_source_transcript.os.path.getsize")
+    @patch("auto_verify_source_transcript.time.time")
     @patch("auto_verify_source_transcript.time.sleep")
     @patch("auto_verify_source_transcript.open", create=True)
     def test_result_contains_rule5_anomaly_count(
-        self, mock_open, mock_sleep, mock_glob, mock_popen, mock_tts
+        self, mock_open, mock_sleep, mock_time, mock_getsize, mock_getmtime, mock_glob, mock_popen, mock_tts
     ):
         """result に rule5_anomalies カウントが含まれること。"""
-        mock_glob.side_effect = [
-            [],
-            ["2026-05-16-1_verbose.txt"],
-        ]
+        self._setup_mocks_with_log(mock_glob, mock_getmtime, mock_getsize, mock_time, SAMPLE_VERBOSE_WITH_SOURCE)
         mock_popen.return_value = self._make_mock_proc()
         mock_open.return_value.__enter__ = lambda s: s
         mock_open.return_value.__exit__ = MagicMock(return_value=False)
@@ -458,14 +475,17 @@ class TestRunE2eVerificationMocked:
     @patch("auto_verify_source_transcript._tts_speak")
     @patch("auto_verify_source_transcript.subprocess.Popen")
     @patch("auto_verify_source_transcript.glob.glob")
+    @patch("auto_verify_source_transcript.os.path.getmtime")
+    @patch("auto_verify_source_transcript.os.path.getsize")
+    @patch("auto_verify_source_transcript.time.time")
     @patch("auto_verify_source_transcript.time.sleep")
-    def test_timeout_handling(self, mock_sleep, mock_glob, mock_popen, mock_tts):
+    def test_timeout_handling(
+        self, mock_sleep, mock_time, mock_getsize, mock_getmtime, mock_glob, mock_popen, mock_tts
+    ):
         """subprocess タイムアウト時に proc.kill が呼ばれること。"""
         import subprocess
-        mock_glob.side_effect = [
-            [],
-            [],  # verbose ログなし
-        ]
+        mock_glob.return_value = []  # verbose ログなし
+        mock_time.return_value = 1000.0
         proc = MagicMock()
         proc.wait.side_effect = subprocess.TimeoutExpired(cmd="app.py", timeout=5)
         mock_popen.return_value = proc
