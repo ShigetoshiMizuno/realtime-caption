@@ -167,3 +167,22 @@ class TestStartupStepWiring:
         content = app_py.read_text(encoding="utf-8")
         assert "[STARTUP] 全体起動時間:" in content, \
             "app.py に '[STARTUP] 全体起動時間:' の出力がない"
+
+    def test_startup_step_count_in_main(self):
+        """main() および _build_gui() で _startup_step が呼ばれる回数を確認
+
+        追加計測対象（依頼仕様）:
+          main() レベル: RPC サーバー起動 / PTT マネージャー初期化 / dpg.show_viewport()
+          _build_gui() 内部: dpg.create_context / フォントロード / テーマ作成 /
+                             ウィジェット追加 / dpg.create_viewport / dpg.setup_dearpygui
+        合計 10 箇所以上の _startup_step が仕込まれていること。
+        """
+        import re
+        app_py = _ROOT / "app.py"
+        content = app_py.read_text(encoding="utf-8")
+        usage_lines = re.findall(r"with\s+_startup_step\s*\(", content)
+        count = len(usage_lines)
+        assert count >= 10, (
+            f"_startup_step の使用箇所が {count} 件（期待: 10 件以上）。"
+            "main() / _build_gui() への計測ステップ細分化が不足しています。"
+        )
