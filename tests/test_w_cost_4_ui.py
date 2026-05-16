@@ -227,12 +227,6 @@ class TestIdleSettingsSaveLoad:
             app.TAG_IDLE_DISCONNECT_ENABLED: idle_disconnect_enabled,
             app.TAG_IDLE_TIMEOUT_SEC: idle_timeout_sec,
             app.TAG_IDLE_AUDIO_THRESHOLD: idle_audio_threshold,
-            app.TAG_ROUTE_A_VAD_ENABLE: False,
-            app.TAG_ROUTE_A_VAD_SILENCE_MS: 500,
-            app.TAG_ROUTE_A_VAD_THRESHOLD: 0.5,
-            app.TAG_ROUTE_B_VAD_ENABLE: False,
-            app.TAG_ROUTE_B_VAD_SILENCE_MS: 500,
-            app.TAG_ROUTE_B_VAD_THRESHOLD: 0.5,
             app.TAG_ROUTE_A_SOURCE_TRANSCRIPT_ENABLE: True,
             app.TAG_ROUTE_B_SOURCE_TRANSCRIPT_ENABLE: True,
         }

@@ -335,14 +335,6 @@ TAG_ROUTE_B_ENABLE = "route_b_enable"
 TAG_ROUTE_A_SOURCE_TRANSCRIPT_ENABLE = "route_a_source_transcript_enable"
 TAG_ROUTE_B_SOURCE_TRANSCRIPT_ENABLE = "route_b_source_transcript_enable"
 
-# W-COST-3: Server VAD ウィジェットタグ（issue #81）
-TAG_ROUTE_A_VAD_ENABLE = "route_a_vad_enable"
-TAG_ROUTE_B_VAD_ENABLE = "route_b_vad_enable"
-TAG_ROUTE_A_VAD_SILENCE_MS = "route_a_vad_silence_ms"
-TAG_ROUTE_B_VAD_SILENCE_MS = "route_b_vad_silence_ms"
-TAG_ROUTE_A_VAD_THRESHOLD = "route_a_vad_threshold"
-TAG_ROUTE_B_VAD_THRESHOLD = "route_b_vad_threshold"
-
 # W-COST-4: アイドル切断設定ウィジェットタグ（issue #81）
 TAG_IDLE_DISCONNECT_ENABLED = "idle_disconnect_enabled_checkbox"
 TAG_IDLE_TIMEOUT_SEC = "idle_timeout_sec_slider"
@@ -485,10 +477,6 @@ def _save_settings():
                 "output_device":            _get(TAG_ROUTE_A_OUTPUT_DEVICE_COMBO, "(なし)"),
                 "output_volume":            _get(TAG_ROUTE_A_OUTPUT_VOLUME, 1.0),
                 "source_transcript_enabled": _get(TAG_ROUTE_A_SOURCE_TRANSCRIPT_ENABLE, True),
-                "vad_enabled":               _get(TAG_ROUTE_A_VAD_ENABLE, False),
-                "vad_threshold":             _get(TAG_ROUTE_A_VAD_THRESHOLD, 0.5),
-                "vad_prefix_padding_ms":     300,    # W-COST-3: prefix_padding は UI 非表示のため固定
-                "vad_silence_duration_ms":   _get(TAG_ROUTE_A_VAD_SILENCE_MS, 500),
             },
         }
         # PTT 設定を route_b にマージ（W-3: _build_ptt_settings_dict 経由で統一）
@@ -501,10 +489,6 @@ def _save_settings():
             "output_device":             _get(TAG_ROUTE_B_OUTPUT_DEVICE_COMBO, "(なし)"),
             "output_volume":             _get(TAG_ROUTE_B_OUTPUT_VOLUME, 1.0),
             "source_transcript_enabled": _get(TAG_ROUTE_B_SOURCE_TRANSCRIPT_ENABLE, True),
-            "vad_enabled":               _get(TAG_ROUTE_B_VAD_ENABLE, False),
-            "vad_threshold":             _get(TAG_ROUTE_B_VAD_THRESHOLD, 0.5),
-            "vad_prefix_padding_ms":     300,    # W-COST-3: prefix_padding は UI 非表示のため固定
-            "vad_silence_duration_ms":   _get(TAG_ROUTE_B_VAD_SILENCE_MS, 500),
         }
         data["route_b"] = _build_ptt_settings_dict(
             existing_data={"route_b": _route_b_base},
@@ -1029,171 +1013,6 @@ def _on_route_b_source_transcript_change(sender, app_data):
 
 
 # ---------------------------------------------------------------------------
-# W-COST-3: Server VAD コールバック（issue #81 / feat/w-cost-3-ui）
-# ---------------------------------------------------------------------------
-
-@_verbose_callback()
-def _on_route_a_vad_enable_change(sender, app_data):
-    """系統A VAD 有効化 ON/OFF 変更時。稼働中なら即時再起動して反映（W-COST-3）。
-
-    VAD チェックが ON/OFF 切替された際、稼働中なら _restart_route_for_change で
-    stop_route -> start_route を実行し、最新の vad_enabled を RealtimeTranslator に反映する。
-    停止中なら _save_settings のみ実行する。
-    """
-    new_val = "ON" if app_data else "OFF"
-    _log_user(f"系統1 VAD → {new_val}")
-    _save_settings()
-    # スライダーの enabled 状態を VAD ON/OFF に連動して切替（W-1 対応）
-    if dpg.does_item_exist(TAG_ROUTE_A_VAD_SILENCE_MS):
-        dpg.configure_item(TAG_ROUTE_A_VAD_SILENCE_MS, enabled=bool(app_data))
-    if dpg.does_item_exist(TAG_ROUTE_A_VAD_THRESHOLD):
-        dpg.configure_item(TAG_ROUTE_A_VAD_THRESHOLD, enabled=bool(app_data))
-    if (
-        _konnyaku_running
-        and _konnyaku_system is not None
-        and _konnyaku_system.route_a_system is not None
-        and _konnyaku_system.route_a_system.state == RouteState.RUNNING
-    ):
-        if dpg.does_item_exist(TAG_STATUS_STATE):
-            try:
-                dpg.set_value(TAG_STATUS_STATE, f"系統1 VAD → {new_val} 切替中...")
-            except Exception:
-                pass
-        threading.Thread(
-            target=_restart_route_for_change,
-            args=("a", f"VAD → {new_val}"),
-            daemon=True,
-            name="RestartRouteAForVadEnable",
-        ).start()
-
-
-@_verbose_callback()
-def _on_route_b_vad_enable_change(sender, app_data):
-    """系統B VAD 有効化 ON/OFF 変更時。稼働中なら即時再起動して反映（W-COST-3）。"""
-    new_val = "ON" if app_data else "OFF"
-    _log_user(f"系統2 VAD → {new_val}")
-    _save_settings()
-    # スライダーの enabled 状態を VAD ON/OFF に連動して切替（W-1 対応）
-    if dpg.does_item_exist(TAG_ROUTE_B_VAD_SILENCE_MS):
-        dpg.configure_item(TAG_ROUTE_B_VAD_SILENCE_MS, enabled=bool(app_data))
-    if dpg.does_item_exist(TAG_ROUTE_B_VAD_THRESHOLD):
-        dpg.configure_item(TAG_ROUTE_B_VAD_THRESHOLD, enabled=bool(app_data))
-    if (
-        _konnyaku_running
-        and _konnyaku_system is not None
-        and _konnyaku_system.route_b_system is not None
-        and _konnyaku_system.route_b_system.state == RouteState.RUNNING
-    ):
-        if dpg.does_item_exist(TAG_STATUS_STATE):
-            try:
-                dpg.set_value(TAG_STATUS_STATE, f"系統2 VAD → {new_val} 切替中...")
-            except Exception:
-                pass
-        threading.Thread(
-            target=_restart_route_for_change,
-            args=("b", f"VAD → {new_val}"),
-            daemon=True,
-            name="RestartRouteBForVadEnable",
-        ).start()
-
-
-@_verbose_callback()
-def _on_route_a_vad_silence_ms_change(sender, app_data):
-    """系統A VAD silence_duration_ms スライダー変更時。稼働中なら即時再起動（W-COST-3）。"""
-    _log_user(f"系統1 VAD 無音時間 → {int(app_data)} ms")
-    _save_settings()
-    if (
-        _konnyaku_running
-        and _konnyaku_system is not None
-        and _konnyaku_system.route_a_system is not None
-        and _konnyaku_system.route_a_system.state == RouteState.RUNNING
-    ):
-        if dpg.does_item_exist(TAG_STATUS_STATE):
-            try:
-                dpg.set_value(TAG_STATUS_STATE, f"系統1 VAD 無音時間 → {int(app_data)} ms 切替中...")
-            except Exception:
-                pass
-        threading.Thread(
-            target=_restart_route_for_change,
-            args=("a", f"VAD silence_duration_ms → {int(app_data)} ms"),
-            daemon=True,
-            name="RestartRouteAForVadSilenceMs",
-        ).start()
-
-
-@_verbose_callback()
-def _on_route_b_vad_silence_ms_change(sender, app_data):
-    """系統B VAD silence_duration_ms スライダー変更時。稼働中なら即時再起動（W-COST-3）。"""
-    _log_user(f"系統2 VAD 無音時間 → {int(app_data)} ms")
-    _save_settings()
-    if (
-        _konnyaku_running
-        and _konnyaku_system is not None
-        and _konnyaku_system.route_b_system is not None
-        and _konnyaku_system.route_b_system.state == RouteState.RUNNING
-    ):
-        if dpg.does_item_exist(TAG_STATUS_STATE):
-            try:
-                dpg.set_value(TAG_STATUS_STATE, f"系統2 VAD 無音時間 → {int(app_data)} ms 切替中...")
-            except Exception:
-                pass
-        threading.Thread(
-            target=_restart_route_for_change,
-            args=("b", f"VAD silence_duration_ms → {int(app_data)} ms"),
-            daemon=True,
-            name="RestartRouteBForVadSilenceMs",
-        ).start()
-
-
-@_verbose_callback()
-def _on_route_a_vad_threshold_change(sender, app_data):
-    """系統A VAD threshold スライダー変更時。稼働中なら即時再起動（W-COST-3）。"""
-    _log_user(f"系統1 VAD 感度 → {float(app_data):.2f}")
-    _save_settings()
-    if (
-        _konnyaku_running
-        and _konnyaku_system is not None
-        and _konnyaku_system.route_a_system is not None
-        and _konnyaku_system.route_a_system.state == RouteState.RUNNING
-    ):
-        if dpg.does_item_exist(TAG_STATUS_STATE):
-            try:
-                dpg.set_value(TAG_STATUS_STATE, f"系統1 VAD 感度 → {float(app_data):.2f} 切替中...")
-            except Exception:
-                pass
-        threading.Thread(
-            target=_restart_route_for_change,
-            args=("a", f"VAD threshold → {float(app_data):.2f}"),
-            daemon=True,
-            name="RestartRouteAForVadThreshold",
-        ).start()
-
-
-@_verbose_callback()
-def _on_route_b_vad_threshold_change(sender, app_data):
-    """系統B VAD threshold スライダー変更時。稼働中なら即時再起動（W-COST-3）。"""
-    _log_user(f"系統2 VAD 感度 → {float(app_data):.2f}")
-    _save_settings()
-    if (
-        _konnyaku_running
-        and _konnyaku_system is not None
-        and _konnyaku_system.route_b_system is not None
-        and _konnyaku_system.route_b_system.state == RouteState.RUNNING
-    ):
-        if dpg.does_item_exist(TAG_STATUS_STATE):
-            try:
-                dpg.set_value(TAG_STATUS_STATE, f"系統2 VAD 感度 → {float(app_data):.2f} 切替中...")
-            except Exception:
-                pass
-        threading.Thread(
-            target=_restart_route_for_change,
-            args=("b", f"VAD threshold → {float(app_data):.2f}"),
-            daemon=True,
-            name="RestartRouteBForVadThreshold",
-        ).start()
-
-
-# ---------------------------------------------------------------------------
 # W-COST-4: アイドル切断設定コールバック（issue #81 PR3）
 # ---------------------------------------------------------------------------
 
@@ -1580,43 +1399,11 @@ def _create_konnyaku_system() -> None:
     a_source_transcript_enabled = bool(route_a_saved.get("source_transcript_enabled", True))
     b_source_transcript_enabled = bool(route_b_saved.get("source_transcript_enabled", True))
 
-    # W-COST-3: Server VAD 有効フラグを保存設定から読み込む（デフォルト False）
-    # GUI ウィジェットは次 PR で実装予定。現状は settings.json の値のみ参照する。
-    # Fix 3 (hotfix/vad-force-off-and-smoke-strict):
-    # 実機検証（2026-05-16）で session.audio.input.turn_detection が API 拒否されることを確認。
-    # TBD-3-1 再オープン（issue #121）。正しいパスが判明するまで VAD は強制 OFF。
-    a_vad_enabled_saved = bool(route_a_saved.get("vad_enabled", False))
-    b_vad_enabled_saved = bool(route_b_saved.get("vad_enabled", False))
-    if a_vad_enabled_saved or b_vad_enabled_saved:
-        print(
-            "[WARN] _create_konnyaku_system: settings.json に vad_enabled=True が含まれていますが、"
-            "API が session.audio.input.turn_detection を未対応のため強制 OFF にします "
-            "(TBD-3-1 再オープン、issue #121 関連)",
-            flush=True,
-        )
-    a_vad_enabled = False  # 強制 OFF（TBD-3-1 再オープン）
-    b_vad_enabled = False  # 強制 OFF（TBD-3-1 再オープン）
-
-    # W-COST-3: VAD 数値パラメータを保存設定から読み込む（不正値はデフォルトにフォールバック）
-    # GUI 未実装のため settings.json はデフォルト値固定保存だが、将来の UI 結線に備えて読み込む
-    def _safe_float(val, default: float) -> float:
-        try:
-            return float(val)
-        except (TypeError, ValueError):
-            return default
-
     def _safe_int(val, default: int) -> int:
         try:
             return int(val)
         except (TypeError, ValueError):
             return default
-
-    a_vad_threshold = _safe_float(route_a_saved.get("vad_threshold", 0.5), 0.5)
-    a_vad_prefix_padding_ms = _safe_int(route_a_saved.get("vad_prefix_padding_ms", 300), 300)
-    a_vad_silence_duration_ms = _safe_int(route_a_saved.get("vad_silence_duration_ms", 500), 500)
-    b_vad_threshold = _safe_float(route_b_saved.get("vad_threshold", 0.5), 0.5)
-    b_vad_prefix_padding_ms = _safe_int(route_b_saved.get("vad_prefix_padding_ms", 300), 300)
-    b_vad_silence_duration_ms = _safe_int(route_b_saved.get("vad_silence_duration_ms", 500), 500)
 
     # W-COST-4: アイドル切断設定を保存設定から読み込む（系統共通設定、トップレベルキー）
     idle_disconnect_enabled = bool(saved.get("idle_disconnect_enabled", False))
@@ -1631,10 +1418,6 @@ def _create_konnyaku_system() -> None:
         output_device_index=a_output_idx,
         output_volume=float(route_a_saved.get("output_volume", 1.0)),
         request_source_transcript=a_source_transcript_enabled,
-        vad_enabled=a_vad_enabled,
-        vad_threshold=a_vad_threshold,
-        vad_prefix_padding_ms=a_vad_prefix_padding_ms,
-        vad_silence_duration_ms=a_vad_silence_duration_ms,
         idle_disconnect_enabled=idle_disconnect_enabled,
         idle_timeout_sec=float(idle_timeout_sec),
         idle_audio_threshold=idle_audio_threshold,
@@ -1647,10 +1430,6 @@ def _create_konnyaku_system() -> None:
         output_device_index=b_output_idx,
         output_volume=float(route_b_saved.get("output_volume", 1.0)),
         request_source_transcript=b_source_transcript_enabled,
-        vad_enabled=b_vad_enabled,
-        vad_threshold=b_vad_threshold,
-        vad_prefix_padding_ms=b_vad_prefix_padding_ms,
-        vad_silence_duration_ms=b_vad_silence_duration_ms,
         idle_disconnect_enabled=idle_disconnect_enabled,
         idle_timeout_sec=float(idle_timeout_sec),
         idle_audio_threshold=idle_audio_threshold,
@@ -1674,10 +1453,8 @@ def _create_konnyaku_system() -> None:
     _log_action(
         "MultiCaptionSystem 生成完了",
         route_a_request_source_transcript=a_source_transcript_enabled,
-        route_a_vad_enabled=a_vad_enabled,
         route_a_output_enabled=a_output_enabled,
         route_b_request_source_transcript=b_source_transcript_enabled,
-        route_b_vad_enabled=b_vad_enabled,
         route_b_output_enabled=b_output_enabled,
     )
 
@@ -3408,42 +3185,6 @@ def _build_gui():
                     default_value=bool(route_a_saved.get("source_transcript_enabled", True)),
                     callback=_on_route_a_source_transcript_change,
                 )
-            # W-COST-3: Server VAD ウィジェット（系統A）
-            _route_a_vad_enabled_saved = bool(route_a_saved.get("vad_enabled", False))
-            with dpg.group(horizontal=True):
-                dpg.add_text("VAD 有効化:")
-                dpg.add_checkbox(
-                    tag=TAG_ROUTE_A_VAD_ENABLE,
-                    label="VAD で無音区間を送信しない（コスト削減・要 API 検証）",
-                    default_value=_route_a_vad_enabled_saved,
-                    callback=_on_route_a_vad_enable_change,
-                )
-            dpg.add_text(
-                "  ※ API 受入未検証。エラー時は OFF に戻してください",
-                color=(255, 200, 50),
-            )
-            with dpg.group(horizontal=True):
-                dpg.add_text("無音判定時間:")
-                dpg.add_slider_int(
-                    tag=TAG_ROUTE_A_VAD_SILENCE_MS,
-                    label="無音判定までの時間 (ms)",
-                    default_value=int(route_a_saved.get("vad_silence_duration_ms", 500)),
-                    min_value=200, max_value=2000,
-                    width=200,
-                    enabled=_route_a_vad_enabled_saved,
-                    callback=_on_route_a_vad_silence_ms_change,
-                )
-            with dpg.group(horizontal=True):
-                dpg.add_text("VAD 感度:")
-                dpg.add_slider_float(
-                    tag=TAG_ROUTE_A_VAD_THRESHOLD,
-                    label="VAD 感度（しきい値）",
-                    default_value=float(route_a_saved.get("vad_threshold", 0.5)),
-                    min_value=0.0, max_value=1.0,
-                    width=200, format="%.2f",
-                    enabled=_route_a_vad_enabled_saved,
-                    callback=_on_route_a_vad_threshold_change,
-                )
             with dpg.group(horizontal=True):
                 dpg.add_text("出力デバイス:")
                 dpg.add_combo(
@@ -3563,42 +3304,6 @@ def _build_gui():
                     label="原文も表示する（Whisper 課金あり）",
                     default_value=bool(route_b_saved.get("source_transcript_enabled", True)),
                     callback=_on_route_b_source_transcript_change,
-                )
-            # W-COST-3: Server VAD ウィジェット（系統B）
-            _route_b_vad_enabled_saved = bool(route_b_saved.get("vad_enabled", False))
-            with dpg.group(horizontal=True):
-                dpg.add_text("VAD 有効化:")
-                dpg.add_checkbox(
-                    tag=TAG_ROUTE_B_VAD_ENABLE,
-                    label="VAD で無音区間を送信しない（コスト削減・要 API 検証）",
-                    default_value=_route_b_vad_enabled_saved,
-                    callback=_on_route_b_vad_enable_change,
-                )
-            dpg.add_text(
-                "  ※ API 受入未検証。エラー時は OFF に戻してください",
-                color=(255, 200, 50),
-            )
-            with dpg.group(horizontal=True):
-                dpg.add_text("無音判定時間:")
-                dpg.add_slider_int(
-                    tag=TAG_ROUTE_B_VAD_SILENCE_MS,
-                    label="無音判定までの時間 (ms)",
-                    default_value=int(route_b_saved.get("vad_silence_duration_ms", 500)),
-                    min_value=200, max_value=2000,
-                    width=200,
-                    enabled=_route_b_vad_enabled_saved,
-                    callback=_on_route_b_vad_silence_ms_change,
-                )
-            with dpg.group(horizontal=True):
-                dpg.add_text("VAD 感度:")
-                dpg.add_slider_float(
-                    tag=TAG_ROUTE_B_VAD_THRESHOLD,
-                    label="VAD 感度（しきい値）",
-                    default_value=float(route_b_saved.get("vad_threshold", 0.5)),
-                    min_value=0.0, max_value=1.0,
-                    width=200, format="%.2f",
-                    enabled=_route_b_vad_enabled_saved,
-                    callback=_on_route_b_vad_threshold_change,
                 )
             with dpg.group(horizontal=True):
                 dpg.add_text("出力デバイス:")

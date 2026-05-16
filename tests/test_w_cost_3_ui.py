@@ -3,6 +3,10 @@ tests/test_w_cost_3_ui.py
 
 W-COST-3 UI ウィジェット配置テスト（issue #81 / feat/w-cost-3-ui）
 
+DEPRECATED: W-COST-3 (VAD 機能) は GA 移行で動作不能が確定。
+UI ウィジェット一式を app.py から削除。本テストは履歴保存のためスキップ扱いとする。
+refs: refactor/remove-vad-ui-ga-cleanup
+
 テスト対象:
 1. TAG 定数が app モジュールに存在すること
 2. コールバック関数 6 つが app モジュールに存在すること
@@ -20,6 +24,8 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
+
+pytestmark = pytest.mark.skip(reason="W-COST-3 UI 廃止 (GA で動作不能) — refactor/remove-vad-ui-ga-cleanup")
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 import app

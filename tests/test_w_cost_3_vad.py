@@ -628,8 +628,10 @@ class TestMultiCaptionSystemVadPropagation:
 
 # ---------------------------------------------------------------------------
 # 7. app.py: vad_enabled の settings save/load
+# DEPRECATED: W-COST-3 UI 廃止 (GA で動作不能) — refactor/remove-vad-ui-ga-cleanup
 # ---------------------------------------------------------------------------
 
+@pytest.mark.skip(reason="W-COST-3 UI 廃止: _save_settings から VAD 保存コードを削除 — refactor/remove-vad-ui-ga-cleanup")
 class TestAppSettingsVad:
     """app.py の settings.json に vad_enabled が正しく保存・読み込みされる。"""
 
@@ -784,8 +786,10 @@ class TestAppSettingsVad:
 # ---------------------------------------------------------------------------
 # 8. app.py: VAD 数値パラメータ (threshold / prefix_padding_ms / silence_duration_ms)
 #    の save/load 往復確認 (PR #97 QA 仕切り直し W-2)
+# DEPRECATED: W-COST-3 UI 廃止 (GA で動作不能) — refactor/remove-vad-ui-ga-cleanup
 # ---------------------------------------------------------------------------
 
+@pytest.mark.skip(reason="W-COST-3 UI 廃止: _save_settings / _create_konnyaku_system から VAD 数値パラメータ削除 — refactor/remove-vad-ui-ga-cleanup")
 class TestAppSettingsVadNumericParams:
     """vad_threshold / vad_prefix_padding_ms / vad_silence_duration_ms が
     _save_settings / _create_konnyaku_system で正しく保存・読み込みされること。"""
