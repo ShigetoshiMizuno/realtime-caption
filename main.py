@@ -447,6 +447,17 @@ class CaptionSystem:
         # W-COST-2: 原文文字起こし（Whisper）有効フラグ。False にすると Whisper 課金を停止する。
         self._request_source_transcript: bool = request_source_transcript
         # W-COST-3: Server VAD によるコスト削減フラグ。False（デフォルト）で既存挙動維持。
+        # Fix 2 (hotfix/vad-force-off-and-smoke-strict):
+        # 実機検証（2026-05-16）で session.audio.input.turn_detection が API 拒否されることを確認。
+        # TBD-3-1 再オープン（issue #121）。正しいパスが判明するまで VAD は強制 OFF。
+        if vad_enabled:
+            print(
+                "[WARN] CaptionSystem: vad_enabled=True が指定されましたが、API が "
+                "session.audio.input.turn_detection を未対応のため強制 OFF にします "
+                "(TBD-3-1 再オープン、issue #121 関連)",
+                flush=True,
+            )
+            vad_enabled = False
         self._vad_enabled: bool = vad_enabled
         self._vad_threshold: float = vad_threshold
         self._vad_prefix_padding_ms: int = vad_prefix_padding_ms
@@ -1688,6 +1699,19 @@ class RouteConfig:
     idle_disconnect_enabled: bool = False   # W-COST-4: アイドル切断有効フラグ。デフォルト False（後方互換・安全側）
     idle_timeout_sec: float = 300.0         # W-COST-4: アイドル判定タイムアウト（秒）
     idle_audio_threshold: int = 200         # W-COST-4: 無音とみなす音量上限（int16 絶対値 max）。TBD-4-2 実機計測で 100→200 に変更
+
+    def __post_init__(self) -> None:
+        # Fix 1 (hotfix/vad-force-off-and-smoke-strict):
+        # 実機検証（2026-05-16）で session.audio.input.turn_detection が API 拒否されることを確認。
+        # TBD-3-1 再オープン（issue #121）。正しいパスが判明するまで VAD は強制 OFF。
+        if self.vad_enabled:
+            print(
+                "[WARN] RouteConfig: vad_enabled=True が指定されましたが、API が "
+                "session.audio.input.turn_detection を未対応のため強制 OFF にします "
+                "(TBD-3-1 再オープン、issue #121 関連)",
+                flush=True,
+            )
+            self.vad_enabled = False
 
 
 class MultiCaptionSystem:

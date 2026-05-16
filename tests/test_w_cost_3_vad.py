@@ -380,9 +380,11 @@ class TestCaptionSystemVadPropagation:
         assert cs._vad_enabled is False
 
     def test_caption_system_stores_vad_enabled_true(self):
-        """CaptionSystem が vad_enabled=True を保持すること。"""
+        """CaptionSystem(vad_enabled=True) は hotfix により強制 OFF されること。
+        (hotfix/vad-force-off-and-smoke-strict: TBD-3-1 再オープン、issue #121)
+        正しい API パスが判明するまで VAD は強制 False。"""
         cs = self._make_caption_system(vad_enabled=True)
-        assert cs._vad_enabled is True
+        assert cs._vad_enabled is False
 
     def test_caption_system_default_vad_enabled_is_false(self):
         """CaptionSystem の vad_enabled デフォルトは False（後方互換）。"""
@@ -417,7 +419,8 @@ class TestCaptionSystemVadPropagation:
         )
 
     def test_create_realtime_translator_passes_vad_enabled_true(self):
-        """_create_realtime_translator が _vad_enabled=True を RealtimeTranslator に渡すこと。"""
+        """_create_realtime_translator: vad_enabled=True を渡しても hotfix で False に強制されること。
+        (hotfix/vad-force-off-and-smoke-strict: TBD-3-1 再オープン、issue #121)"""
         cs = self._make_caption_system(vad_enabled=True)
 
         with patch("realtime_translator.RealtimeTranslator") as MockRT, \
@@ -428,8 +431,8 @@ class TestCaptionSystemVadPropagation:
 
         assert MockRT.called
         _, kwargs = MockRT.call_args
-        assert kwargs.get("vad_enabled") is True, (
-            f"vad_enabled=True が渡されること。kwargs={kwargs}"
+        assert kwargs.get("vad_enabled") is False, (
+            f"hotfix により vad_enabled=False が渡されること。kwargs={kwargs}"
         )
 
     def test_create_realtime_translator_passes_vad_params(self):
@@ -462,7 +465,8 @@ class TestRouteConfigVad:
     """RouteConfig に VAD フィールドが追加されていることを検証。"""
 
     def test_route_config_has_vad_enabled_field(self):
-        """RouteConfig に vad_enabled フィールドがあること。"""
+        """RouteConfig に vad_enabled フィールドがあること。
+        (hotfix/vad-force-off-and-smoke-strict: vad_enabled=True は __post_init__ で強制 False)"""
         rc = RouteConfig(
             route_id="a",
             input_device_info={"name": "FakeMic", "index": 0},
@@ -472,7 +476,8 @@ class TestRouteConfigVad:
             output_volume=1.0,
             vad_enabled=True,
         )
-        assert rc.vad_enabled is True
+        # hotfix により vad_enabled=True は __post_init__ で False に強制される
+        assert rc.vad_enabled is False
 
     def test_route_config_vad_enabled_default_is_false(self):
         """RouteConfig の vad_enabled デフォルトは False（後方互換・安全側）。"""
@@ -546,7 +551,9 @@ class TestMultiCaptionSystemVadPropagation:
         }
 
     def test_multi_caption_system_propagates_vad_enabled_true_to_route_a(self):
-        """route_a.vad_enabled=True が route_a CaptionSystem に伝播すること。"""
+        """route_a.vad_enabled=True は hotfix により強制 OFF され、
+        route_a CaptionSystem の _vad_enabled は False になること。
+        (hotfix/vad-force-off-and-smoke-strict: TBD-3-1 再オープン、issue #121)"""
         route_a = RouteConfig(
             route_id="a",
             input_device_info={"name": "FakeMicA", "index": 0},
@@ -566,7 +573,8 @@ class TestMultiCaptionSystemVadPropagation:
             )
 
         assert mcs.route_a_system is not None
-        assert mcs.route_a_system._vad_enabled is True
+        # hotfix により vad_enabled=True は RouteConfig.__post_init__ で False に強制される
+        assert mcs.route_a_system._vad_enabled is False
 
     def test_multi_caption_system_propagates_vad_enabled_false_to_route_b(self):
         """route_b.vad_enabled=False が route_b CaptionSystem に伝播すること。"""
@@ -680,7 +688,9 @@ class TestAppSettingsVad:
         )
 
     def test_create_konnyaku_system_passes_vad_enabled_from_saved(self):
-        """_create_konnyaku_system が saved settings の vad_enabled を RouteConfig に反映すること。"""
+        """_create_konnyaku_system は saved settings に vad_enabled=True があっても
+        hotfix により強制 False にして RouteConfig に渡すこと。
+        (hotfix/vad-force-off-and-smoke-strict: TBD-3-1 再オープン、issue #121)"""
         fake_devices = [
             {"name": "Mic1", "index": 0, "samplerate": 16000},
         ]
@@ -690,14 +700,14 @@ class TestAppSettingsVad:
                 "lang": "",
                 "output_enabled": False,
                 "source_transcript_enabled": True,
-                "vad_enabled": True,   # ON に設定
+                "vad_enabled": True,   # ON に設定（hotfix で強制 OFF される）
             },
             "route_b": {
                 "device": "Mic1",
                 "lang": "",
                 "output_enabled": False,
                 "source_transcript_enabled": True,
-                "vad_enabled": False,  # OFF に設定
+                "vad_enabled": False,  # OFF に設定（そのまま）
             },
         }
 
@@ -724,8 +734,9 @@ class TestAppSettingsVad:
              patch("app.find_device_by_name", return_value=None):
             app._create_konnyaku_system()
 
-        assert created_route_a_kwargs.get("vad_enabled") is True, (
-            f"route_a の vad_enabled が True であること。got={created_route_a_kwargs}"
+        # hotfix: saved vad_enabled=True は強制 OFF されて False になる
+        assert created_route_a_kwargs.get("vad_enabled") is False, (
+            f"hotfix により route_a の vad_enabled は False であること。got={created_route_a_kwargs}"
         )
         assert created_route_b_kwargs.get("vad_enabled") is False, (
             f"route_b の vad_enabled が False であること。got={created_route_b_kwargs}"

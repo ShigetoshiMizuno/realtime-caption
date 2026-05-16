@@ -128,6 +128,11 @@ def parse_error_response(error_data: dict) -> tuple[str, str]:
     if "Unknown parameter" in message:
         return ("unsupported", message)
 
+    # Fix 3 (hotfix/vad-force-off-and-smoke-strict):
+    # 実機検証で error.code='unknown_parameter' として返ってくることを確認。
+    if error_code == "unknown_parameter":
+        return ("unsupported", message)
+
     if error_code == "invalid_api_key" or "invalid_api_key" in message:
         return ("auth", message)
 
@@ -184,6 +189,9 @@ def format_report(result: dict, output_json: bool) -> str:
     elif status == "timeout":
         lines.append(f"TIMEOUT: 接続タイムアウト ({timeout}s)")
         lines.append("  ネットワーク接続と API エンドポイントを確認してください")
+    elif status == "no_response":
+        lines.append(f"NO_RESPONSE: {timeout}s 以内に session.updated もエラーも受信できず（不確定）")
+        lines.append("  再実行してください。続けて出る場合は API 仕様変更の可能性あり")
     else:
         lines.append(f"ERROR: 不明なエラー — {error_message}")
 
@@ -269,8 +277,8 @@ async def run_smoke_test(
                 try:
                     raw = await asyncio.wait_for(ws.recv(), timeout=min(remaining, 2.0))
                 except asyncio.TimeoutError:
-                    # タイムアウト内にエラーがなければ OK
-                    break
+                    # 短い recv タイムアウトは継続（deadline まで待ち続ける）
+                    continue
 
                 try:
                     data = json.loads(raw)
@@ -312,7 +320,7 @@ async def run_smoke_test(
                             "params": params,
                         }
 
-                elif evt_type in ("session.created", "session.updated"):
+                elif evt_type == "session.updated":
                     # session.updated = API が session.update を受け入れた証拠
                     elapsed = time.monotonic() - start
                     return {
@@ -323,6 +331,13 @@ async def run_smoke_test(
                         "timeout": timeout,
                         "params": params,
                     }
+
+                elif evt_type == "session.created":
+                    # session.created は接続確認イベント（session.update 受入の確認ではない）。
+                    # Fix 3 (hotfix/vad-force-off-and-smoke-strict):
+                    # 実機検証で session.created の後に error が来ることを確認。
+                    # session.created 後も監視を継続し、session.updated または error を待つ。
+                    continue
 
     except asyncio.TimeoutError:
         elapsed = time.monotonic() - start
@@ -366,10 +381,12 @@ async def run_smoke_test(
             "params": params,
         }
 
-    # タイムアウトまでエラーなし = OK
+    # Fix 3 (hotfix/vad-force-off-and-smoke-strict):
+    # deadline まで session.updated もエラーも来なかった = 不確定（no_response）
+    # 以前は "ok" を返していたが、session.created で判定していたバグを修正。
     elapsed = time.monotonic() - start
     return {
-        "status": "ok",
+        "status": "no_response",
         "error_category": None,
         "error_message": None,
         "elapsed": elapsed,
