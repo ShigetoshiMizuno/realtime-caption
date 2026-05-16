@@ -429,13 +429,18 @@ class CaptionSystem:
                  pa_instance: "pyaudio.PyAudio | None" = None,
                  on_realtime_error_external: "Callable[[str], None] | None" = None,
                  request_source_transcript: bool = True,
-                 vad_enabled: bool = False,
-                 vad_threshold: float = 0.5,
-                 vad_prefix_padding_ms: int = 300,
-                 vad_silence_duration_ms: int = 500,
                  idle_disconnect_enabled: bool = False,
                  idle_timeout_sec: float = 300.0,
-                 idle_audio_threshold: int = 200):  # W-COST-4: TBD-4-2 実機計測で 100→200 に変更
+                 idle_audio_threshold: int = 200,  # W-COST-4: TBD-4-2 実機計測で 100→200 に変更
+                 **deprecated_kwargs):
+        # 後方互換: vad_* キーは無視。それ以外は TypeError
+        _VAD_DEPRECATED_KEYS = frozenset({
+            "vad_enabled", "vad_threshold", "vad_prefix_padding_ms", "vad_silence_duration_ms"
+        })
+        for k in deprecated_kwargs:
+            if k not in _VAD_DEPRECATED_KEYS:
+                raise TypeError(f"__init__() got an unexpected keyword argument '{k}'")
+
         self._config = config
         self._device_info = device_info
         self._model_name = model_name
@@ -446,22 +451,6 @@ class CaptionSystem:
         self._on_realtime_error_external = on_realtime_error_external  # callable(str) | None
         # W-COST-2: 原文文字起こし（Whisper）有効フラグ。False にすると Whisper 課金を停止する。
         self._request_source_transcript: bool = request_source_transcript
-        # W-COST-3: Server VAD によるコスト削減フラグ。False（デフォルト）で既存挙動維持。
-        # Fix 2 (hotfix/vad-force-off-and-smoke-strict):
-        # 実機検証（2026-05-16）で session.audio.input.turn_detection が API 拒否されることを確認。
-        # TBD-3-1 再オープン（issue #121）。正しいパスが判明するまで VAD は強制 OFF。
-        if vad_enabled:
-            print(
-                "[WARN] CaptionSystem: vad_enabled=True が指定されましたが、API が "
-                "session.audio.input.turn_detection を未対応のため強制 OFF にします "
-                "(TBD-3-1 再オープン、issue #121 関連)",
-                flush=True,
-            )
-            vad_enabled = False
-        self._vad_enabled: bool = vad_enabled
-        self._vad_threshold: float = vad_threshold
-        self._vad_prefix_padding_ms: int = vad_prefix_padding_ms
-        self._vad_silence_duration_ms: int = vad_silence_duration_ms
         # W-COST-4: アイドル時セッション自動切断。False（デフォルト）で既存挙動維持。
         self._idle_disconnect_enabled: bool = idle_disconnect_enabled
         self._idle_timeout_sec: float = idle_timeout_sec
@@ -656,10 +645,6 @@ class CaptionSystem:
             request_audio_output=self._audio_output_mode,
             on_audio_delta=self._on_audio_delta,
             request_source_transcript=self._request_source_transcript,
-            vad_enabled=self._vad_enabled,
-            vad_threshold=self._vad_threshold,
-            vad_prefix_padding_ms=self._vad_prefix_padding_ms,
-            vad_silence_duration_ms=self._vad_silence_duration_ms,
         )
         from cost_monitor import CostMonitor
         max_min = rt_cfg.get("max_session_minutes", 60)
@@ -681,14 +666,12 @@ class CaptionSystem:
             f"[ACTION] RealtimeTranslator 生成"
             f" route_id={self._route_id}"
             f" request_source_transcript={self._request_source_transcript}"
-            f" vad_enabled={self._vad_enabled}"
             f" request_audio_output={self._audio_output_mode}",
             flush=True,
         )
         self._log_verbose(
             "RT_INIT",
             request_source_transcript=self._request_source_transcript,
-            vad_enabled=self._vad_enabled,
             request_audio_output=self._audio_output_mode,
             target_language_code=rt_cfg.get("target_language_code", "ja"),
             model=rt_cfg.get("model", "gpt-realtime-translate"),
@@ -1681,7 +1664,7 @@ def _open_quota_usage_page(webbrowser_module=None) -> None:
     webbrowser_module.open(_QUOTA_USAGE_URL)
 
 
-@dataclass
+@dataclass(init=False)
 class RouteConfig:
     """MultiCaptionSystem の1経路分の設定。"""
 
@@ -1691,27 +1674,42 @@ class RouteConfig:
     audio_output_enabled: bool
     output_device_index: int | None
     output_volume: float                # 0.0〜2.0
-    request_source_transcript: bool = True  # W-COST-2: 原文表示（Whisper）有効フラグ。デフォルト True（後方互換）
-    vad_enabled: bool = False               # W-COST-3: Server VAD 有効フラグ。デフォルト False（後方互換・安全側）
-    vad_threshold: float = 0.5             # W-COST-3: VAD 起動音量閾値（0.0〜1.0）
-    vad_prefix_padding_ms: int = 300        # W-COST-3: 発話開始前に遡るバッファ（ms）
-    vad_silence_duration_ms: int = 500      # W-COST-3: 無音判定時間（ms）
-    idle_disconnect_enabled: bool = False   # W-COST-4: アイドル切断有効フラグ。デフォルト False（後方互換・安全側）
-    idle_timeout_sec: float = 300.0         # W-COST-4: アイドル判定タイムアウト（秒）
-    idle_audio_threshold: int = 200         # W-COST-4: 無音とみなす音量上限（int16 絶対値 max）。TBD-4-2 実機計測で 100→200 に変更
+    request_source_transcript: bool     # W-COST-2: 原文表示（Whisper）有効フラグ。デフォルト True（後方互換）
+    idle_disconnect_enabled: bool       # W-COST-4: アイドル切断有効フラグ。デフォルト False（後方互換・安全側）
+    idle_timeout_sec: float             # W-COST-4: アイドル判定タイムアウト（秒）
+    idle_audio_threshold: int           # W-COST-4: 無音とみなす音量上限（int16 絶対値 max）。TBD-4-2 実機計測で 100→200 に変更
 
-    def __post_init__(self) -> None:
-        # Fix 1 (hotfix/vad-force-off-and-smoke-strict):
-        # 実機検証（2026-05-16）で session.audio.input.turn_detection が API 拒否されることを確認。
-        # TBD-3-1 再オープン（issue #121）。正しいパスが判明するまで VAD は強制 OFF。
-        if self.vad_enabled:
-            print(
-                "[WARN] RouteConfig: vad_enabled=True が指定されましたが、API が "
-                "session.audio.input.turn_detection を未対応のため強制 OFF にします "
-                "(TBD-3-1 再オープン、issue #121 関連)",
-                flush=True,
-            )
-            self.vad_enabled = False
+    def __init__(
+        self,
+        route_id: str,
+        input_device_info: dict,
+        target_language_code: str,
+        audio_output_enabled: bool,
+        output_device_index: "int | None",
+        output_volume: float,
+        request_source_transcript: bool = True,
+        idle_disconnect_enabled: bool = False,
+        idle_timeout_sec: float = 300.0,
+        idle_audio_threshold: int = 200,
+        **deprecated_kwargs,
+    ):
+        # 後方互換: vad_* キーは無視。それ以外は TypeError
+        _VAD_DEPRECATED_KEYS = frozenset({
+            "vad_enabled", "vad_threshold", "vad_prefix_padding_ms", "vad_silence_duration_ms"
+        })
+        for k in deprecated_kwargs:
+            if k not in _VAD_DEPRECATED_KEYS:
+                raise TypeError(f"__init__() got an unexpected keyword argument '{k}'")
+        self.route_id = route_id
+        self.input_device_info = input_device_info
+        self.target_language_code = target_language_code
+        self.audio_output_enabled = audio_output_enabled
+        self.output_device_index = output_device_index
+        self.output_volume = output_volume
+        self.request_source_transcript = request_source_transcript
+        self.idle_disconnect_enabled = idle_disconnect_enabled
+        self.idle_timeout_sec = idle_timeout_sec
+        self.idle_audio_threshold = idle_audio_threshold
 
 
 class MultiCaptionSystem:
@@ -1778,10 +1776,6 @@ class MultiCaptionSystem:
                 pa_instance=self._pa,     # 共有 PyAudio を注入
                 on_realtime_error_external=_wrap_error(route_a.route_id),
                 request_source_transcript=route_a.request_source_transcript,
-                vad_enabled=route_a.vad_enabled,
-                vad_threshold=route_a.vad_threshold,
-                vad_prefix_padding_ms=route_a.vad_prefix_padding_ms,
-                vad_silence_duration_ms=route_a.vad_silence_duration_ms,
                 idle_disconnect_enabled=route_a.idle_disconnect_enabled,
                 idle_timeout_sec=route_a.idle_timeout_sec,
                 idle_audio_threshold=route_a.idle_audio_threshold,
@@ -1807,10 +1801,6 @@ class MultiCaptionSystem:
                 pa_instance=self._pa,       # 共有 PyAudio を注入
                 on_realtime_error_external=_wrap_error(route_b.route_id),
                 request_source_transcript=route_b.request_source_transcript,
-                vad_enabled=route_b.vad_enabled,
-                vad_threshold=route_b.vad_threshold,
-                vad_prefix_padding_ms=route_b.vad_prefix_padding_ms,
-                vad_silence_duration_ms=route_b.vad_silence_duration_ms,
                 idle_disconnect_enabled=route_b.idle_disconnect_enabled,
                 idle_timeout_sec=route_b.idle_timeout_sec,
                 idle_audio_threshold=route_b.idle_audio_threshold,
