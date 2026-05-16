@@ -549,3 +549,75 @@ class TestRPCVerboseDuration:
         assert log_file.exists(), "verbose ファイルが存在しない"
         content = log_file.read_text(encoding="utf-8")
         assert "duration_ms=" in content, f"duration_ms= がない: {content}"
+
+
+# ---------------------------------------------------------------------------
+# 9. dpg が引数なしで callback を呼ぶケース（起動時の default_value 初期化）
+# ---------------------------------------------------------------------------
+
+class TestVerboseCallbackArgPadding:
+    """dpg が引数なしで呼ぶ場合、wrapper が None で必要引数を補完する。"""
+
+    def test_no_args_calls_func_with_none_padding(self, tmp_path):
+        """wrapper() 引数なしで呼ばれたとき func(None, None, None) が呼ばれる。"""
+        import app
+
+        log_file = tmp_path / "verbose.txt"
+        received = []
+
+        @app._verbose_callback("padding_no_args")
+        def my_cb(sender, app_data, user_data):
+            received.append((sender, app_data, user_data))
+
+        with _VerboseContext(False, log_file):
+            my_cb()  # 引数なし
+
+        assert received == [(None, None, None)], f"期待: [(None, None, None)], 実際: {received}"
+
+    def test_one_arg_pads_remaining(self, tmp_path):
+        """wrapper(sender) のみのとき func(sender, None, None) が呼ばれる。"""
+        import app
+
+        log_file = tmp_path / "verbose.txt"
+        received = []
+
+        @app._verbose_callback("padding_one_arg")
+        def my_cb(sender, app_data, user_data):
+            received.append((sender, app_data, user_data))
+
+        with _VerboseContext(False, log_file):
+            my_cb("s1")  # 1 引数
+
+        assert received == [("s1", None, None)], f"期待: [('s1', None, None)], 実際: {received}"
+
+    def test_full_args_passed_unchanged(self, tmp_path):
+        """wrapper(s, a, u) と全引数渡すと、そのまま func に渡される。"""
+        import app
+
+        log_file = tmp_path / "verbose.txt"
+        received = []
+
+        @app._verbose_callback("padding_full_args")
+        def my_cb(sender, app_data, user_data):
+            received.append((sender, app_data, user_data))
+
+        with _VerboseContext(False, log_file):
+            my_cb("s1", "a1", "u1")
+
+        assert received == [("s1", "a1", "u1")], f"期待: [('s1', 'a1', 'u1')], 実際: {received}"
+
+    def test_extra_args_passed_through(self, tmp_path):
+        """引数が必要数より多い場合、余分な引数もそのまま渡される。"""
+        import app
+
+        log_file = tmp_path / "verbose.txt"
+        received = []
+
+        @app._verbose_callback("padding_extra_args")
+        def my_cb(sender, app_data, user_data, extra=None):
+            received.append((sender, app_data, user_data, extra))
+
+        with _VerboseContext(False, log_file):
+            my_cb("s1", "a1", "u1", "extra_val")
+
+        assert received == [("s1", "a1", "u1", "extra_val")], f"期待通りでない: {received}"
