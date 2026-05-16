@@ -42,12 +42,23 @@ jobs:
         shell: pwsh
         run: pip list
 
-      - name: Run pytest
+      - name: Run pytest (unit + contract tests)
         shell: pwsh
         env:
           PYTHONIOENCODING: utf-8
         run: |
-          python -m pytest tests/ -q --tb=short --maxfail=10
+          # smoke マーカーは GUI 起動が必要なため通常 CI では除外
+          python -m pytest tests/ -q --tb=short --maxfail=10 -m "not smoke"
+
+      - name: Run pytest smoke tests
+        shell: pwsh
+        env:
+          PYTHONIOENCODING: utf-8
+        timeout-minutes: 5
+        run: |
+          # smoke テスト: 実 GUI 起動が必要。--auto-konnyaku=2 で 2 秒稼働後に自動終了
+          # TypeError 等の起動時例外を検出する (PR #143 再発防止)
+          python -m pytest tests/ -q --tb=short -m smoke
 
       - name: Run log_anomaly_detector sanity check
         shell: pwsh
