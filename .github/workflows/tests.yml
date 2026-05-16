@@ -1,0 +1,58 @@
+name: tests
+
+on:
+  pull_request:
+  push:
+    branches:
+      - master
+      - 'feat/**'
+      - 'fix/**'
+      - 'hotfix/**'
+      - 'chore/**'
+      - 'ci/**'
+      - 'refactor/**'
+
+jobs:
+  pytest:
+    runs-on: windows-latest
+    timeout-minutes: 15
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+
+      - name: Install dependencies
+        shell: pwsh
+        run: |
+          python -m pip install --upgrade pip
+          pip install pytest pytest-cov
+          # PyTorch (CPU 版) — main.py:72 で import torch しているため必須
+          # GPU 版は重いので CI では CPU only を使う
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+          # 全 requirements (RealtimeSTT / faster-whisper / pyaudio / pyaudiowpatch / dearpygui / 等)
+          # main.py / app.py がトップレベルで import するため
+          pip install -r requirements.txt
+
+      - name: Show installed packages
+        shell: pwsh
+        run: pip list
+
+      - name: Run pytest
+        shell: pwsh
+        env:
+          PYTHONIOENCODING: utf-8
+        run: |
+          python -m pytest tests/ -q --tb=short --maxfail=10
+
+      - name: Run log_anomaly_detector sanity check
+        shell: pwsh
+        env:
+          PYTHONIOENCODING: utf-8
+        run: |
+          # CLI が起動するかの簡易確認（実ログがないので --help のみ）
+          python tools/log_anomaly_detector.py --help
