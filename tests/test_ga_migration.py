@@ -15,13 +15,12 @@ OpenAI Realtime API GA 移行（2026-05-12）対応テスト
 Fix 1: session.update ペイロードの検証
   - request_source_transcript=True のとき audio.input.transcription + noise_reduction を送ること
   - request_source_transcript=False のとき audio.input は送らないこと
-  - vad_enabled に関わらず audio.input.turn_detection は送らないこと
+  - vad_* に関わらず audio.input.turn_detection は送らないこと
   - audio.output.language は常に送ること
 
-Fix 2: deprecation コメントの検証（属性は残るが効果なし）
+Fix 2: vad_* パラメータ削除（refactor/remove-vad-dead-code）後の後方互換検証
+  - vad_* を渡しても TypeError にならないこと（**deprecated_kwargs で吸収）
   - request_source_transcript 属性は存在すること（後方互換）
-  - vad_enabled 属性は存在すること（後方互換）
-  - vad_enabled は session.update には反映されない（turn_detection は GA 仕様外）
 """
 
 import asyncio
@@ -77,7 +76,6 @@ def _stop_mock_server(loop, stop_event):
 def _capture_session_update(
     request_source_transcript: bool = True,
     request_audio_output: bool = False,
-    vad_enabled: bool = False,
     target_language_code: str = "ja",
 ) -> dict:
     """モックサーバーに接続して session.update ペイロードをキャプチャして返す。"""
@@ -106,7 +104,6 @@ def _capture_session_update(
             reconnect_max_attempts=0,
             request_source_transcript=request_source_transcript,
             request_audio_output=request_audio_output,
-            vad_enabled=vad_enabled,
         )
         translator._ws_url = f"ws://localhost:{port}"
 
@@ -188,34 +185,20 @@ class TestGASessionUpdatePayload:
             f"request_source_transcript=False のとき audio.input は送らないこと。audio={audio}"
         )
 
-    def test_ga_session_update_no_turn_detection_when_vad_enabled_true(self):
-        """vad_enabled=True でも audio.input.turn_detection は含まないこと（GA 版）。
+    def test_ga_session_update_no_turn_detection(self):
+        """audio.input.turn_detection は含まないこと（GA 版）。
 
         GA 版では turn_detection は仕様外（Unknown parameter エラー）で拒否されるため送らない。
         audio.input は request_source_transcript=True（デフォルト）なので存在する。
         """
         payload = _capture_session_update(
-            vad_enabled=True,
             request_source_transcript=True,
         )
         audio = payload.get("session", {}).get("audio", {})
         # audio.input は存在するが turn_detection は含まないこと
         audio_input = audio.get("input", {})
         assert "turn_detection" not in audio_input, (
-            f"GA 版では vad_enabled=True でも audio.input.turn_detection は送らないこと。"
-            f"audio_input={audio_input}"
-        )
-
-    def test_ga_session_update_no_turn_detection_when_vad_enabled_false(self):
-        """vad_enabled=False のとき turn_detection は含まないこと（GA 版）。"""
-        payload = _capture_session_update(
-            vad_enabled=False,
-            request_source_transcript=True,
-        )
-        audio = payload.get("session", {}).get("audio", {})
-        audio_input = audio.get("input", {})
-        assert "turn_detection" not in audio_input, (
-            f"GA 版では vad_enabled=False のとき turn_detection は含まれないこと。"
+            f"GA 版では audio.input.turn_detection は送らないこと。"
             f"audio_input={audio_input}"
         )
 
@@ -226,7 +209,6 @@ class TestGASessionUpdatePayload:
         """
         payload = _capture_session_update(
             request_source_transcript=True,
-            vad_enabled=True,
         )
         audio = payload.get("session", {}).get("audio", {})
         audio_keys = set(audio.keys())
@@ -274,13 +256,14 @@ class TestGASessionUpdatePayload:
 
 
 # ---------------------------------------------------------------------------
-# Fix 2: request_source_transcript / vad_enabled 属性の後方互換性
+# Fix 2: request_source_transcript 属性の後方互換性 / vad_* 後方互換（TypeError にならない）
 # ---------------------------------------------------------------------------
 
 class TestGAMigrationBackwardCompat:
-    """GA 移行後も request_source_transcript / vad_enabled 属性は残ること（後方互換）。
+    """refactor/remove-vad-dead-code 後の後方互換性検証。
 
-    属性は存在するが session.update には反映されない（効果なし）。
+    - vad_* パラメータを渡しても TypeError にならないこと（**deprecated_kwargs で吸収）
+    - request_source_transcript 属性は存在すること（後方互換）
     """
 
     def test_request_source_transcript_attribute_exists_true(self):
@@ -304,62 +287,63 @@ class TestGAMigrationBackwardCompat:
         )
         assert translator._request_source_transcript is False
 
-    def test_vad_enabled_attribute_exists_true(self):
-        """vad_enabled=True が属性として格納されること。"""
-        translator = RealtimeTranslator(
-            api_key="sk-test-fake-ga-compat-0003",
-            target_language_code="ja",
-            vad_enabled=True,
-        )
-        assert hasattr(translator, "_vad_enabled"), (
-            "_vad_enabled 属性が存在すること"
-        )
-        assert translator._vad_enabled is True
+    def test_vad_enabled_no_type_error(self):
+        """vad_enabled=True を渡しても TypeError にならないこと（後方互換: deprecated_kwargs で吸収）。"""
+        try:
+            RealtimeTranslator(
+                api_key="sk-test-fake-ga-compat-0003",
+                target_language_code="ja",
+                vad_enabled=True,
+            )
+        except TypeError as e:
+            pytest.fail(f"vad_enabled=True を渡したとき TypeError が発生してはならない: {e}")
 
-    def test_vad_enabled_attribute_exists_false(self):
-        """vad_enabled=False が属性として格納されること（デフォルト）。"""
-        translator = RealtimeTranslator(
-            api_key="sk-test-fake-ga-compat-0004",
-            target_language_code="ja",
-        )
-        assert translator._vad_enabled is False
+    def test_vad_enabled_false_no_type_error(self):
+        """vad_enabled=False を渡しても TypeError にならないこと（後方互換）。"""
+        try:
+            RealtimeTranslator(
+                api_key="sk-test-fake-ga-compat-0004",
+                target_language_code="ja",
+                vad_enabled=False,
+            )
+        except TypeError as e:
+            pytest.fail(f"vad_enabled=False を渡したとき TypeError が発生してはならない: {e}")
 
-    def test_vad_threshold_attribute_exists(self):
-        """vad_threshold 属性が格納されること（後方互換）。"""
-        translator = RealtimeTranslator(
-            api_key="sk-test-fake-ga-compat-0005",
-            target_language_code="ja",
-            vad_enabled=True,
-            vad_threshold=0.7,
-        )
-        assert hasattr(translator, "_vad_threshold"), "_vad_threshold 属性が存在すること"
-        assert translator._vad_threshold == pytest.approx(0.7)
+    def test_vad_threshold_no_type_error(self):
+        """vad_threshold を渡しても TypeError にならないこと（後方互換）。"""
+        try:
+            RealtimeTranslator(
+                api_key="sk-test-fake-ga-compat-0005",
+                target_language_code="ja",
+                vad_enabled=True,
+                vad_threshold=0.7,
+            )
+        except TypeError as e:
+            pytest.fail(f"vad_threshold を渡したとき TypeError が発生してはならない: {e}")
 
-    def test_vad_prefix_padding_ms_attribute_exists(self):
-        """vad_prefix_padding_ms 属性が格納されること（後方互換）。"""
-        translator = RealtimeTranslator(
-            api_key="sk-test-fake-ga-compat-0006",
-            target_language_code="ja",
-            vad_enabled=True,
-            vad_prefix_padding_ms=200,
-        )
-        assert hasattr(translator, "_vad_prefix_padding_ms"), (
-            "_vad_prefix_padding_ms 属性が存在すること"
-        )
-        assert translator._vad_prefix_padding_ms == 200
+    def test_vad_prefix_padding_ms_no_type_error(self):
+        """vad_prefix_padding_ms を渡しても TypeError にならないこと（後方互換）。"""
+        try:
+            RealtimeTranslator(
+                api_key="sk-test-fake-ga-compat-0006",
+                target_language_code="ja",
+                vad_enabled=True,
+                vad_prefix_padding_ms=200,
+            )
+        except TypeError as e:
+            pytest.fail(f"vad_prefix_padding_ms を渡したとき TypeError が発生してはならない: {e}")
 
-    def test_vad_silence_duration_ms_attribute_exists(self):
-        """vad_silence_duration_ms 属性が格納されること（後方互換）。"""
-        translator = RealtimeTranslator(
-            api_key="sk-test-fake-ga-compat-0007",
-            target_language_code="ja",
-            vad_enabled=True,
-            vad_silence_duration_ms=800,
-        )
-        assert hasattr(translator, "_vad_silence_duration_ms"), (
-            "_vad_silence_duration_ms 属性が存在すること"
-        )
-        assert translator._vad_silence_duration_ms == 800
+    def test_vad_silence_duration_ms_no_type_error(self):
+        """vad_silence_duration_ms を渡しても TypeError にならないこと（後方互換）。"""
+        try:
+            RealtimeTranslator(
+                api_key="sk-test-fake-ga-compat-0007",
+                target_language_code="ja",
+                vad_enabled=True,
+                vad_silence_duration_ms=800,
+            )
+        except TypeError as e:
+            pytest.fail(f"vad_silence_duration_ms を渡したとき TypeError が発生してはならない: {e}")
 
     def test_request_source_transcript_controls_audio_input(self):
         """request_source_transcript の値によって session.update の audio.input の有無が変わること。
@@ -381,24 +365,4 @@ class TestGAMigrationBackwardCompat:
         # False のとき: audio.input は含まないこと
         assert "input" not in audio_false, (
             f"request_source_transcript=False のとき audio.input は含まないこと。audio={audio_false}"
-        )
-
-    def test_vad_enabled_has_no_effect_on_turn_detection(self):
-        """vad_enabled の値に関わらず turn_detection は送信されないこと（GA 版）。
-
-        GA 版では turn_detection は仕様外（Unknown parameter エラー）。
-        audio.input の有無は request_source_transcript で決まる（デフォルト=True）。
-        """
-        payload_true = _capture_session_update(vad_enabled=True, request_source_transcript=True)
-        payload_false = _capture_session_update(vad_enabled=False, request_source_transcript=True)
-
-        audio_true = payload_true.get("session", {}).get("audio", {})
-        audio_false = payload_false.get("session", {}).get("audio", {})
-
-        # どちらも turn_detection は含まないこと
-        assert "turn_detection" not in audio_true.get("input", {}), (
-            f"vad_enabled=True でも turn_detection は含まないこと（GA 版）。audio={audio_true}"
-        )
-        assert "turn_detection" not in audio_false.get("input", {}), (
-            f"vad_enabled=False でも turn_detection は含まないこと（GA 版）。audio={audio_false}"
         )

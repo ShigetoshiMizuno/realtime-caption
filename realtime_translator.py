@@ -88,10 +88,7 @@ class RealtimeTranslator:
         request_audio_output: bool = False,
         on_audio_delta: Callable[[bytes], None] | None = None,
         request_source_transcript: bool = True,
-        vad_enabled: bool = False,
-        vad_threshold: float = 0.5,
-        vad_prefix_padding_ms: int = 300,
-        vad_silence_duration_ms: int = 500,
+        **deprecated_kwargs,
     ):
         """
         Parameters
@@ -117,16 +114,19 @@ class RealtimeTranslator:
                                   実機検証（2026-05-16）: noise_reduction なしでは input_transcript が
                                   発行されない。False のとき audio.input は送らない（コスト削減）。
                                   Beta 時代の動作から変更: GA 版ではこのフラグが audio.input の送受信を制御する。
-        vad_enabled:              [DEPRECATED: GA 移行 2026-05-12 以降は効果なし]
-                                  GA 版では turn_detection は仕様外（無視または拒否）のため送信しない。
-                                  Beta 時代の互換性のため属性は残置。将来の breaking change で削除予定。
-        vad_threshold:            [DEPRECATED: GA 移行 2026-05-12 以降は効果なし]
-                                  Beta 時代の互換性のため属性は残置。
-        vad_prefix_padding_ms:    [DEPRECATED: GA 移行 2026-05-12 以降は効果なし]
-                                  Beta 時代の互換性のため属性は残置。
-        vad_silence_duration_ms:  [DEPRECATED: GA 移行 2026-05-12 以降は効果なし]
-                                  Beta 時代の互換性のため属性は残置。
+        **deprecated_kwargs:      vad_enabled / vad_threshold / vad_prefix_padding_ms /
+                                  vad_silence_duration_ms は GA 移行（2026-05-12）で削除済み。
+                                  既存の呼び出し元との後方互換のため受け取って無視する。
+                                  それ以外のキーは TypeError を送出する。
         """
+        # 後方互換: vad_* キーは無視。それ以外は TypeError
+        _VAD_DEPRECATED_KEYS = frozenset({
+            "vad_enabled", "vad_threshold", "vad_prefix_padding_ms", "vad_silence_duration_ms"
+        })
+        for k in deprecated_kwargs:
+            if k not in _VAD_DEPRECATED_KEYS:
+                raise TypeError(f"__init__() got an unexpected keyword argument '{k}'")
+
         self._api_key = api_key
         self._target_language_code = target_language_code
         self._model = model
@@ -140,24 +140,6 @@ class RealtimeTranslator:
         self._request_audio_output = request_audio_output
         self._on_audio_delta = on_audio_delta
         self._request_source_transcript = request_source_transcript
-        # W-COST-3: Server VAD によるコスト削減フラグ
-        self._vad_enabled = vad_enabled
-        self._vad_threshold = vad_threshold
-        self._vad_prefix_padding_ms = vad_prefix_padding_ms
-        self._vad_silence_duration_ms = vad_silence_duration_ms
-
-        # VAD パラメータの境界値バリデーション (PR #97 W-2 対応)
-        # vad_enabled=False のときは送信されないのでクランプしない
-        if self._vad_enabled:
-            self._vad_threshold = _clamp_with_warning(
-                self._vad_threshold, 0.0, 1.0, "vad_threshold"
-            )
-            self._vad_prefix_padding_ms = _clamp_with_warning(
-                self._vad_prefix_padding_ms, 50, 5000, "vad_prefix_padding_ms"
-            )
-            self._vad_silence_duration_ms = _clamp_with_warning(
-                self._vad_silence_duration_ms, 100, 10000, "vad_silence_duration_ms"
-            )
 
         # WebSocket エンドポイント（テスト時はこの属性を上書きする）
         self._ws_url = (
@@ -337,7 +319,6 @@ class RealtimeTranslator:
             #   セットで指定する必要がある（実機検証 2026-05-16 で確認）。
             #   noise_reduction なしでは input_transcript が発行されない。
             # - turn_detection は GA 仕様外（送ると Unknown parameter エラー）→ 送信しない
-            # - self._vad_enabled は Beta 時代のパラメータ。GA では effect なし（属性は後方互換で残置）。
             audio_section: dict = {
                 "output": {"language": self._target_language_code},
             }

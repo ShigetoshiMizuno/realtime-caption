@@ -1,28 +1,18 @@
 """
 tests/test_vad_validation.py
 
-PR #97 W-2: VAD パラメータの境界値バリデーションテスト
-
-対象:
-- _clamp_with_warning ヘルパー関数（モジュールレベル）
-- RealtimeTranslator.__init__ での境界値クランプ + 警告ログ
-
-結合点:
-  _clamp_with_warning (realtime_translator モジュールレベル)
-      <- RealtimeTranslator.__init__ (vad_enabled=True のとき呼ばれる)
+_clamp_with_warning ヘルパー関数の単体テスト、および
+refactor/remove-vad-dead-code 後の後方互換検証。
 
 テストケース:
-1. _clamp_with_warning の単体テスト
+1. _clamp_with_warning の単体テスト（VAD 削除後も関数自体は残る）
    - 範囲内: クランプなし・警告なし
    - 下限未満: 下限にクランプ + WARN ログ
    - 上限超過: 上限にクランプ + WARN ログ
    - 境界値ちょうど: クランプなし・警告なし
-2. RealtimeTranslator.__init__ の統合テスト
-   - vad_threshold: 範囲内 / 下限未満 / 上限超過
-   - vad_prefix_padding_ms: 範囲内 / 下限未満 / 上限超過
-   - vad_silence_duration_ms: 範囲内 / 下限未満 / 上限超過
-   - vad_enabled=False のとき: クランプ・警告なし
-   - 例外は投げない（後方互換維持）
+2. RealtimeTranslator への vad_* 渡し後方互換テスト
+   - vad_* を渡しても TypeError にならないこと（**deprecated_kwargs で吸収）
+   - 渡した値はクランプされない（内部で無視される）
 """
 
 import io
@@ -145,322 +135,93 @@ class TestClampWithWarning:
 
 
 # ---------------------------------------------------------------------------
-# 2. RealtimeTranslator.__init__ の境界値バリデーション統合テスト
+# 2. RealtimeTranslator への vad_* 渡し後方互換テスト
 # ---------------------------------------------------------------------------
 
-class TestRealtimeTranslatorVadValidation:
-    """RealtimeTranslator.__init__ でのVADパラメータ境界値バリデーション。"""
+class TestRealtimeTranslatorVadBackwardCompat:
+    """refactor/remove-vad-dead-code 後の後方互換性検証。
 
-    # ---- vad_threshold (0.0 〜 1.0) ----
+    vad_* パラメータは削除済みだが、既存コードから渡されても
+    TypeError にならないこと（**deprecated_kwargs で吸収）を確認する。
+    """
 
-    def test_vad_threshold_within_range_no_clamp(self):
-        """vad_threshold が 0.0〜1.0 の範囲内なら変更されないこと。"""
-        t = RealtimeTranslator(
-            api_key="sk-test-fake-vad-val001",
-            target_language_code="ja",
-            vad_enabled=True,
-            vad_threshold=0.5,
-        )
-        assert t._vad_threshold == pytest.approx(0.5)
+    def test_vad_enabled_true_no_type_error(self):
+        """vad_enabled=True を渡しても TypeError にならないこと。"""
+        try:
+            RealtimeTranslator(
+                api_key="sk-test-fake-vad-val001",
+                target_language_code="ja",
+                vad_enabled=True,
+            )
+        except TypeError as e:
+            pytest.fail(f"vad_enabled=True で TypeError が発生してはならない: {e}")
 
-    def test_vad_threshold_below_zero_clamped_to_zero(self):
-        """vad_threshold=-0.1 は 0.0 にクランプされること。"""
-        t = RealtimeTranslator(
-            api_key="sk-test-fake-vad-val002",
-            target_language_code="ja",
-            vad_enabled=True,
-            vad_threshold=-0.1,
-        )
-        assert t._vad_threshold == pytest.approx(0.0)
+    def test_vad_enabled_false_no_type_error(self):
+        """vad_enabled=False を渡しても TypeError にならないこと。"""
+        try:
+            RealtimeTranslator(
+                api_key="sk-test-fake-vad-val002",
+                target_language_code="ja",
+                vad_enabled=False,
+            )
+        except TypeError as e:
+            pytest.fail(f"vad_enabled=False で TypeError が発生してはならない: {e}")
 
-    def test_vad_threshold_below_zero_emits_warn(self):
-        """vad_threshold=-0.1 は WARN ログを出力すること。"""
-        with _StdoutCapture() as cap:
+    def test_vad_threshold_no_type_error(self):
+        """vad_threshold を渡しても TypeError にならないこと。"""
+        try:
             RealtimeTranslator(
                 api_key="sk-test-fake-vad-val003",
                 target_language_code="ja",
                 vad_enabled=True,
-                vad_threshold=-0.1,
+                vad_threshold=0.5,
             )
-        assert "[WARN]" in cap.text
-        assert "vad_threshold" in cap.text
+        except TypeError as e:
+            pytest.fail(f"vad_threshold で TypeError が発生してはならない: {e}")
 
-    def test_vad_threshold_above_one_clamped_to_one(self):
-        """vad_threshold=1.5 は 1.0 にクランプされること。"""
-        t = RealtimeTranslator(
-            api_key="sk-test-fake-vad-val004",
-            target_language_code="ja",
-            vad_enabled=True,
-            vad_threshold=1.5,
-        )
-        assert t._vad_threshold == pytest.approx(1.0)
+    def test_vad_prefix_padding_ms_no_type_error(self):
+        """vad_prefix_padding_ms を渡しても TypeError にならないこと。"""
+        try:
+            RealtimeTranslator(
+                api_key="sk-test-fake-vad-val004",
+                target_language_code="ja",
+                vad_enabled=True,
+                vad_prefix_padding_ms=300,
+            )
+        except TypeError as e:
+            pytest.fail(f"vad_prefix_padding_ms で TypeError が発生してはならない: {e}")
 
-    def test_vad_threshold_above_one_emits_warn(self):
-        """vad_threshold=1.5 は WARN ログを出力すること。"""
-        with _StdoutCapture() as cap:
+    def test_vad_silence_duration_ms_no_type_error(self):
+        """vad_silence_duration_ms を渡しても TypeError にならないこと。"""
+        try:
             RealtimeTranslator(
                 api_key="sk-test-fake-vad-val005",
                 target_language_code="ja",
                 vad_enabled=True,
-                vad_threshold=1.5,
+                vad_silence_duration_ms=500,
             )
-        assert "[WARN]" in cap.text
+        except TypeError as e:
+            pytest.fail(f"vad_silence_duration_ms で TypeError が発生してはならない: {e}")
 
-    def test_vad_threshold_boundary_zero_no_warn(self):
-        """vad_threshold=0.0 はクランプ・警告なし。"""
-        with _StdoutCapture() as cap:
+    def test_all_vad_params_no_type_error(self):
+        """全 vad_* パラメータをまとめて渡しても TypeError にならないこと。"""
+        try:
             RealtimeTranslator(
                 api_key="sk-test-fake-vad-val006",
                 target_language_code="ja",
                 vad_enabled=True,
-                vad_threshold=0.0,
+                vad_threshold=0.7,
+                vad_prefix_padding_ms=200,
+                vad_silence_duration_ms=800,
             )
-        assert "[WARN]" not in cap.text
+        except TypeError as e:
+            pytest.fail(f"全 vad_* パラメータで TypeError が発生してはならない: {e}")
 
-    def test_vad_threshold_boundary_one_no_warn(self):
-        """vad_threshold=1.0 はクランプ・警告なし。"""
-        with _StdoutCapture() as cap:
+    def test_unknown_kwarg_raises_type_error(self):
+        """vad_* 以外の不明キーワード引数は TypeError になること（誤用防止）。"""
+        with pytest.raises(TypeError):
             RealtimeTranslator(
                 api_key="sk-test-fake-vad-val007",
                 target_language_code="ja",
-                vad_enabled=True,
-                vad_threshold=1.0,
+                unknown_future_param=True,
             )
-        assert "[WARN]" not in cap.text
-
-    # ---- vad_prefix_padding_ms (50 〜 5000) ----
-
-    def test_vad_prefix_padding_ms_within_range_no_clamp(self):
-        """vad_prefix_padding_ms=300 は変更されないこと。"""
-        t = RealtimeTranslator(
-            api_key="sk-test-fake-vad-val010",
-            target_language_code="ja",
-            vad_enabled=True,
-            vad_prefix_padding_ms=300,
-        )
-        assert t._vad_prefix_padding_ms == 300
-
-    def test_vad_prefix_padding_ms_below_min_clamped(self):
-        """vad_prefix_padding_ms=10 は 50 にクランプされること。"""
-        t = RealtimeTranslator(
-            api_key="sk-test-fake-vad-val011",
-            target_language_code="ja",
-            vad_enabled=True,
-            vad_prefix_padding_ms=10,
-        )
-        assert t._vad_prefix_padding_ms == 50
-
-    def test_vad_prefix_padding_ms_below_min_emits_warn(self):
-        """vad_prefix_padding_ms=10 は WARN ログを出力すること。"""
-        with _StdoutCapture() as cap:
-            RealtimeTranslator(
-                api_key="sk-test-fake-vad-val012",
-                target_language_code="ja",
-                vad_enabled=True,
-                vad_prefix_padding_ms=10,
-            )
-        assert "[WARN]" in cap.text
-        assert "vad_prefix_padding_ms" in cap.text
-
-    def test_vad_prefix_padding_ms_above_max_clamped(self):
-        """vad_prefix_padding_ms=9999 は 5000 にクランプされること。"""
-        t = RealtimeTranslator(
-            api_key="sk-test-fake-vad-val013",
-            target_language_code="ja",
-            vad_enabled=True,
-            vad_prefix_padding_ms=9999,
-        )
-        assert t._vad_prefix_padding_ms == 5000
-
-    def test_vad_prefix_padding_ms_above_max_emits_warn(self):
-        """vad_prefix_padding_ms=9999 は WARN ログを出力すること。"""
-        with _StdoutCapture() as cap:
-            RealtimeTranslator(
-                api_key="sk-test-fake-vad-val014",
-                target_language_code="ja",
-                vad_enabled=True,
-                vad_prefix_padding_ms=9999,
-            )
-        assert "[WARN]" in cap.text
-
-    def test_vad_prefix_padding_ms_boundary_50_no_warn(self):
-        """vad_prefix_padding_ms=50 はクランプ・警告なし。"""
-        with _StdoutCapture() as cap:
-            RealtimeTranslator(
-                api_key="sk-test-fake-vad-val015",
-                target_language_code="ja",
-                vad_enabled=True,
-                vad_prefix_padding_ms=50,
-            )
-        assert "[WARN]" not in cap.text
-
-    def test_vad_prefix_padding_ms_boundary_5000_no_warn(self):
-        """vad_prefix_padding_ms=5000 はクランプ・警告なし。"""
-        with _StdoutCapture() as cap:
-            RealtimeTranslator(
-                api_key="sk-test-fake-vad-val016",
-                target_language_code="ja",
-                vad_enabled=True,
-                vad_prefix_padding_ms=5000,
-            )
-        assert "[WARN]" not in cap.text
-
-    # ---- vad_silence_duration_ms (100 〜 10000) ----
-
-    def test_vad_silence_duration_ms_within_range_no_clamp(self):
-        """vad_silence_duration_ms=500 は変更されないこと。"""
-        t = RealtimeTranslator(
-            api_key="sk-test-fake-vad-val020",
-            target_language_code="ja",
-            vad_enabled=True,
-            vad_silence_duration_ms=500,
-        )
-        assert t._vad_silence_duration_ms == 500
-
-    def test_vad_silence_duration_ms_below_min_clamped(self):
-        """vad_silence_duration_ms=50 は 100 にクランプされること。"""
-        t = RealtimeTranslator(
-            api_key="sk-test-fake-vad-val021",
-            target_language_code="ja",
-            vad_enabled=True,
-            vad_silence_duration_ms=50,
-        )
-        assert t._vad_silence_duration_ms == 100
-
-    def test_vad_silence_duration_ms_below_min_emits_warn(self):
-        """vad_silence_duration_ms=50 は WARN ログを出力すること。"""
-        with _StdoutCapture() as cap:
-            RealtimeTranslator(
-                api_key="sk-test-fake-vad-val022",
-                target_language_code="ja",
-                vad_enabled=True,
-                vad_silence_duration_ms=50,
-            )
-        assert "[WARN]" in cap.text
-        assert "vad_silence_duration_ms" in cap.text
-
-    def test_vad_silence_duration_ms_above_max_clamped(self):
-        """vad_silence_duration_ms=99999 は 10000 にクランプされること。"""
-        t = RealtimeTranslator(
-            api_key="sk-test-fake-vad-val023",
-            target_language_code="ja",
-            vad_enabled=True,
-            vad_silence_duration_ms=99999,
-        )
-        assert t._vad_silence_duration_ms == 10000
-
-    def test_vad_silence_duration_ms_above_max_emits_warn(self):
-        """vad_silence_duration_ms=99999 は WARN ログを出力すること。"""
-        with _StdoutCapture() as cap:
-            RealtimeTranslator(
-                api_key="sk-test-fake-vad-val024",
-                target_language_code="ja",
-                vad_enabled=True,
-                vad_silence_duration_ms=99999,
-            )
-        assert "[WARN]" in cap.text
-
-    def test_vad_silence_duration_ms_boundary_100_no_warn(self):
-        """vad_silence_duration_ms=100 はクランプ・警告なし。"""
-        with _StdoutCapture() as cap:
-            RealtimeTranslator(
-                api_key="sk-test-fake-vad-val025",
-                target_language_code="ja",
-                vad_enabled=True,
-                vad_silence_duration_ms=100,
-            )
-        assert "[WARN]" not in cap.text
-
-    def test_vad_silence_duration_ms_boundary_10000_no_warn(self):
-        """vad_silence_duration_ms=10000 はクランプ・警告なし。"""
-        with _StdoutCapture() as cap:
-            RealtimeTranslator(
-                api_key="sk-test-fake-vad-val026",
-                target_language_code="ja",
-                vad_enabled=True,
-                vad_silence_duration_ms=10000,
-            )
-        assert "[WARN]" not in cap.text
-
-    # ---- vad_enabled=False のとき: クランプ・警告なし ----
-
-    def test_vad_disabled_threshold_out_of_range_no_clamp(self):
-        """vad_enabled=False のとき、範囲外の vad_threshold もクランプされないこと
-        (VAD が無効なので送信されない)。"""
-        t = RealtimeTranslator(
-            api_key="sk-test-fake-vad-val030",
-            target_language_code="ja",
-            vad_enabled=False,
-            vad_threshold=-0.1,
-        )
-        # vad_enabled=False ではクランプしない: 元の値が保持される
-        assert t._vad_threshold == pytest.approx(-0.1)
-
-    def test_vad_disabled_threshold_out_of_range_no_warn(self):
-        """vad_enabled=False のとき、範囲外の値でも WARN ログを出力しないこと。"""
-        with _StdoutCapture() as cap:
-            RealtimeTranslator(
-                api_key="sk-test-fake-vad-val031",
-                target_language_code="ja",
-                vad_enabled=False,
-                vad_threshold=-0.1,
-            )
-        assert "[WARN]" not in cap.text
-
-    def test_vad_disabled_prefix_padding_ms_out_of_range_no_clamp(self):
-        """vad_enabled=False のとき、範囲外の vad_prefix_padding_ms もクランプされないこと。"""
-        t = RealtimeTranslator(
-            api_key="sk-test-fake-vad-val032",
-            target_language_code="ja",
-            vad_enabled=False,
-            vad_prefix_padding_ms=1,
-        )
-        assert t._vad_prefix_padding_ms == 1
-
-    def test_vad_disabled_silence_duration_ms_out_of_range_no_clamp(self):
-        """vad_enabled=False のとき、範囲外の vad_silence_duration_ms もクランプされないこと。"""
-        t = RealtimeTranslator(
-            api_key="sk-test-fake-vad-val033",
-            target_language_code="ja",
-            vad_enabled=False,
-            vad_silence_duration_ms=999999,
-        )
-        assert t._vad_silence_duration_ms == 999999
-
-    # ---- 後方互換: 例外を投げないこと ----
-
-    def test_no_exception_on_invalid_threshold(self):
-        """範囲外の vad_threshold でも例外が発生しないこと（後方互換）。"""
-        try:
-            RealtimeTranslator(
-                api_key="sk-test-fake-vad-val040",
-                target_language_code="ja",
-                vad_enabled=True,
-                vad_threshold=-99.9,
-            )
-        except Exception as e:
-            pytest.fail(f"例外が発生してはならない: {e}")
-
-    def test_no_exception_on_invalid_prefix_padding_ms(self):
-        """範囲外の vad_prefix_padding_ms でも例外が発生しないこと（後方互換）。"""
-        try:
-            RealtimeTranslator(
-                api_key="sk-test-fake-vad-val041",
-                target_language_code="ja",
-                vad_enabled=True,
-                vad_prefix_padding_ms=0,
-            )
-        except Exception as e:
-            pytest.fail(f"例外が発生してはならない: {e}")
-
-    def test_no_exception_on_invalid_silence_duration_ms(self):
-        """範囲外の vad_silence_duration_ms でも例外が発生しないこと（後方互換）。"""
-        try:
-            RealtimeTranslator(
-                api_key="sk-test-fake-vad-val042",
-                target_language_code="ja",
-                vad_enabled=True,
-                vad_silence_duration_ms=0,
-            )
-        except Exception as e:
-            pytest.fail(f"例外が発生してはならない: {e}")

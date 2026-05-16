@@ -500,36 +500,6 @@ class TestCreateRealtimeTranslatorStateLog:
             f"[ACTION] ログに request_source_transcript が含まれること。got: {captured.out!r}"
         )
 
-    def test_create_realtime_translator_state_log_contains_vad_enabled(self, capsys):
-        """[ACTION] ログに vad_enabled の値が含まれること。"""
-        cs = self._make_caption_system()
-        cs._vad_enabled = True
-
-        fake_rt = MagicMock()
-        fake_cm = MagicMock()
-
-        with patch("realtime_translator.RealtimeTranslator", return_value=fake_rt, create=True), \
-             patch("cost_monitor.CostMonitor", return_value=fake_cm, create=True):
-            cs._on_realtime_transcript = MagicMock()
-            cs._on_realtime_source_transcript = MagicMock()
-            cs._on_realtime_error = MagicMock()
-            cs._on_ready = MagicMock()
-            cs._on_audio_delta = MagicMock()
-            cs._on_cost_max_reached = MagicMock()
-            cs._on_cost_warning = MagicMock()
-            try:
-                cs._create_realtime_translator()
-            except Exception:
-                pass
-
-        captured = capsys.readouterr()
-        if "[ACTION]" not in captured.out and captured.out == "":
-            import pytest as _pytest
-            _pytest.skip("realtime_translator をインポートできない環境のためスキップ")
-        assert "vad_enabled" in captured.out, (
-            f"[ACTION] ログに vad_enabled が含まれること。got: {captured.out!r}"
-        )
-
     def test_create_realtime_translator_noop_when_already_exists(self, capsys):
         """既に _realtime_translator が存在する場合は no-op で [ACTION] ログを出さないこと。"""
         cs = self._make_caption_system()

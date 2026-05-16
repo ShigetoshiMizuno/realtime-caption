@@ -497,10 +497,6 @@ class TestCreateRealtimeTranslatorActionLog:
         cs._realtime_translator = None
         cs._audio_output_mode = False
         cs._request_source_transcript = True
-        cs._vad_enabled = False
-        cs._vad_threshold = 0.5
-        cs._vad_prefix_padding_ms = 300
-        cs._vad_silence_duration_ms = 500
         cs._idle_disconnect_enabled = False
         cs._idle_timeout_sec = 60.0
         cs._idle_audio_threshold = 100
@@ -564,34 +560,6 @@ class TestCreateRealtimeTranslatorActionLog:
             pytest.skip("realtime_translator をインポートできない環境のためスキップ")
         assert "request_source_transcript" in captured.out, \
             f"request_source_transcript が含まれること。got: {captured.out!r}"
-
-    def test_create_realtime_translator_action_contains_vad_enabled(self, capsys):
-        """[ACTION] ログに vad_enabled が含まれること。"""
-        cs = self._make_caption_system()
-        cs._vad_enabled = True
-
-        fake_rt = MagicMock()
-        fake_cm = MagicMock()
-
-        with patch("realtime_translator.RealtimeTranslator", return_value=fake_rt, create=True), \
-             patch("cost_monitor.CostMonitor", return_value=fake_cm, create=True):
-            cs._on_realtime_transcript = MagicMock()
-            cs._on_realtime_source_transcript = MagicMock()
-            cs._on_realtime_error = MagicMock()
-            cs._on_ready = MagicMock()
-            cs._on_audio_delta = MagicMock()
-            cs._on_cost_max_reached = MagicMock()
-            cs._on_cost_warning = MagicMock()
-            try:
-                cs._create_realtime_translator()
-            except Exception:
-                pass
-
-        captured = capsys.readouterr()
-        if "[ACTION]" not in captured.out and captured.out == "":
-            pytest.skip("realtime_translator をインポートできない環境のためスキップ")
-        assert "vad_enabled" in captured.out, \
-            f"vad_enabled が含まれること。got: {captured.out!r}"
 
     def test_create_realtime_translator_action_contains_request_audio_output(self, capsys):
         """[ACTION] ログに request_audio_output が含まれること。"""
