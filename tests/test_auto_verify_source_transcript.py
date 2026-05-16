@@ -301,25 +301,38 @@ class TestFormatReport:
 # ---------------------------------------------------------------------------
 
 class TestRunE2eVerificationMocked:
-    """run_e2e_verification を subprocess なしで mock してテスト。"""
+    """run_e2e_verification を subprocess なしで mock してテスト。
+
+    実装が mtime ベースに変更されたため、os.path.getmtime / os.path.getsize /
+    time.time も mock する必要がある。
+    """
 
     def _make_mock_proc(self):
         proc = MagicMock()
         proc.wait.return_value = 0
         return proc
 
+    def _setup_mocks_with_log(self, mock_glob, mock_getmtime, mock_getsize, mock_time, log_content):
+        """ログがある場合の共通 mock 設定。"""
+        file_path = "2026-05-16-1_verbose.txt"
+        mock_glob.return_value = [file_path]
+        mock_time.return_value = 1000.0
+        mock_getmtime.return_value = 1001.0  # start_wall_clock (1000.0) より後
+        mock_getsize.return_value = 0
+
     @patch("auto_verify_source_transcript._tts_speak")
     @patch("auto_verify_source_transcript.subprocess.Popen")
     @patch("auto_verify_source_transcript.glob.glob")
+    @patch("auto_verify_source_transcript.os.path.getmtime")
+    @patch("auto_verify_source_transcript.os.path.getsize")
+    @patch("auto_verify_source_transcript.time.time")
     @patch("auto_verify_source_transcript.time.sleep")
     @patch("auto_verify_source_transcript.open", create=True)
-    def test_returns_dict(self, mock_open, mock_sleep, mock_glob, mock_popen, mock_tts):
+    def test_returns_dict(
+        self, mock_open, mock_sleep, mock_time, mock_getsize, mock_getmtime, mock_glob, mock_popen, mock_tts
+    ):
         """run_e2e_verification が dict を返すこと。"""
-        # verbose ログが新規に生成されたかのように見せる
-        mock_glob.side_effect = [
-            [],  # before
-            ["2026-05-16-1_verbose.txt"],  # after
-        ]
+        self._setup_mocks_with_log(mock_glob, mock_getmtime, mock_getsize, mock_time, SAMPLE_VERBOSE_WITH_SOURCE)
         mock_popen.return_value = self._make_mock_proc()
         mock_open.return_value.__enter__ = lambda s: s
         mock_open.return_value.__exit__ = MagicMock(return_value=False)
@@ -335,16 +348,16 @@ class TestRunE2eVerificationMocked:
     @patch("auto_verify_source_transcript._tts_speak")
     @patch("auto_verify_source_transcript.subprocess.Popen")
     @patch("auto_verify_source_transcript.glob.glob")
+    @patch("auto_verify_source_transcript.os.path.getmtime")
+    @patch("auto_verify_source_transcript.os.path.getsize")
+    @patch("auto_verify_source_transcript.time.time")
     @patch("auto_verify_source_transcript.time.sleep")
     @patch("auto_verify_source_transcript.open", create=True)
     def test_source_delta_positive_verdict_client_issue(
-        self, mock_open, mock_sleep, mock_glob, mock_popen, mock_tts
+        self, mock_open, mock_sleep, mock_time, mock_getsize, mock_getmtime, mock_glob, mock_popen, mock_tts
     ):
         """source_delta > 0 のとき verdict が client_issue であること。"""
-        mock_glob.side_effect = [
-            [],
-            ["2026-05-16-1_verbose.txt"],
-        ]
+        self._setup_mocks_with_log(mock_glob, mock_getmtime, mock_getsize, mock_time, SAMPLE_VERBOSE_WITH_SOURCE)
         mock_popen.return_value = self._make_mock_proc()
         mock_open.return_value.__enter__ = lambda s: s
         mock_open.return_value.__exit__ = MagicMock(return_value=False)
@@ -360,16 +373,19 @@ class TestRunE2eVerificationMocked:
     @patch("auto_verify_source_transcript._tts_speak")
     @patch("auto_verify_source_transcript.subprocess.Popen")
     @patch("auto_verify_source_transcript.glob.glob")
+    @patch("auto_verify_source_transcript.os.path.getmtime")
+    @patch("auto_verify_source_transcript.os.path.getsize")
+    @patch("auto_verify_source_transcript.time.time")
     @patch("auto_verify_source_transcript.time.sleep")
     @patch("auto_verify_source_transcript.open", create=True)
     def test_no_source_delta_verdict_api_issue(
-        self, mock_open, mock_sleep, mock_glob, mock_popen, mock_tts
+        self, mock_open, mock_sleep, mock_time, mock_getsize, mock_getmtime, mock_glob, mock_popen, mock_tts
     ):
         """source_delta == 0 のとき verdict が api_issue であること。"""
-        mock_glob.side_effect = [
-            [],
-            ["2026-05-16-2_verbose.txt"],
-        ]
+        mock_glob.return_value = ["2026-05-16-2_verbose.txt"]
+        mock_time.return_value = 1000.0
+        mock_getmtime.return_value = 1001.0
+        mock_getsize.return_value = 0
         mock_popen.return_value = self._make_mock_proc()
         mock_open.return_value.__enter__ = lambda s: s
         mock_open.return_value.__exit__ = MagicMock(return_value=False)
@@ -385,15 +401,16 @@ class TestRunE2eVerificationMocked:
     @patch("auto_verify_source_transcript._tts_speak")
     @patch("auto_verify_source_transcript.subprocess.Popen")
     @patch("auto_verify_source_transcript.glob.glob")
+    @patch("auto_verify_source_transcript.os.path.getmtime")
+    @patch("auto_verify_source_transcript.os.path.getsize")
+    @patch("auto_verify_source_transcript.time.time")
     @patch("auto_verify_source_transcript.time.sleep")
     def test_no_verbose_log_returns_error_status(
-        self, mock_sleep, mock_glob, mock_popen, mock_tts
+        self, mock_sleep, mock_time, mock_getsize, mock_getmtime, mock_glob, mock_popen, mock_tts
     ):
         """verbose ログが生成されなかった場合、status が no_verbose_log であること。"""
-        mock_glob.side_effect = [
-            [],  # before
-            [],  # after（新規ファイルなし）
-        ]
+        mock_glob.return_value = []  # ファイルなし
+        mock_time.return_value = 1000.0
         mock_popen.return_value = self._make_mock_proc()
 
         result = avst.run_e2e_verification(
@@ -406,16 +423,16 @@ class TestRunE2eVerificationMocked:
     @patch("auto_verify_source_transcript._tts_speak")
     @patch("auto_verify_source_transcript.subprocess.Popen")
     @patch("auto_verify_source_transcript.glob.glob")
+    @patch("auto_verify_source_transcript.os.path.getmtime")
+    @patch("auto_verify_source_transcript.os.path.getsize")
+    @patch("auto_verify_source_transcript.time.time")
     @patch("auto_verify_source_transcript.time.sleep")
     @patch("auto_verify_source_transcript.open", create=True)
     def test_result_contains_event_counts(
-        self, mock_open, mock_sleep, mock_glob, mock_popen, mock_tts
+        self, mock_open, mock_sleep, mock_time, mock_getsize, mock_getmtime, mock_glob, mock_popen, mock_tts
     ):
         """result に event_counts が含まれること。"""
-        mock_glob.side_effect = [
-            [],
-            ["2026-05-16-1_verbose.txt"],
-        ]
+        self._setup_mocks_with_log(mock_glob, mock_getmtime, mock_getsize, mock_time, SAMPLE_VERBOSE_WITH_SOURCE)
         mock_popen.return_value = self._make_mock_proc()
         mock_open.return_value.__enter__ = lambda s: s
         mock_open.return_value.__exit__ = MagicMock(return_value=False)
@@ -432,16 +449,16 @@ class TestRunE2eVerificationMocked:
     @patch("auto_verify_source_transcript._tts_speak")
     @patch("auto_verify_source_transcript.subprocess.Popen")
     @patch("auto_verify_source_transcript.glob.glob")
+    @patch("auto_verify_source_transcript.os.path.getmtime")
+    @patch("auto_verify_source_transcript.os.path.getsize")
+    @patch("auto_verify_source_transcript.time.time")
     @patch("auto_verify_source_transcript.time.sleep")
     @patch("auto_verify_source_transcript.open", create=True)
     def test_result_contains_rule5_anomaly_count(
-        self, mock_open, mock_sleep, mock_glob, mock_popen, mock_tts
+        self, mock_open, mock_sleep, mock_time, mock_getsize, mock_getmtime, mock_glob, mock_popen, mock_tts
     ):
         """result に rule5_anomalies カウントが含まれること。"""
-        mock_glob.side_effect = [
-            [],
-            ["2026-05-16-1_verbose.txt"],
-        ]
+        self._setup_mocks_with_log(mock_glob, mock_getmtime, mock_getsize, mock_time, SAMPLE_VERBOSE_WITH_SOURCE)
         mock_popen.return_value = self._make_mock_proc()
         mock_open.return_value.__enter__ = lambda s: s
         mock_open.return_value.__exit__ = MagicMock(return_value=False)
@@ -458,14 +475,17 @@ class TestRunE2eVerificationMocked:
     @patch("auto_verify_source_transcript._tts_speak")
     @patch("auto_verify_source_transcript.subprocess.Popen")
     @patch("auto_verify_source_transcript.glob.glob")
+    @patch("auto_verify_source_transcript.os.path.getmtime")
+    @patch("auto_verify_source_transcript.os.path.getsize")
+    @patch("auto_verify_source_transcript.time.time")
     @patch("auto_verify_source_transcript.time.sleep")
-    def test_timeout_handling(self, mock_sleep, mock_glob, mock_popen, mock_tts):
+    def test_timeout_handling(
+        self, mock_sleep, mock_time, mock_getsize, mock_getmtime, mock_glob, mock_popen, mock_tts
+    ):
         """subprocess タイムアウト時に proc.kill が呼ばれること。"""
         import subprocess
-        mock_glob.side_effect = [
-            [],
-            [],  # verbose ログなし
-        ]
+        mock_glob.return_value = []  # verbose ログなし
+        mock_time.return_value = 1000.0
         proc = MagicMock()
         proc.wait.side_effect = subprocess.TimeoutExpired(cmd="app.py", timeout=5)
         mock_popen.return_value = proc
@@ -538,3 +558,204 @@ class TestEnvWithUtf8:
         env = avst.env_with_utf8()
         import os
         assert "PATH" in env or "Path" in env or len(env) > 1
+
+
+# ---------------------------------------------------------------------------
+# 7. extract_updated_verbose_files — mtime ベース更新ファイル検出
+# ---------------------------------------------------------------------------
+
+class TestExtractUpdatedVerboseFiles:
+    """extract_updated_verbose_files が mtime ベースで更新ファイルを検出すること。"""
+
+    def test_new_file_detected(self, tmp_path):
+        """start_wall_clock 以降に作成されたファイルが検出されること。"""
+        import time as time_mod
+        start = time_mod.time() - 1.0  # 1秒前を start とみなす
+        f = tmp_path / "new_verbose.txt"
+        f.write_text("hello")  # 現在時刻で作成 → mtime が start より後
+
+        pattern = str(tmp_path / "*_verbose.txt")
+        before_sizes: dict = {}
+        result = avst.extract_updated_verbose_files(before_sizes, pattern, start)
+        paths = [r[0] for r in result]
+        assert str(f) in paths
+
+    def test_old_file_not_detected(self, tmp_path):
+        """start_wall_clock より古い mtime のファイルは検出されないこと。"""
+        import time as time_mod
+        f = tmp_path / "old_verbose.txt"
+        f.write_text("old content")
+        # 未来の start_wall_clock を設定することで既存ファイルは古いとみなす
+        start = time_mod.time() + 9999.0  # 遥か未来
+        pattern = str(tmp_path / "*_verbose.txt")
+        before_sizes: dict = {}
+        result = avst.extract_updated_verbose_files(before_sizes, pattern, start)
+        assert len(result) == 0
+
+    def test_appended_file_detected(self, tmp_path):
+        """start_wall_clock 以降に追記されたファイル（同名）が検出されること。"""
+        import time as time_mod
+        f = tmp_path / "session_verbose.txt"
+        f.write_text("existing content")
+        # 少し後を start とする（ファイルは start 前から存在）
+        # ここでは mtime を start より後になるように touch する
+        start = time_mod.time() - 1.0
+        import os
+        os.utime(str(f), None)  # mtime を現在時刻に更新（追記相当）
+        pattern = str(tmp_path / "*_verbose.txt")
+        before_sizes: dict = {}
+        result = avst.extract_updated_verbose_files(before_sizes, pattern, start)
+        paths = [r[0] for r in result]
+        assert str(f) in paths
+
+    def test_returns_list_of_tuples(self, tmp_path):
+        """戻り値が (filepath, before_size) のタプルリストであること。"""
+        import time as time_mod
+        f = tmp_path / "t_verbose.txt"
+        f.write_text("data")
+        start = time_mod.time() - 1.0
+        pattern = str(tmp_path / "*_verbose.txt")
+        before_sizes: dict = {}
+        result = avst.extract_updated_verbose_files(before_sizes, pattern, start)
+        assert isinstance(result, list)
+        for item in result:
+            assert isinstance(item, tuple)
+            assert len(item) == 2
+            assert isinstance(item[0], str)
+            assert isinstance(item[1], int)
+
+    def test_before_size_is_zero_for_new_file(self, tmp_path):
+        """before_sizes に登録されていない（新規）ファイルの before_size は 0 であること。"""
+        import time as time_mod
+        f = tmp_path / "brand_new_verbose.txt"
+        f.write_text("new data")
+        start = time_mod.time() - 1.0
+        pattern = str(tmp_path / "*_verbose.txt")
+        before_sizes: dict = {}  # 空 dict → 新規ファイル
+        result = avst.extract_updated_verbose_files(before_sizes, pattern, start)
+        for path, before_size in result:
+            if path == str(f):
+                assert before_size == 0
+
+    def test_before_size_preserved_for_existing_file(self, tmp_path):
+        """before_sizes に登録されているファイルの before_size が正しく返ること。"""
+        import time as time_mod
+        f = tmp_path / "existing_verbose.txt"
+        f.write_text("initial content")
+        initial_size = f.stat().st_size
+        start = time_mod.time() - 1.0
+        import os
+        os.utime(str(f), None)
+        pattern = str(tmp_path / "*_verbose.txt")
+        before_sizes = {str(f): initial_size}
+        result = avst.extract_updated_verbose_files(before_sizes, pattern, start)
+        for path, before_size in result:
+            if path == str(f):
+                assert before_size == initial_size
+
+    def test_empty_result_when_no_files(self, tmp_path):
+        """マッチするファイルがない場合、空リストが返ること。"""
+        import time as time_mod
+        start = time_mod.time() - 1.0
+        pattern = str(tmp_path / "*_verbose.txt")
+        before_sizes: dict = {}
+        result = avst.extract_updated_verbose_files(before_sizes, pattern, start)
+        assert result == []
+
+    def test_one_second_margin(self, tmp_path):
+        """start_wall_clock から 1 秒のマージンがあること（start - 1.0 以降のファイルも検出）。"""
+        import time as time_mod
+        f = tmp_path / "margin_verbose.txt"
+        f.write_text("data")
+        # mtime を現在に設定し、start を現在 + 0.5（ファイルより少し新しい）にする
+        # マージン 1 秒があれば start - 1.0 = 現在 - 0.5 なのでファイルが検出される
+        import os
+        os.utime(str(f), None)
+        start = time_mod.time() + 0.5
+        pattern = str(tmp_path / "*_verbose.txt")
+        before_sizes: dict = {}
+        result = avst.extract_updated_verbose_files(before_sizes, pattern, start)
+        paths = [r[0] for r in result]
+        assert str(f) in paths
+
+
+# ---------------------------------------------------------------------------
+# 8. run_e2e_verification — mtime ベース追記シナリオ
+# ---------------------------------------------------------------------------
+
+class TestRunE2eVerificationMtimeScenario:
+    """run_e2e_verification が同名ファイル追記でも正しく動作すること。"""
+
+    def _make_mock_proc(self):
+        proc = MagicMock()
+        proc.wait.return_value = 0
+        return proc
+
+    @patch("auto_verify_source_transcript._tts_speak")
+    @patch("auto_verify_source_transcript.subprocess.Popen")
+    @patch("auto_verify_source_transcript.time.sleep")
+    def test_appended_file_analyzed(self, mock_sleep, mock_popen, mock_tts, tmp_path):
+        """既存ファイルに追記された場合でも解析対象になること。"""
+        import time as time_mod
+
+        # 事前に verbose ファイルを作成（追記前の内容）
+        f = tmp_path / "session_verbose.txt"
+        f.write_text("existing log content\n")
+
+        mock_popen.return_value = self._make_mock_proc()
+
+        # glob.glob と os.path.getmtime, os.path.getsize, open を mock
+        with patch("auto_verify_source_transcript.glob.glob") as mock_glob, \
+             patch("auto_verify_source_transcript.os.path.getmtime") as mock_getmtime, \
+             patch("auto_verify_source_transcript.os.path.getsize") as mock_getsize, \
+             patch("auto_verify_source_transcript.time.time") as mock_time, \
+             patch("builtins.open", create=True) as mock_open:
+
+            file_path = str(f)
+            mock_glob.return_value = [file_path]
+            # time.time() が start_wall_clock として使われる
+            mock_time.return_value = 1000.0
+            # getmtime はファイルが start_wall_clock 以降に更新されたと見せる
+            mock_getmtime.return_value = 1001.0
+            mock_getsize.return_value = 20  # before_sizes として記録される値
+
+            # open は seek 後に追記部分を返す
+            mock_fh = MagicMock()
+            mock_fh.__enter__ = lambda s: s
+            mock_fh.__exit__ = MagicMock(return_value=False)
+            mock_fh.read.return_value = SAMPLE_VERBOSE_WITH_SOURCE
+            mock_open.return_value = mock_fh
+
+            result = avst.run_e2e_verification(
+                duration=5.0,
+                phrases=["Hello world"],
+                verbose_log_pattern=str(tmp_path / "*_verbose.txt"),
+            )
+
+        assert result.get("status") == "completed"
+        assert result.get("verdict") == "client_issue"
+
+    @patch("auto_verify_source_transcript._tts_speak")
+    @patch("auto_verify_source_transcript.subprocess.Popen")
+    @patch("auto_verify_source_transcript.time.sleep")
+    def test_no_updated_files_returns_no_verbose_log(self, mock_sleep, mock_popen, mock_tts):
+        """更新ファイルが 0 件の場合、status が no_verbose_log であること。"""
+        mock_popen.return_value = self._make_mock_proc()
+
+        with patch("auto_verify_source_transcript.glob.glob") as mock_glob, \
+             patch("auto_verify_source_transcript.os.path.getmtime") as mock_getmtime, \
+             patch("auto_verify_source_transcript.os.path.getsize") as mock_getsize, \
+             patch("auto_verify_source_transcript.time.time") as mock_time:
+
+            mock_glob.return_value = []  # ファイルなし
+            mock_time.return_value = 1000.0
+            mock_getmtime.return_value = 999.0  # start より古い
+            mock_getsize.return_value = 0
+
+            result = avst.run_e2e_verification(
+                duration=5.0,
+                phrases=["Hello world"],
+                verbose_log_pattern="*_verbose.txt",
+            )
+
+        assert result.get("status") == "no_verbose_log"

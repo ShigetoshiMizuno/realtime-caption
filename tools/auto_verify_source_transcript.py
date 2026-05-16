@@ -106,6 +106,10 @@ def count_rt_ws_recv_events(log_text: str) -> dict[str, int]:
 def extract_new_verbose_files(before: set, after: set, pattern: str) -> set:
     """after - before の差分（新規生成ファイル）を返す。
 
+    .. deprecated::
+        同名ファイルに追記される実運用では検出できないケースがある。
+        ``extract_updated_verbose_files`` を使用すること。
+
     純関数（副作用なし）。
 
     Args:
@@ -117,6 +121,39 @@ def extract_new_verbose_files(before: set, after: set, pattern: str) -> set:
         新規生成されたファイルパスの set
     """
     return after - before
+
+
+def extract_updated_verbose_files(
+    before_sizes: dict,
+    pattern: str,
+    start_wall_clock: float,
+) -> list:
+    """mtime ベースで起動後に作成・更新された verbose ログファイルを返す。
+
+    ファイル名の差分ではなく mtime を使うため、同名ファイルへの追記も検出できる。
+    1 秒の余裕を設けることでファイルシステムの mtime 精度差を吸収する。
+
+    純関数（副作用なし）。
+
+    Args:
+        before_sizes: 起動前に記録した {ファイルパス: ファイルサイズ} の dict。
+                      新規ファイル（dict にないもの）の before_size は 0 とみなす。
+        pattern: verbose ログの glob パターン
+        start_wall_clock: subprocess 起動直前の time.time() 値
+
+    Returns:
+        [(ファイルパス, before_size)] のリスト。before_size は追記開始位置（バイト）。
+    """
+    result = []
+    threshold = start_wall_clock - 1.0  # 1 秒の余裕
+    for f in glob.glob(pattern):
+        try:
+            if os.path.getmtime(f) >= threshold:
+                before_size = before_sizes.get(f, 0)
+                result.append((f, before_size))
+        except OSError:
+            pass
+    return result
 
 
 def determine_verdict(source_delta: int) -> tuple[str, str]:
@@ -266,10 +303,19 @@ def run_e2e_verification(
           verdict: "client_issue" または "api_issue"
           message: 判定メッセージ
     """
-    # Step 1: 起動前のファイル一覧を記録
-    before_files = set(glob.glob(verbose_log_pattern))
+    # Step 1: 起動前のファイル情報を記録（mtime 検出用）
+    # ファイル名差分ではなく mtime を使うため、同名ファイルへの追記も検出できる。
+    before_sizes: dict = {}
+    for f in glob.glob(verbose_log_pattern):
+        try:
+            before_sizes[f] = os.path.getsize(f)
+        except OSError:
+            before_sizes[f] = 0
+    start_wall_clock = time.time()
 
     # Step 2: app.py を subprocess 起動
+    # NOTE: stdout=PIPE にすると pipe buffer full で子プロセスがブロックする (実機検証で確認)。
+    # verbose 情報は *_verbose.txt に書き出されるため stdout は DEVNULL で OK。
     print("[VERIFY] starting app.py --verbose --auto-konnyaku=...", flush=True)
     proc = subprocess.Popen(
         [
@@ -278,11 +324,8 @@ def run_e2e_verification(
             "--verbose",
             f"--auto-konnyaku={int(duration)}",
         ],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
         env=env_with_utf8(),
     )
 
@@ -299,21 +342,24 @@ def run_e2e_verification(
         print("[VERIFY] timeout: killing app.py", flush=True)
         proc.kill()
 
-    # Step 5: 新規生成された verbose ログを特定
-    after_files = set(glob.glob(verbose_log_pattern))
-    new_files = extract_new_verbose_files(before_files, after_files, verbose_log_pattern)
+    # Step 5: mtime ベースで起動後に作成・更新された verbose ログを特定
+    updated_files = extract_updated_verbose_files(
+        before_sizes, verbose_log_pattern, start_wall_clock
+    )
 
-    if not new_files:
+    if not updated_files:
         return {
             "status": "no_verbose_log",
             "error": "verbose ログが見つかりません（app.py が正常に起動しなかった可能性があります）",
         }
 
-    # Step 6: verbose ログを読み込んで解析
+    # Step 6: 各ファイルの追記部分のみを読み込んで解析
+    # before_size 以降のバイト位置からシークすることで追記部分のみを取得する。
     log_parts = []
-    for f in sorted(new_files):
+    for f, before_size in sorted(updated_files):
         try:
             with open(f, encoding="utf-8", errors="replace") as fh:
+                fh.seek(before_size)
                 log_parts.append(fh.read())
         except OSError as e:
             print(f"[VERIFY] 警告: ログ読み込み失敗 {f}: {e}", flush=True)
@@ -332,7 +378,7 @@ def run_e2e_verification(
     return {
         "status": "completed",
         "duration": duration,
-        "verbose_files": sorted(new_files),
+        "verbose_files": sorted(f for f, _ in updated_files),
         "event_counts": event_counts,
         "source_delta_count": source_delta,
         "rule5_anomalies": len(rule5_anomalies),
