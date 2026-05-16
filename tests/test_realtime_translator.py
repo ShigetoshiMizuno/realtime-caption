@@ -546,12 +546,12 @@ class TestRealtimeTranslatorAudioOutput:
         assert audio_output.get("language") == "ja", \
             f"audio.output.language は必ず送信されること: {audio_output}"
 
-    def test_session_update_includes_input_transcription(self):
+    def test_session_update_no_audio_input_transcription_ga(self):
         """
-        session.update に audio.input.transcription.model が含まれること。
-        これが無いと session.input_transcript.delta/done イベントが送られず、
-        原文（source language transcript）が取得できない。
-        参照: https://developers.openai.com/cookbook/examples/voice_solutions/realtime_translation_guide
+        GA 版 (2026-05-12 以降): session.update に audio.input.transcription は含まれないこと。
+        GA 版では transcript イベントは自動発行されるため、audio.input.transcription の
+        明示指定は不要（仕様外として無視または拒否される）。
+        参照: Realtime API GA 移行 (2026-05-12) / hotfix/realtime-api-ga-migration
         """
         sent_messages = []
 
@@ -587,10 +587,11 @@ class TestRealtimeTranslatorAudioOutput:
         assert len(sent_messages) >= 1, "session.update が送信されなかった"
         update_msg = sent_messages[0]
         assert update_msg.get("type") == "session.update"
-        audio_input = update_msg.get("session", {}).get("audio", {}).get("input", {})
-        transcription = audio_input.get("transcription", {})
-        assert transcription.get("model") == "gpt-realtime-whisper", \
-            f"audio.input.transcription.model は gpt-realtime-whisper であること: {audio_input}"
+        # GA 版: audio.input は送らない（transcript は自動発行）
+        audio = update_msg.get("session", {}).get("audio", {})
+        assert "input" not in audio, (
+            f"GA 版では audio.input は送らないこと（transcript は自動発行）: audio={audio}"
+        )
 
     def test_output_audio_delta_calls_on_audio_delta(self):
         """
@@ -1012,18 +1013,20 @@ class TestRealtimeTranslatorSourceTranscript:
 @pytest.mark.skipif(not _MODULE_AVAILABLE, reason="realtime_translator モジュール未実装")
 class TestSessionUpdateAudioOutputModality:
     """
-    W-COST-1 案 B: _request_audio_output フラグに応じて
-    session.update の audio.output キーを条件分岐するテスト。
+    GA 版 (2026-05-12 以降): session.update の audio 構造検証。
 
+    GA 版では audio.output.language のみ送信し audio.input は送らない。
+    request_audio_output フラグの値に関わらず audio.output.language は常に送られる。
     SPEC: docs/spec/cost-w-cost-1-design.md §4.1 / §5.1
     """
 
-    def test_session_update_excludes_audio_output_when_disabled(self):
+    def test_session_update_always_includes_audio_output_language_ga(self):
         """
-        request_audio_output=False のとき、接続時の session.update に
-        audio.output キー自体が含まれないこと。
+        GA 版 (2026-05-12 以降): request_audio_output=False でも
+        audio.output.language は常に送信されること。
 
-        これにより API 側が音声を生成せず、音声トークン課金を防止できる。
+        GA 版では transcript の言語指定に audio.output.language が必要。
+        request_audio_output フラグは Beta 時代の互換性のため属性として残置されるが効果なし。
         """
         sent_messages = []
 
@@ -1062,19 +1065,25 @@ class TestSessionUpdateAudioOutputModality:
         assert update_msg.get("type") == "session.update"
 
         audio_section = update_msg.get("session", {}).get("audio", {})
-        # audio.input は常に存在すること（原文トランスクリプト受信に必要）
-        assert "input" in audio_section, \
-            f"audio.input が存在しない: {audio_section}"
-        # audio.output キー自体が存在しないこと（W-COST-1 の修正箇所）
-        assert "output" not in audio_section, \
-            f"request_audio_output=False のとき audio.output は除外されるべき: {audio_section}"
+        # GA 版: audio.input は送らない
+        assert "input" not in audio_section, (
+            f"GA 版では audio.input は送らないこと: {audio_section}"
+        )
+        # GA 版: audio.output.language は常に含まれること
+        assert "output" in audio_section, (
+            f"GA 版では audio.output は常に含まれること: {audio_section}"
+        )
+        assert audio_section["output"].get("language") == "ja", (
+            f"audio.output.language は target_language_code と一致すること: {audio_section}"
+        )
 
     def test_session_update_includes_audio_output_when_enabled(self):
         """
-        request_audio_output=True のとき、接続時の session.update に
-        audio.output.language が含まれること。
+        GA 版 (2026-05-12 以降): request_audio_output=True のとき、
+        接続時の session.update に audio.output.language が含まれること。
 
-        既存の動作（True 時は言語設定を送る）が壊れていないことを確認する。
+        GA 版では request_audio_output の値に関わらず audio.output.language を常に送るため、
+        True/False どちらでも同じ結果になる。
         """
         sent_messages = []
 
@@ -1113,14 +1122,18 @@ class TestSessionUpdateAudioOutputModality:
         assert update_msg.get("type") == "session.update"
 
         audio_section = update_msg.get("session", {}).get("audio", {})
-        # audio.input は常に存在すること
-        assert "input" in audio_section, \
-            f"audio.input が存在しない: {audio_section}"
-        # audio.output.language が含まれること
-        assert "output" in audio_section, \
+        # GA 版: audio.input は送らない
+        assert "input" not in audio_section, (
+            f"GA 版では audio.input は送らないこと: {audio_section}"
+        )
+        # GA 版: audio.output.language が含まれること
+        assert "output" in audio_section, (
             f"request_audio_output=True のとき audio.output が存在すること: {audio_section}"
-        assert audio_section["output"].get("language") == "ja", \
+        )
+        assert audio_section["output"].get("language") == "ja", (
             f"audio.output.language は target_language_code と一致すること: {audio_section}"
-        # format キーは引き続き含まれないこと（API 未対応のため）
-        assert "format" not in audio_section.get("output", {}), \
+        )
+        # format キーは含まれないこと（API 未対応のため）
+        assert "format" not in audio_section.get("output", {}), (
             f"audio.output.format は API 未対応のため含めてはいけない: {audio_section}"
+        )

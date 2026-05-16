@@ -5,6 +5,21 @@
 
 ---
 
+## ⚠️ GA 移行（2026-05-12）による動作変更
+
+**`request_audio_output` フラグは GA 移行により効果が変わった。**
+
+- GA 版では `session.update` は `{"audio": {"output": {"language": "..."}}}` の最小ペイロードのみ
+- `request_audio_output=False` でも `audio.output.language` は常に送信される
+  （transcript の言語指定に必要）
+- `request_audio_output` パラメータは後方互換のため属性として残置されるが **GA 版では効果なし**
+- Beta 時代の「False のとき audio.output を除外して音声トークン課金を防止」という仕組みは
+  GA 版では不要（GA 版では音声生成のコントロールが別の仕組みに変わった）
+
+参照: `hotfix/realtime-api-ga-migration`, `tests/test_ga_migration.py`
+
+---
+
 ## 概要
 
 音声出力 OFF 設定であっても OpenAI Realtime Translate API が音声トークンを生成・課金し続けている問題（W-COST-1）を解消する。

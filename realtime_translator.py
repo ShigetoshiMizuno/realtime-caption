@@ -109,16 +109,22 @@ class RealtimeTranslator:
         request_audio_output:     音声出力を有効化する場合のフラグ（コールバック on_audio_delta を併用）。
                                   注: 以前は session.update に audio.output.format=pcm16 を追加していたが、
                                   サーバが Unknown parameter エラーで session.update 自体を拒否するため削除。
+                                  注 (GA 移行 2026-05-12): GA 版では audio.output.language は
+                                  このフラグに関わらず常に送信される。Beta 時代の互換性のため属性は残置。
         on_audio_delta:           音声出力チャンクコールバック (pcm16_bytes: bytes) -> None
-        request_source_transcript: 原文文字起こし（Whisper）を有効化するフラグ。
-                                  False のとき audio.input.transcription を session.update から除外し、
-                                  Whisper 課金を停止する（W-COST-2）。デフォルト True（後方互換）。
-        vad_enabled:              Server VAD（音声区間検出）を有効化するフラグ（W-COST-3）。
-                                  True のとき session.update の audio.input に turn_detection を追加し、
-                                  無音区間の input トークン課金を停止する。デフォルト False（後方互換）。
-        vad_threshold:            VAD 起動音量閾値（0.0〜1.0）。デフォルト 0.5。
-        vad_prefix_padding_ms:    発話開始前に遡って含める音声バッファ（ms）。デフォルト 300。
-        vad_silence_duration_ms:  この無音が続いたら発話終了と判定（ms）。デフォルト 500。
+        request_source_transcript: [DEPRECATED: GA 移行 2026-05-12 以降は効果なし]
+                                  GA 版では transcript イベントは自動発行されるため、
+                                  audio.input.transcription の明示指定は不要。
+                                  Beta 時代の互換性のため属性は残置。将来の breaking change で削除予定。
+        vad_enabled:              [DEPRECATED: GA 移行 2026-05-12 以降は効果なし]
+                                  GA 版では turn_detection は仕様外（無視または拒否）のため送信しない。
+                                  Beta 時代の互換性のため属性は残置。将来の breaking change で削除予定。
+        vad_threshold:            [DEPRECATED: GA 移行 2026-05-12 以降は効果なし]
+                                  Beta 時代の互換性のため属性は残置。
+        vad_prefix_padding_ms:    [DEPRECATED: GA 移行 2026-05-12 以降は効果なし]
+                                  Beta 時代の互換性のため属性は残置。
+        vad_silence_duration_ms:  [DEPRECATED: GA 移行 2026-05-12 以降は効果なし]
+                                  Beta 時代の互換性のため属性は残置。
         """
         self._api_key = api_key
         self._target_language_code = target_language_code
@@ -324,39 +330,22 @@ class RealtimeTranslator:
             if self._test_force_401:
                 raise _AuthError("test_force_401 flag")
 
-            # セッション設定を送信
-            # 注: audio.output.format は API 未対応（Unknown parameter エラーで session.update が
-            # 拒否され、language: ja 指定も無効化される）。format 指定は送らない。
-            # 注: 原文文字起こし（session.input_transcript.*）を受信するには
-            # audio.input.transcription.model を明示指定する必要がある。
-            # 参照: https://developers.openai.com/cookbook/examples/voice_solutions/realtime_translation_guide
-            # W-COST-2: _request_source_transcript=False のとき transcription を除外して Whisper 課金を停止する。
-            # W-COST-3: _vad_enabled=True のとき turn_detection を追加して無音区間 input トークン課金を停止する。
-            audio_section: dict = {}
-            if self._request_source_transcript:
-                input_cfg: dict = {"transcription": {"model": "gpt-realtime-whisper"}}
-                # W-COST-3: VAD 有効時は turn_detection を追加して無音区間の input トークン課金を停止する。
-                # VAD ON 時: 無音区間では session.output_transcript.delta が送られないため
-                # fallback_timer は起動しない（正常動作）。
-                # fallback_timer は done イベントが届かない異常系のセーフティネットとして維持する。
-                # NOTE: gpt-realtime-translate エンドポイントが turn_detection を受け付けるかは
-                # 実機検証必須（TBD-3-1）。API 拒否時は RT_ERROR で Unknown parameter が出る。
-                if self._vad_enabled:
-                    input_cfg["turn_detection"] = {
-                        "type": "server_vad",
-                        "threshold": self._vad_threshold,
-                        "prefix_padding_ms": self._vad_prefix_padding_ms,
-                        "silence_duration_ms": self._vad_silence_duration_ms,
-                    }
-                audio_section["input"] = input_cfg
-            if self._request_audio_output:
-                audio_section["output"] = {"language": self._target_language_code}
-            session_payload = json.dumps({
+            # GA 版 (2026-05-12 以降): output.language のみで transcript イベントが自動発行される。
+            # Beta 時代の audio.input.transcription / turn_detection / noise_reduction は
+            # GA 版では仕様外（無視または拒否）のため送信しない。
+            # self._request_source_transcript / self._vad_enabled は Beta 時代のパラメータ。
+            # GA 版 (2026-05-12 以降) では effect なし。互換性のため属性は残置。
+            # 将来の breaking change で削除予定。
+            session_payload = {
                 "type": "session.update",
-                "session": {"audio": audio_section}
-            }, ensure_ascii=False)
-            self._log_verbose("RT_SESSION_UPDATE_SEND", payload=session_payload)
-            await ws.send(session_payload)
+                "session": {
+                    "audio": {
+                        "output": {"language": self._target_language_code}
+                    }
+                }
+            }
+            self._log_verbose("RT_SESSION_UPDATE_SEND", payload=json.dumps(session_payload, ensure_ascii=False))
+            await ws.send(json.dumps(session_payload))
             self._log_verbose("RT_SESSION_UPDATE_SENT")
 
             if self._on_connected:
