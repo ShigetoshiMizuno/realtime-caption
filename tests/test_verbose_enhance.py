@@ -616,7 +616,8 @@ class TestStateTransitionVerbose:
         log_path = cs._ensure_verbose_log_path()
         content = log_path.read_text(encoding="utf-8")
         assert "STATE_TRANSITION" in content, f"STATE_TRANSITION が記録されていない: {content}"
-        assert "STARTING" in content
+        # RouteState.STARTING.value == "starting"（小文字）
+        assert "starting" in content
 
     def test_state_transition_not_logged_when_verbose_false(self, tmp_path):
         """verbose=False のとき _set_state が STATE_TRANSITION を記録しない。"""

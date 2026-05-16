@@ -328,6 +328,10 @@ class TestIdleMonitorStopOnStop:
         cs._audio_stats_lock = threading.Lock()
         cs._audio_stats = AudioStats()
         cs._route_id = "test"
+        # verbose ログ（_set_state から _log_verbose が呼ばれるため必要）
+        cs.verbose = False
+        cs._verbose_log_path = None
+        cs._verbose_lock = threading.Lock()
         return cs
 
     def test_idle_monitor_stop_called_on_stop(self):
@@ -370,6 +374,10 @@ class TestIdleMonitorStopOnStop:
         cs._audio_stats_lock = threading.Lock()
         cs._audio_stats = AudioStats()
         cs._route_id = "test"
+        # verbose ログ（_set_state から _log_verbose が呼ばれるため必要）
+        cs.verbose = False
+        cs._verbose_log_path = None
+        cs._verbose_lock = threading.Lock()
 
         # 例外が発生しないこと
         cs.stop()
