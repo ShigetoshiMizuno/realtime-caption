@@ -31,6 +31,15 @@ import sys
 import time
 from pathlib import Path
 
+# Windows cp932 環境で ✓ / ✗ / 日本語をエンコードできない問題対策
+# (実機実行で UnicodeEncodeError 検出 — Tool A/B/C と同じパターン)
+if hasattr(sys.stdout, "reconfigure"):
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
+
 # プロジェクトルートを sys.path に追加
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "tools"))
