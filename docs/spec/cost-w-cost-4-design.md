@@ -62,10 +62,11 @@ VAD（秒オーダー）と W-COST-4 アイドル切断（分オーダー）は�
     アイドル状態 = level_window_max（1 秒間ピーク）が
                   IDLE_AUDIO_THRESHOLD 未満の秒が IDLE_TIMEOUT_SEC 秒以上継続した状態
 
-- IDLE_AUDIO_THRESHOLD: int 型、デフォルト 100（int16 絶対値 max、0-32767）
-  - 0 dBFS = 32767 に対して、100 は約 -50 dBFS 相当
-  - VB-CABLE のノイズフロアが通常 50-100 程度であることを考慮してマージンを設定
-  - TBD-4-2: VB-CABLE 経由 Zoom 音声での適切な閾値は実機確認が必要
+- IDLE_AUDIO_THRESHOLD: int 型、デフォルト **200**（int16 絶対値 max、0-32767）（TBD-4-2 クローズ）
+  - 0 dBFS = 32767 に対して、200 は約 -44 dBFS 相当
+  - 実機計測（2026-05-16）: Webcam Internal Mic 10 秒録音 → 最小 RMS=61.4 / 中央値=145.8 / 95%ile=5294.7
+  - デフォルト 100 では無音判定率が約 20% にとどまり厳しすぎるため 200 に変更
+  - ヒステリシス: 再接続閾値 IDLE_RECONNECT_THRESHOLD=300（切断閾値 200 < 再接続閾値 300）
 - IDLE_TIMEOUT_SEC: float 型、デフォルト 300.0（5 分）
   - TBD-4-1: 監督の会議翻訳ユースケースで 5 分が適切か確認が必要
 
@@ -116,7 +117,7 @@ VAD（秒オーダー）と W-COST-4 アイドル切断（分オーダー）は�
 |---|---|---|---|---|
 | idle_disconnect_enabled | bool | False | — | アイドル切断機能の有効/無効。デフォルト OFF（既存挙動維持） |
 | idle_timeout_sec | float | 300.0 | 秒 | アイドル判定タイムアウト（5 分）。TBD-4-1 |
-| idle_audio_threshold | int | 100 | int16 絶対値 max | 無音とみなす音量上限。TBD-4-2 |
+| idle_audio_threshold | int | 200 | int16 絶対値 max | 無音とみなす音量上限。**TBD-4-2 クローズ: 2026-05-16 実機計測で 100 → 200 に変更（Webcam Internal Mic 中央値 RMS=145.8、無音判定率 20% → 改善）** |
 | idle_reconnect_threshold | int | 300 | int16 絶対値 max | 自動再接続をトリガーする音量下限（ヒステリシス） |
 | idle_reconnect_cooldown_sec | float | 10.0 | 秒 | 再接続後の次回切断までの最短間隔 |
 
@@ -128,7 +129,7 @@ VAD（秒オーダー）と W-COST-4 アイドル切断（分オーダー）は�
         # W-COST-4 追加（デフォルト値付き、後方互換）
         idle_disconnect_enabled: bool = False
         idle_timeout_sec: float = 300.0
-        idle_audio_threshold: int = 100
+        idle_audio_threshold: int = 200  # TBD-4-2 実機計測反映: 100→200
         idle_reconnect_threshold: int = 300
         idle_reconnect_cooldown_sec: float = 10.0
 
@@ -141,7 +142,7 @@ VAD（秒オーダー）と W-COST-4 アイドル切断（分オーダー）は�
         def __init__(
             self,
             idle_timeout_sec: float = 300.0,
-            audio_threshold: int = 100,
+            audio_threshold: int = 200,  # TBD-4-2 実機計測反映: 100→200
             on_idle_timeout: Callable[[], None] | None = None,
             *,
             timeout_override: float | None = None,   # テスト用 DI
@@ -171,7 +172,7 @@ VAD（秒オーダー）と W-COST-4 アイドル切断（分オーダー）は�
         # W-COST-4 追加
         idle_disconnect_enabled: bool = False,
         idle_timeout_sec: float = 300.0,
-        idle_audio_threshold: int = 100,
+        idle_audio_threshold: int = 200,  # TBD-4-2 実機計測反映: 100→200
         idle_reconnect_threshold: int = 300,
         idle_reconnect_cooldown_sec: float = 10.0,
         _idle_timeout_override: float | None = None,   # テスト用 DI
@@ -247,7 +248,7 @@ _capture_thread_body の 1 秒ログ処理（level_window_max を _update_audio_
 | TBD | 内容 | 影響 |
 |---|---|---|
 | TBD-4-1 | アイドルタイムアウト 5 分（300 秒）は監督の会議翻訳ユースケースで妥当か。発話間が 5 分以上空くケースはあるか | idle_timeout_sec のデフォルト値および UI での変更可否 |
-| TBD-4-2 | VB-CABLE 経由 Zoom 音声でのノイズフロア実測値。idle_audio_threshold=200 が適切か | 閾値が低いと Zoom の BGM/環境音でアイドルにならない。高いと小声を無音と誤判定 |
+| ~~TBD-4-2~~ | ~~VB-CABLE 経由 Zoom 音声でのノイズフロア実測値。idle_audio_threshold=200 が適切か~~ | **✅ クローズ済み（2026-05-16 実機計測）。tools/measure_audio_noise.py で Webcam Internal Mic 10 秒録音: 最小 RMS=61.4 / 中央値=145.8 / 平均=1079.9 / 95%ile=5294.7。デフォルト 100 では無音判定率 20% と厳しすぎるため、デフォルトを 200 に変更。** |
 | TBD-4-3 | 「再開」ボタンを UI に追加するか、音量上昇のみで再接続するか。PTT モード時の特別扱い（PTT 解放からタイマー計測）が必要か | app.py の UI 実装量に影響 |
 | TBD-4-4 | アイドル設定（timeout/threshold）を UI で変更可能にするか、config.yaml 直接編集のみか | PR3 の実装量に影響 |
 | TBD-4-5 | 実装優先度: 今すぐ実装するか（完全実装）、仕様確定後に実装するか（保留）。TBD-4-1 から 4-4 の回答次第で PR 分割も変わる | プロジェクト全体のスケジュールに影響 |
