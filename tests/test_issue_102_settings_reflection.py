@@ -49,8 +49,8 @@ def _make_caption_system(
     target_lang: str = "ja",
     output_device_index: int | None = None,
     request_source_transcript: bool = True,
-    vad_enabled: bool = False,
     route_id: str = "a",
+    **deprecated_vad_kwargs,
 ) -> CaptionSystem:
     """テスト用 CaptionSystem（openai-realtime モード）を返す。"""
     cfg = _make_realtime_config()
@@ -62,8 +62,8 @@ def _make_caption_system(
         model_name="tiny",
         output_device_index=output_device_index,
         request_source_transcript=request_source_transcript,
-        vad_enabled=vad_enabled,
         route_id=route_id,
+        **deprecated_vad_kwargs,
     )
 
 
@@ -655,56 +655,42 @@ class TestAudioOutputAndDeviceCombinations:
         assert kwargs.get("request_audio_output") is True
 
 
-class TestSourceTranscriptAndVADCombinations:
-    """原文表示 ON/OFF × VAD ON/OFF の組み合わせテスト。"""
+class TestSourceTranscriptCombinations:
+    """原文表示 ON/OFF の組み合わせテスト（vad_* は削除済み）。"""
 
-    def test_source_transcript_on_vad_off(self):
-        """原文表示 ON × VAD OFF の組み合わせが translator に渡ること。"""
-        cs = _make_caption_system(request_source_transcript=True, vad_enabled=False)
+    def test_source_transcript_on(self):
+        """原文表示 ON の組み合わせが translator に渡ること。"""
+        cs = _make_caption_system(request_source_transcript=True)
         with patch("realtime_translator.RealtimeTranslator") as MockRT, \
              patch("cost_monitor.CostMonitor"):
             MockRT.return_value = MagicMock()
             cs._create_realtime_translator()
         _, kwargs = MockRT.call_args
         assert kwargs.get("request_source_transcript") is True
-        assert kwargs.get("vad_enabled") is False
 
-    def test_source_transcript_off_vad_off(self):
-        """原文表示 OFF × VAD OFF の組み合わせが translator に渡ること。"""
-        cs = _make_caption_system(request_source_transcript=False, vad_enabled=False)
+    def test_source_transcript_off(self):
+        """原文表示 OFF の組み合わせが translator に渡ること。"""
+        cs = _make_caption_system(request_source_transcript=False)
         with patch("realtime_translator.RealtimeTranslator") as MockRT, \
              patch("cost_monitor.CostMonitor"):
             MockRT.return_value = MagicMock()
             cs._create_realtime_translator()
         _, kwargs = MockRT.call_args
         assert kwargs.get("request_source_transcript") is False
-        assert kwargs.get("vad_enabled") is False
 
-    def test_source_transcript_on_vad_on(self):
-        """原文表示 ON × VAD ON: hotfix により vad_enabled は強制 False になること。
-        (hotfix/vad-force-off-and-smoke-strict: TBD-3-1 再オープン、issue #121)"""
-        cs = _make_caption_system(request_source_transcript=True, vad_enabled=True)
-        with patch("realtime_translator.RealtimeTranslator") as MockRT, \
-             patch("cost_monitor.CostMonitor"):
-            MockRT.return_value = MagicMock()
-            cs._create_realtime_translator()
-        _, kwargs = MockRT.call_args
-        assert kwargs.get("request_source_transcript") is True
-        # hotfix により vad_enabled=True は CaptionSystem.__init__ で False に強制される
-        assert kwargs.get("vad_enabled") is False
+    def test_source_transcript_on_with_deprecated_vad_no_type_error(self):
+        """原文表示 ON × 旧 vad_enabled=False を渡しても TypeError にならないこと（後方互換）。"""
+        try:
+            cs = _make_caption_system(request_source_transcript=True, vad_enabled=False)
+        except TypeError as e:
+            pytest.fail(f"vad_enabled=False で TypeError が発生してはならない: {e}")
 
-    def test_source_transcript_off_vad_on(self):
-        """原文表示 OFF × VAD ON: hotfix により vad_enabled は強制 False になること。
-        (hotfix/vad-force-off-and-smoke-strict: TBD-3-1 再オープン、issue #121)"""
-        cs = _make_caption_system(request_source_transcript=False, vad_enabled=True)
-        with patch("realtime_translator.RealtimeTranslator") as MockRT, \
-             patch("cost_monitor.CostMonitor"):
-            MockRT.return_value = MagicMock()
-            cs._create_realtime_translator()
-        _, kwargs = MockRT.call_args
-        assert kwargs.get("request_source_transcript") is False
-        # hotfix により vad_enabled=True は CaptionSystem.__init__ で False に強制される
-        assert kwargs.get("vad_enabled") is False
+    def test_deprecated_vad_true_no_type_error(self):
+        """旧 vad_enabled=True を渡しても TypeError にならないこと（後方互換）。"""
+        try:
+            cs = _make_caption_system(request_source_transcript=True, vad_enabled=True)
+        except TypeError as e:
+            pytest.fail(f"vad_enabled=True で TypeError が発生してはならない: {e}")
 
 
 # ---------------------------------------------------------------------------
@@ -913,11 +899,12 @@ class TestSettingsLoadRestore:
         })
         assert result.get("route_a", {}).get("output_volume") == 1.5
 
-    def test_load_vad_enabled_defaults_to_false(self):
-        """vad_enabled が保存されていない場合デフォルト False になること。"""
-        result = self._load_settings_from_dict({"route_a": {}})
-        vad = result.get("route_a", {}).get("vad_enabled", False)
-        assert vad is False
+    def test_load_vad_enabled_key_not_required(self):
+        """vad_enabled キーが settings に含まれていなくても読み込みエラーにならないこと（後方互換）。"""
+        try:
+            self._load_settings_from_dict({"route_a": {}})
+        except Exception as e:
+            pytest.fail(f"vad_enabled なしで読み込みエラーが発生してはならない: {e}")
 
     def test_load_source_transcript_defaults_to_true(self):
         """source_transcript_enabled が保存されていない場合デフォルト True になること。"""

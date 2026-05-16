@@ -1,15 +1,10 @@
 """
 tests/test_w_cost_3_vad.py
 
-W-COST-3: VAD 設定による無音区間 input トークン削減テスト（issue #81）
+W-COST-3 / refactor/remove-vad-dead-code 後のテスト。
 
-テスト対象:
-1. RealtimeTranslator: vad_enabled=True/False で session.update の
-   audio.input.turn_detection の有無と値を検証
-2. RealtimeTranslator: request_audio_output x vad_enabled の 2x2 マトリクステスト
-3. CaptionSystem: vad_enabled が RealtimeTranslator に正しく伝播する
-4. RouteConfig / MultiCaptionSystem: VAD フィールドが CaptionSystem に伝播する
-5. app.py: vad_enabled の settings load/save
+vad_* パラメータは削除済みのため、後方互換（TypeError にならない）を中心に確認する。
+セッション更新ペイロードの動作確認（turn_detection を送らない等）は test_ga_migration.py で担う。
 
 NOTE: API 受入確認（TBD-3-1）は実機テストのため本ファイルでは除外する。
 """
@@ -69,12 +64,8 @@ def _stop_mock_server(loop, stop_event):
 
 
 def _capture_session_update(
-    vad_enabled: bool,
     request_source_transcript: bool = True,
     request_audio_output: bool = False,
-    vad_threshold: float = 0.5,
-    vad_prefix_padding_ms: int = 300,
-    vad_silence_duration_ms: int = 500,
 ) -> dict:
     """モックサーバーに接続して session.update ペイロードをキャプチャして返す。"""
     captured = {}
@@ -102,10 +93,6 @@ def _capture_session_update(
             reconnect_max_attempts=0,
             request_source_transcript=request_source_transcript,
             request_audio_output=request_audio_output,
-            vad_enabled=vad_enabled,
-            vad_threshold=vad_threshold,
-            vad_prefix_padding_ms=vad_prefix_padding_ms,
-            vad_silence_duration_ms=vad_silence_duration_ms,
         )
         translator._ws_url = f"ws://localhost:{port}"
 
@@ -121,113 +108,75 @@ def _capture_session_update(
 
 
 # ---------------------------------------------------------------------------
-# 1. RealtimeTranslator: コンストラクタのデフォルト値と属性
+# 1. RealtimeTranslator: vad_* を渡しても TypeError にならないこと（後方互換）
 # ---------------------------------------------------------------------------
 
-class TestRealtimeTranslatorVadDefaults:
-    """RealtimeTranslator の VAD パラメータデフォルト値と属性を検証する。"""
+class TestRealtimeTranslatorVadBackwardCompat:
+    """refactor/remove-vad-dead-code 後の後方互換性検証。
 
-    def test_vad_enabled_default_is_false(self):
-        """vad_enabled のデフォルトは False（後方互換・安全側）。"""
-        translator = RealtimeTranslator(
-            api_key="sk-test-fake-vad-default",
-            target_language_code="ja",
-        )
-        assert translator._vad_enabled is False
+    vad_* パラメータは削除済みだが渡しても TypeError にならないこと。
+    """
 
-    def test_vad_threshold_default(self):
-        """vad_threshold のデフォルトは 0.5。"""
-        translator = RealtimeTranslator(
-            api_key="sk-test-fake-vad-threshold",
-            target_language_code="ja",
-        )
-        assert translator._vad_threshold == 0.5
+    def test_vad_enabled_true_no_type_error(self):
+        """vad_enabled=True を渡しても TypeError にならないこと。"""
+        try:
+            RealtimeTranslator(
+                api_key="sk-test-fake-vad-default",
+                target_language_code="ja",
+                vad_enabled=True,
+            )
+        except TypeError as e:
+            pytest.fail(f"vad_enabled=True で TypeError が発生してはならない: {e}")
 
-    def test_vad_prefix_padding_ms_default(self):
-        """vad_prefix_padding_ms のデフォルトは 300。"""
-        translator = RealtimeTranslator(
-            api_key="sk-test-fake-vad-prefix",
-            target_language_code="ja",
-        )
-        assert translator._vad_prefix_padding_ms == 300
+    def test_vad_enabled_false_no_type_error(self):
+        """vad_enabled=False を渡しても TypeError にならないこと。"""
+        try:
+            RealtimeTranslator(
+                api_key="sk-test-fake-vad-threshold",
+                target_language_code="ja",
+                vad_enabled=False,
+            )
+        except TypeError as e:
+            pytest.fail(f"vad_enabled=False で TypeError が発生してはならない: {e}")
 
-    def test_vad_silence_duration_ms_default(self):
-        """vad_silence_duration_ms のデフォルトは 500。"""
-        translator = RealtimeTranslator(
-            api_key="sk-test-fake-vad-silence",
-            target_language_code="ja",
-        )
-        assert translator._vad_silence_duration_ms == 500
-
-    def test_vad_enabled_true_is_stored(self):
-        """vad_enabled=True が内部属性に格納されること。"""
-        translator = RealtimeTranslator(
-            api_key="sk-test-fake-vad-stored",
-            target_language_code="ja",
-            vad_enabled=True,
-        )
-        assert translator._vad_enabled is True
-
-    def test_vad_params_custom_values_stored(self):
-        """カスタム VAD パラメータが内部属性に格納されること。"""
-        translator = RealtimeTranslator(
-            api_key="sk-test-fake-vad-custom",
-            target_language_code="ja",
-            vad_enabled=True,
-            vad_threshold=0.7,
-            vad_prefix_padding_ms=200,
-            vad_silence_duration_ms=800,
-        )
-        assert translator._vad_threshold == 0.7
-        assert translator._vad_prefix_padding_ms == 200
-        assert translator._vad_silence_duration_ms == 800
+    def test_all_vad_params_no_type_error(self):
+        """全 vad_* パラメータを渡しても TypeError にならないこと。"""
+        try:
+            RealtimeTranslator(
+                api_key="sk-test-fake-vad-custom",
+                target_language_code="ja",
+                vad_enabled=True,
+                vad_threshold=0.7,
+                vad_prefix_padding_ms=200,
+                vad_silence_duration_ms=800,
+            )
+        except TypeError as e:
+            pytest.fail(f"全 vad_* パラメータで TypeError が発生してはならない: {e}")
 
 
 # ---------------------------------------------------------------------------
-# 2. RealtimeTranslator: session.update の turn_detection 有無
+# 2. RealtimeTranslator: session.update の動作確認（turn_detection を送らない等）
 # ---------------------------------------------------------------------------
 
 class TestRealtimeTranslatorVadSessionUpdate:
-    """GA 版 (2026-05-12 以降): vad_enabled は turn_detection の送信に影響しない。
+    """GA 版 (2026-05-12 以降): session.update ペイロードの動作確認。
 
-    GA 版では turn_detection は仕様外（Unknown parameter エラー）のため送信しない。
-    audio.input の有無は request_source_transcript で決まる。
-
-    実機検証（2026-05-16）:
-    - request_source_transcript=True のとき: audio.input.transcription + noise_reduction をセット送信
-    - turn_detection は vad_enabled に関わらず送らない
+    turn_detection は送らない。audio.input は request_source_transcript で制御される。
     """
 
-    def test_session_update_has_audio_input_when_vad_disabled_and_source_transcript_true(self):
-        """GA 版: vad_enabled=False かつ request_source_transcript=True（デフォルト）のとき
-        session.update に audio.input が含まれること。"""
-        payload = _capture_session_update(vad_enabled=False)
+    def test_session_update_has_audio_input_when_source_transcript_true(self):
+        """request_source_transcript=True（デフォルト）のとき session.update に audio.input が含まれること。"""
+        payload = _capture_session_update()
 
         assert payload.get("type") == "session.update", f"expected session.update, got: {payload}"
         audio = payload.get("session", {}).get("audio", {})
-        # request_source_transcript=True（デフォルト）なので audio.input が含まれる
         assert "input" in audio, (
             f"request_source_transcript=True（デフォルト）なので audio.input が含まれること。audio={audio}"
         )
 
-    def test_session_update_has_audio_input_when_vad_enabled_and_source_transcript_true(self):
-        """GA 版: vad_enabled=True でも request_source_transcript=True なら audio.input が含まれること。
-
-        GA 版では turn_detection は仕様外（Unknown parameter エラー）のため送信しないが、
-        audio.input.transcription + noise_reduction は request_source_transcript=True で送る。
-        """
-        payload = _capture_session_update(vad_enabled=True)
-
-        assert payload.get("type") == "session.update", f"expected session.update, got: {payload}"
-        audio = payload.get("session", {}).get("audio", {})
-        # request_source_transcript=True（デフォルト）なので audio.input が含まれる
-        assert "input" in audio, (
-            f"request_source_transcript=True（デフォルト）なので audio.input が含まれること。audio={audio}"
-        )
-
-    def test_session_update_no_turn_detection_when_vad_enabled_ga(self):
-        """GA 版: vad_enabled=True でも turn_detection は送信されないこと。"""
-        payload = _capture_session_update(vad_enabled=True)
+    def test_session_update_no_turn_detection_ga(self):
+        """GA 版: turn_detection は送信されないこと。"""
+        payload = _capture_session_update()
 
         audio = payload.get("session", {}).get("audio", {})
         audio_input = audio.get("input", {})
@@ -235,22 +184,12 @@ class TestRealtimeTranslatorVadSessionUpdate:
             f"GA 版では turn_detection は送信されないこと。audio_input={audio_input}"
         )
 
-    def test_session_update_no_turn_detection_when_vad_disabled_ga(self):
-        """GA 版: vad_enabled=False のとき turn_detection は含まれないこと（GA/Beta 共通）。"""
-        payload = _capture_session_update(vad_enabled=False)
-
-        audio_input = payload.get("session", {}).get("audio", {}).get("input", {})
-        assert "turn_detection" not in audio_input, (
-            f"vad_enabled=False のとき turn_detection は含まれないこと。audio_input={audio_input}"
-        )
-
-    def test_session_update_has_transcription_when_vad_enabled_and_source_transcript_true(self):
-        """GA 版: vad_enabled=True かつ request_source_transcript=True のとき
-        audio.input.transcription が含まれること。
+    def test_session_update_has_transcription_when_source_transcript_true(self):
+        """request_source_transcript=True のとき audio.input.transcription が含まれること。
 
         実機検証（2026-05-16）: input_transcript.delta には transcription + noise_reduction が必要。
         """
-        payload = _capture_session_update(vad_enabled=True, request_source_transcript=True)
+        payload = _capture_session_update(request_source_transcript=True)
 
         audio = payload.get("session", {}).get("audio", {})
         audio_input = audio.get("input", {})
@@ -267,9 +206,8 @@ class TestRealtimeTranslatorVadSessionUpdate:
         )
 
     def test_no_audio_input_when_source_transcript_disabled_ga(self):
-        """GA 版: request_source_transcript=False のとき audio.input は含まれないこと。"""
+        """request_source_transcript=False のとき audio.input は含まれないこと。"""
         payload = _capture_session_update(
-            vad_enabled=True,
             request_source_transcript=False,
         )
 
@@ -280,7 +218,7 @@ class TestRealtimeTranslatorVadSessionUpdate:
 
     def test_session_update_has_output_language_ga(self):
         """GA 版: session.update には audio.output.language が含まれること。"""
-        payload = _capture_session_update(vad_enabled=True)
+        payload = _capture_session_update()
 
         audio = payload.get("session", {}).get("audio", {})
         assert "output" in audio, (
@@ -291,28 +229,18 @@ class TestRealtimeTranslatorVadSessionUpdate:
         )
 
 class TestRealtimeTranslatorVadMatrixTest:
-    """GA 版 (2026-05-12 以降): request_audio_output x vad_enabled の 2x2 マトリクス。
+    """GA 版 (2026-05-12 以降): request_audio_output のマトリクステスト。
 
     実機検証（2026-05-16）:
     - audio.output.language は request_audio_output の値に関わらず常に含まれる
     - audio.input は request_source_transcript=True（デフォルト）のとき含まれる
-    - audio.input.turn_detection は vad_enabled に関わらず含まれない（GA 仕様外）
+    - audio.input.turn_detection は含まれない（GA 仕様外）
     """
 
-    @pytest.mark.parametrize("request_audio_output,vad_enabled", [
-        (False, False),
-        (False, True),
-        (True,  False),
-        (True,  True),
-    ])
-    def test_2x2_matrix_ga(self, request_audio_output, vad_enabled):
-        """GA 版: 全ての 2x2 組み合わせで:
-        - audio.output.language は常に含まれること
-        - audio.input は request_source_transcript=True（デフォルト）なので含まれること
-        - audio.input.turn_detection は含まれないこと（GA 仕様外）
-        """
+    @pytest.mark.parametrize("request_audio_output", [False, True])
+    def test_session_update_always_has_output_language(self, request_audio_output):
+        """GA 版: request_audio_output に関わらず audio.output.language は常に含まれること。"""
         payload = _capture_session_update(
-            vad_enabled=vad_enabled,
             request_audio_output=request_audio_output,
             request_source_transcript=True,
         )
@@ -322,19 +250,19 @@ class TestRealtimeTranslatorVadMatrixTest:
         # GA 版: audio.output は常に存在すること（language 指定に必要）
         assert "output" in audio, (
             f"GA 版では audio.output が常に存在すること。"
-            f"params: request_audio_output={request_audio_output}, vad_enabled={vad_enabled}. "
+            f"params: request_audio_output={request_audio_output}. "
             f"audio={audio}"
         )
         assert audio["output"].get("language") == "ja", (
             f"audio.output.language は 'ja' であること。"
-            f"params: request_audio_output={request_audio_output}, vad_enabled={vad_enabled}. "
+            f"params: request_audio_output={request_audio_output}. "
             f"audio={audio}"
         )
 
         # request_source_transcript=True なので audio.input は含まれること
         assert "input" in audio, (
             f"request_source_transcript=True なので audio.input が含まれること。"
-            f"params: request_audio_output={request_audio_output}, vad_enabled={vad_enabled}. "
+            f"params: request_audio_output={request_audio_output}. "
             f"audio={audio}"
         )
 
@@ -342,20 +270,14 @@ class TestRealtimeTranslatorVadMatrixTest:
         audio_input = audio.get("input", {})
         assert "turn_detection" not in audio_input, (
             f"GA 版では turn_detection は含まれないこと（仕様外）。"
-            f"params: request_audio_output={request_audio_output}, vad_enabled={vad_enabled}. "
+            f"params: request_audio_output={request_audio_output}. "
             f"audio_input={audio_input}"
         )
 
-class TestCaptionSystemVadPropagation:
-    """CaptionSystem の VAD パラメータが RealtimeTranslator に正しく渡される。"""
+class TestCaptionSystemVadBackwardCompat:
+    """CaptionSystem に vad_* を渡しても TypeError にならないこと（後方互換）。"""
 
-    def _make_caption_system(
-        self,
-        vad_enabled: bool = False,
-        vad_threshold: float = 0.5,
-        vad_prefix_padding_ms: int = 300,
-        vad_silence_duration_ms: int = 500,
-    ) -> CaptionSystem:
+    def _make_caption_system_with_vad(self, **vad_kwargs) -> CaptionSystem:
         config = {
             "translation": {"translation_model": "openai-realtime"},
             "openai": {"api_key": "sk-test-fake-caption-vad001"},
@@ -367,180 +289,87 @@ class TestCaptionSystemVadPropagation:
             "stt": {"model": "tiny"},
         }
         device_info = {"name": "FakeMic", "index": 0, "samplerate": 16000}
-        cs = CaptionSystem(
+        return CaptionSystem(
             config=config,
             device_info=device_info,
             model_name="tiny",
-            vad_enabled=vad_enabled,
-            vad_threshold=vad_threshold,
-            vad_prefix_padding_ms=vad_prefix_padding_ms,
-            vad_silence_duration_ms=vad_silence_duration_ms,
-        )
-        return cs
-
-    def test_caption_system_stores_vad_enabled_false(self):
-        """CaptionSystem が vad_enabled=False を保持すること。"""
-        cs = self._make_caption_system(vad_enabled=False)
-        assert cs._vad_enabled is False
-
-    def test_caption_system_stores_vad_enabled_true(self):
-        """CaptionSystem(vad_enabled=True) は hotfix により強制 OFF されること。
-        (hotfix/vad-force-off-and-smoke-strict: TBD-3-1 再オープン、issue #121)
-        正しい API パスが判明するまで VAD は強制 False。"""
-        cs = self._make_caption_system(vad_enabled=True)
-        assert cs._vad_enabled is False
-
-    def test_caption_system_default_vad_enabled_is_false(self):
-        """CaptionSystem の vad_enabled デフォルトは False（後方互換）。"""
-        config = {
-            "translation": {"translation_model": "openai-realtime"},
-            "openai": {"api_key": "sk-test-fake-caption-vad-default"},
-            "openai_realtime": {
-                "target_language_code": "ja",
-                "model": "gpt-realtime-translate",
-            },
-            "output": {"log_dir": "."},
-            "stt": {"model": "tiny"},
-        }
-        device_info = {"name": "FakeMic", "index": 0, "samplerate": 16000}
-        cs = CaptionSystem(config=config, device_info=device_info, model_name="tiny")
-        assert cs._vad_enabled is False
-
-    def test_create_realtime_translator_passes_vad_enabled_false(self):
-        """_create_realtime_translator が _vad_enabled=False を RealtimeTranslator に渡すこと。"""
-        cs = self._make_caption_system(vad_enabled=False)
-
-        with patch("realtime_translator.RealtimeTranslator") as MockRT, \
-             patch("cost_monitor.CostMonitor") as MockCM:
-            MockRT.return_value = MagicMock()
-            MockCM.return_value = MagicMock()
-            cs._create_realtime_translator()
-
-        assert MockRT.called, "RealtimeTranslator が呼び出されること"
-        _, kwargs = MockRT.call_args
-        assert kwargs.get("vad_enabled") is False, (
-            f"RealtimeTranslator に vad_enabled=False が渡されること。kwargs={kwargs}"
+            **vad_kwargs,
         )
 
-    def test_create_realtime_translator_passes_vad_enabled_true(self):
-        """_create_realtime_translator: vad_enabled=True を渡しても hotfix で False に強制されること。
-        (hotfix/vad-force-off-and-smoke-strict: TBD-3-1 再オープン、issue #121)"""
-        cs = self._make_caption_system(vad_enabled=True)
+    def test_vad_enabled_true_no_type_error(self):
+        """CaptionSystem(vad_enabled=True) を渡しても TypeError にならないこと。"""
+        try:
+            self._make_caption_system_with_vad(vad_enabled=True)
+        except TypeError as e:
+            pytest.fail(f"vad_enabled=True で TypeError が発生してはならない: {e}")
 
-        with patch("realtime_translator.RealtimeTranslator") as MockRT, \
-             patch("cost_monitor.CostMonitor") as MockCM:
-            MockRT.return_value = MagicMock()
-            MockCM.return_value = MagicMock()
-            cs._create_realtime_translator()
+    def test_vad_enabled_false_no_type_error(self):
+        """CaptionSystem(vad_enabled=False) を渡しても TypeError にならないこと。"""
+        try:
+            self._make_caption_system_with_vad(vad_enabled=False)
+        except TypeError as e:
+            pytest.fail(f"vad_enabled=False で TypeError が発生してはならない: {e}")
 
-        assert MockRT.called
-        _, kwargs = MockRT.call_args
-        assert kwargs.get("vad_enabled") is False, (
-            f"hotfix により vad_enabled=False が渡されること。kwargs={kwargs}"
-        )
-
-    def test_create_realtime_translator_passes_vad_params(self):
-        """_create_realtime_translator が VAD パラメータを RealtimeTranslator に渡すこと。"""
-        cs = self._make_caption_system(
-            vad_enabled=True,
-            vad_threshold=0.7,
-            vad_prefix_padding_ms=200,
-            vad_silence_duration_ms=800,
-        )
-
-        with patch("realtime_translator.RealtimeTranslator") as MockRT, \
-             patch("cost_monitor.CostMonitor") as MockCM:
-            MockRT.return_value = MagicMock()
-            MockCM.return_value = MagicMock()
-            cs._create_realtime_translator()
-
-        assert MockRT.called
-        _, kwargs = MockRT.call_args
-        assert kwargs.get("vad_threshold") == pytest.approx(0.7), f"vad_threshold: {kwargs}"
-        assert kwargs.get("vad_prefix_padding_ms") == 200, f"vad_prefix_padding_ms: {kwargs}"
-        assert kwargs.get("vad_silence_duration_ms") == 800, f"vad_silence_duration_ms: {kwargs}"
+    def test_all_vad_params_no_type_error(self):
+        """全 vad_* パラメータを渡しても TypeError にならないこと。"""
+        try:
+            self._make_caption_system_with_vad(
+                vad_enabled=True,
+                vad_threshold=0.7,
+                vad_prefix_padding_ms=200,
+                vad_silence_duration_ms=800,
+            )
+        except TypeError as e:
+            pytest.fail(f"全 vad_* パラメータで TypeError が発生してはならない: {e}")
 
 
 # ---------------------------------------------------------------------------
-# 5. RouteConfig: VAD フィールドの確認
+# 5. RouteConfig: vad_* を渡しても TypeError にならないこと（後方互換）
 # ---------------------------------------------------------------------------
 
-class TestRouteConfigVad:
-    """RouteConfig に VAD フィールドが追加されていることを検証。"""
+class TestRouteConfigVadBackwardCompat:
+    """RouteConfig に vad_* を渡しても TypeError にならないこと（後方互換）。"""
 
-    def test_route_config_has_vad_enabled_field(self):
-        """RouteConfig に vad_enabled フィールドがあること。
-        (hotfix/vad-force-off-and-smoke-strict: vad_enabled=True は __post_init__ で強制 False)"""
-        rc = RouteConfig(
-            route_id="a",
-            input_device_info={"name": "FakeMic", "index": 0},
-            target_language_code="ja",
-            audio_output_enabled=False,
-            output_device_index=None,
-            output_volume=1.0,
-            vad_enabled=True,
-        )
-        # hotfix により vad_enabled=True は __post_init__ で False に強制される
-        assert rc.vad_enabled is False
+    def test_vad_enabled_no_type_error(self):
+        """RouteConfig に vad_enabled=True を渡しても TypeError にならないこと。"""
+        try:
+            RouteConfig(
+                route_id="a",
+                input_device_info={"name": "FakeMic", "index": 0},
+                target_language_code="ja",
+                audio_output_enabled=False,
+                output_device_index=None,
+                output_volume=1.0,
+                vad_enabled=True,
+            )
+        except TypeError as e:
+            pytest.fail(f"vad_enabled=True で TypeError が発生してはならない: {e}")
 
-    def test_route_config_vad_enabled_default_is_false(self):
-        """RouteConfig の vad_enabled デフォルトは False（後方互換・安全側）。"""
-        rc = RouteConfig(
-            route_id="a",
-            input_device_info={"name": "FakeMic", "index": 0},
-            target_language_code="ja",
-            audio_output_enabled=False,
-            output_device_index=None,
-            output_volume=1.0,
-        )
-        assert rc.vad_enabled is False
-
-    def test_route_config_has_vad_silence_duration_ms_field(self):
-        """RouteConfig に vad_silence_duration_ms フィールドがあること。"""
-        rc = RouteConfig(
-            route_id="a",
-            input_device_info={"name": "FakeMic", "index": 0},
-            target_language_code="ja",
-            audio_output_enabled=False,
-            output_device_index=None,
-            output_volume=1.0,
-            vad_silence_duration_ms=800,
-        )
-        assert rc.vad_silence_duration_ms == 800
-
-    def test_route_config_has_vad_threshold_field(self):
-        """RouteConfig に vad_threshold フィールドがあること。"""
-        rc = RouteConfig(
-            route_id="a",
-            input_device_info={"name": "FakeMic", "index": 0},
-            target_language_code="ja",
-            audio_output_enabled=False,
-            output_device_index=None,
-            output_volume=1.0,
-            vad_threshold=0.7,
-        )
-        assert rc.vad_threshold == pytest.approx(0.7)
-
-    def test_route_config_has_vad_prefix_padding_ms_field(self):
-        """RouteConfig に vad_prefix_padding_ms フィールドがあること。"""
-        rc = RouteConfig(
-            route_id="a",
-            input_device_info={"name": "FakeMic", "index": 0},
-            target_language_code="ja",
-            audio_output_enabled=False,
-            output_device_index=None,
-            output_volume=1.0,
-            vad_prefix_padding_ms=200,
-        )
-        assert rc.vad_prefix_padding_ms == 200
+    def test_all_vad_params_no_type_error(self):
+        """RouteConfig に全 vad_* を渡しても TypeError にならないこと。"""
+        try:
+            RouteConfig(
+                route_id="a",
+                input_device_info={"name": "FakeMic", "index": 0},
+                target_language_code="ja",
+                audio_output_enabled=False,
+                output_device_index=None,
+                output_volume=1.0,
+                vad_enabled=True,
+                vad_threshold=0.7,
+                vad_prefix_padding_ms=200,
+                vad_silence_duration_ms=800,
+            )
+        except TypeError as e:
+            pytest.fail(f"全 vad_* パラメータで TypeError が発生してはならない: {e}")
 
 
 # ---------------------------------------------------------------------------
-# 6. MultiCaptionSystem: VAD フィールドが CaptionSystem に伝播
+# 6. MultiCaptionSystem: vad_* を渡しても TypeError にならないこと（後方互換）
 # ---------------------------------------------------------------------------
 
-class TestMultiCaptionSystemVadPropagation:
-    """MultiCaptionSystem が RouteConfig.vad_enabled を CaptionSystem に渡す。"""
+class TestMultiCaptionSystemVadBackwardCompat:
+    """MultiCaptionSystem / RouteConfig に vad_* を渡しても TypeError にならないこと（後方互換）。"""
 
     def _make_config(self):
         return {
@@ -554,10 +383,61 @@ class TestMultiCaptionSystemVadPropagation:
             "stt": {"model": "tiny"},
         }
 
-    def test_multi_caption_system_propagates_vad_enabled_true_to_route_a(self):
-        """route_a.vad_enabled=True は hotfix により強制 OFF され、
-        route_a CaptionSystem の _vad_enabled は False になること。
-        (hotfix/vad-force-off-and-smoke-strict: TBD-3-1 再オープン、issue #121)"""
+    def test_multi_caption_system_with_vad_no_type_error(self):
+        """RouteConfig に vad_enabled=True を渡した MultiCaptionSystem が TypeError にならないこと。"""
+        try:
+            route_a = RouteConfig(
+                route_id="a",
+                input_device_info={"name": "FakeMicA", "index": 0},
+                target_language_code="ja",
+                audio_output_enabled=False,
+                output_device_index=None,
+                output_volume=1.0,
+                vad_enabled=True,
+            )
+        except TypeError as e:
+            pytest.fail(f"RouteConfig(vad_enabled=True) で TypeError が発生してはならない: {e}")
+
+        try:
+            with patch("main.pyaudio.PyAudio") as MockPA:
+                MockPA.return_value = MagicMock()
+                mcs = MultiCaptionSystem(
+                    config=self._make_config(),
+                    route_a=route_a,
+                    route_b=None,
+                )
+        except TypeError as e:
+            pytest.fail(f"MultiCaptionSystem(route_a with vad_enabled) で TypeError が発生してはならない: {e}")
+
+        assert mcs.route_a_system is not None
+
+    def test_multi_caption_system_with_vad_false_no_type_error(self):
+        """RouteConfig に vad_enabled=False を渡した MultiCaptionSystem が TypeError にならないこと。"""
+        try:
+            route_b = RouteConfig(
+                route_id="b",
+                input_device_info={"name": "FakeMicB", "index": 1},
+                target_language_code="en",
+                audio_output_enabled=False,
+                output_device_index=None,
+                output_volume=1.0,
+                vad_enabled=False,
+            )
+        except TypeError as e:
+            pytest.fail(f"RouteConfig(vad_enabled=False) で TypeError が発生してはならない: {e}")
+
+        with patch("main.pyaudio.PyAudio") as MockPA:
+            MockPA.return_value = MagicMock()
+            mcs = MultiCaptionSystem(
+                config=self._make_config(),
+                route_a=None,
+                route_b=route_b,
+            )
+
+        assert mcs.route_b_system is not None
+
+    def test_multi_caption_system_no_vad_params_no_type_error(self):
+        """RouteConfig デフォルト（vad_enabled 省略）でも MultiCaptionSystem が TypeError にならないこと。"""
         route_a = RouteConfig(
             route_id="a",
             input_device_info={"name": "FakeMicA", "index": 0},
@@ -565,7 +445,6 @@ class TestMultiCaptionSystemVadPropagation:
             audio_output_enabled=False,
             output_device_index=None,
             output_volume=1.0,
-            vad_enabled=True,
         )
 
         with patch("main.pyaudio.PyAudio") as MockPA:
@@ -577,53 +456,6 @@ class TestMultiCaptionSystemVadPropagation:
             )
 
         assert mcs.route_a_system is not None
-        # hotfix により vad_enabled=True は RouteConfig.__post_init__ で False に強制される
-        assert mcs.route_a_system._vad_enabled is False
-
-    def test_multi_caption_system_propagates_vad_enabled_false_to_route_b(self):
-        """route_b.vad_enabled=False が route_b CaptionSystem に伝播すること。"""
-        route_b = RouteConfig(
-            route_id="b",
-            input_device_info={"name": "FakeMicB", "index": 1},
-            target_language_code="en",
-            audio_output_enabled=False,
-            output_device_index=None,
-            output_volume=1.0,
-            vad_enabled=False,
-        )
-
-        with patch("main.pyaudio.PyAudio") as MockPA:
-            MockPA.return_value = MagicMock()
-            mcs = MultiCaptionSystem(
-                config=self._make_config(),
-                route_a=None,
-                route_b=route_b,
-            )
-
-        assert mcs.route_b_system is not None
-        assert mcs.route_b_system._vad_enabled is False
-
-    def test_multi_caption_system_default_vad_propagation(self):
-        """RouteConfig デフォルト（vad_enabled=False）が CaptionSystem に伝播すること。"""
-        route_a = RouteConfig(
-            route_id="a",
-            input_device_info={"name": "FakeMicA", "index": 0},
-            target_language_code="ja",
-            audio_output_enabled=False,
-            output_device_index=None,
-            output_volume=1.0,
-            # vad_enabled 省略 -> デフォルト False
-        )
-
-        with patch("main.pyaudio.PyAudio") as MockPA:
-            MockPA.return_value = MagicMock()
-            mcs = MultiCaptionSystem(
-                config=self._make_config(),
-                route_a=route_a,
-                route_b=None,
-            )
-
-        assert mcs.route_a_system._vad_enabled is False
 
 
 # ---------------------------------------------------------------------------
