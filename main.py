@@ -664,6 +664,15 @@ class CaptionSystem:
                 audio_threshold=self._idle_audio_threshold,
                 on_idle_timeout=self._on_idle_timeout,
             )
+        # issue #121-B: RealtimeTranslator 生成完了 — 設定値一覧を [ACTION] で記録
+        print(
+            f"[ACTION] RealtimeTranslator 生成"
+            f" route_id={self._route_id}"
+            f" request_source_transcript={self._request_source_transcript}"
+            f" vad_enabled={self._vad_enabled}"
+            f" request_audio_output={self._audio_output_mode}",
+            flush=True,
+        )
 
     def start(self) -> None:
         """IDLE / ERROR 状態から RUNNING へ遷移する。
