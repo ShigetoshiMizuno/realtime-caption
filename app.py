@@ -166,21 +166,41 @@ def _verbose_callback(name: str = None):
     def decorator(func):
         cb_name = name or func.__name__
 
-        # func の必要引数数を取得（デフォルト値なし POSITIONAL_OR_KEYWORD）
+        # func のシグネチャを解析して引数情報を取得
         try:
             sig = inspect.signature(func)
+            _params = list(sig.parameters.values())
+            # VAR_POSITIONAL (*args) があれば引数数制限なし
+            _has_var_positional = any(
+                p.kind == inspect.Parameter.VAR_POSITIONAL for p in _params
+            )
+            # 必須 positional 引数数（デフォルト値なし）
             required_count = sum(
-                1 for p in sig.parameters.values()
+                1 for p in _params
                 if p.kind in (
                     inspect.Parameter.POSITIONAL_ONLY,
                     inspect.Parameter.POSITIONAL_OR_KEYWORD,
                 )
                 and p.default is inspect.Parameter.empty
             )
+            # 最大受付 positional 引数数（デフォルト値付き含む、*args なしの場合）
+            max_positional = (
+                None  # 無制限
+                if _has_var_positional
+                else sum(
+                    1 for p in _params
+                    if p.kind in (
+                        inspect.Parameter.POSITIONAL_ONLY,
+                        inspect.Parameter.POSITIONAL_OR_KEYWORD,
+                    )
+                )
+            )
         except (ValueError, TypeError):
             required_count = 0
+            max_positional = None
+            _has_var_positional = False
 
-        # func の positional パラメータ名リストを保持（kwargs との重複チェック用）
+        # func の必須 positional パラメータ名リストを保持（kwargs との重複チェック用）
         try:
             _param_names = [
                 p.name for p in inspect.signature(func).parameters.values()
@@ -202,6 +222,10 @@ def _verbose_callback(name: str = None):
             effective_required = required_count - already_in_kwargs
             while len(args) < effective_required:
                 args = args + (None,)
+            # dpg が func の受付上限を超える引数を渡してくるケースに備え、
+            # 過剰な positional 引数を切り落とす（*args がある場合は切り落とさない）。
+            if max_positional is not None and len(args) > max_positional:
+                args = args[:max_positional]
             if not _verbose_state:
                 return func(*args, **kwargs)
             # verbose ON 時のみ記録
