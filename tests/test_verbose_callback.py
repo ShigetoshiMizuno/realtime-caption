@@ -526,7 +526,8 @@ class TestRPCVerboseDuration:
 
         assert log_file.exists(), "verbose ファイルが存在しない"
         content = log_file.read_text(encoding="utf-8")
-        assert "RPC" in content and "end=" in content, (
+        # PR3 以降: "end GET <path>" 形式。RPC カテゴリと end キーワードを確認する
+        assert "RPC" in content and ("end=" in content or "end GET" in content or "end POST" in content), (
             f"RPC end が記録されていない: {content}"
         )
 
@@ -536,7 +537,8 @@ class TestRPCVerboseDuration:
 
         assert log_file.exists(), "verbose ファイルが存在しない"
         content = log_file.read_text(encoding="utf-8")
-        assert "RPC" in content and "end=" in content, (
+        # PR3 以降: "end POST <path>" 形式。RPC カテゴリと end キーワードを確認する
+        assert "RPC" in content and ("end=" in content or "end GET" in content or "end POST" in content), (
             f"RPC end が記録されていない: {content}"
         )
 
