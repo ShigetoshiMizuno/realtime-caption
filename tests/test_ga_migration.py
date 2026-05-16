@@ -5,20 +5,23 @@ OpenAI Realtime API GA 移行（2026-05-12）対応テスト
 
 背景:
   - 2026-05-12 に Realtime API Beta が削除され GA へ移行
-  - GA 版では session.update のペイロードが大幅に簡略化された
-  - audio.input.transcription / turn_detection / noise_reduction は仕様外（無視または拒否）
-  - transcript イベントは自動発行される
+  - GA 版では session.update のペイロードが変更された
+  - 実機検証（2026-05-16）により以下が確定:
+    - input_transcript.delta を受信するには audio.input.transcription + noise_reduction を
+      セットで指定する必要がある
+    - noise_reduction なしでは input_transcript が発行されない
+    - turn_detection は GA 仕様外（Unknown parameter エラー）→ 送信しない
 
 Fix 1: session.update ペイロードの検証
-  - GA 版では {"audio": {"output": {"language": "..."}}} のみ送信すること
-  - audio.input キーは送らないこと
-  - vad_enabled=True / False どちらでも audio.input は送らないこと
-  - request_source_transcript=True / False どちらでも audio.input は送らないこと
+  - request_source_transcript=True のとき audio.input.transcription + noise_reduction を送ること
+  - request_source_transcript=False のとき audio.input は送らないこと
+  - vad_enabled に関わらず audio.input.turn_detection は送らないこと
+  - audio.output.language は常に送ること
 
 Fix 2: deprecation コメントの検証（属性は残るが効果なし）
   - request_source_transcript 属性は存在すること（後方互換）
   - vad_enabled 属性は存在すること（後方互換）
-  - どちらの属性も session.update には反映されないこと
+  - vad_enabled は session.update には反映されない（turn_detection は GA 仕様外）
 """
 
 import asyncio
@@ -123,10 +126,13 @@ def _capture_session_update(
 # ---------------------------------------------------------------------------
 
 class TestGASessionUpdatePayload:
-    """GA 版（2026-05-12 以降）の session.update は最小ペイロードのみ送ること。
+    """GA 版（2026-05-12 以降）の session.update ペイロードを検証する。
 
-    GA 版では transcript イベントが自動発行されるため、
-    audio.input.transcription / turn_detection を送る必要はない。
+    実機検証（2026-05-16）により確定した仕様:
+    - request_source_transcript=True のとき audio.input.transcription + noise_reduction をセット送信
+    - request_source_transcript=False のとき audio.input は送らない
+    - turn_detection は GA 仕様外（Unknown parameter エラー）→ vad_enabled に関わらず送らない
+    - audio.output.language は常に送る
     """
 
     def test_session_update_type_is_session_update(self):
@@ -151,59 +157,72 @@ class TestGASessionUpdatePayload:
             f"audio.output.language は target_language_code と一致すること。audio={audio}"
         )
 
-    def test_ga_session_update_no_audio_input(self):
-        """GA 版 session.update は audio.input を含まないこと。
+    def test_ga_session_update_audio_input_when_source_transcript_true(self):
+        """request_source_transcript=True のとき audio.input が含まれること。
 
-        transcript イベントは GA 版では自動発行されるため、
-        audio.input.transcription を明示的に指定する必要はない。
+        実機検証（2026-05-16）: input_transcript.delta を受信するには
+        audio.input.transcription + noise_reduction をセットで指定する必要がある。
         """
         payload = _capture_session_update(
             request_source_transcript=True,
         )
         audio = payload.get("session", {}).get("audio", {})
-        assert "input" not in audio, (
-            f"GA 版では audio.input は送らないこと。audio={audio}"
+        assert "input" in audio, (
+            f"request_source_transcript=True のとき audio.input が含まれること。audio={audio}"
+        )
+        assert "transcription" in audio["input"], (
+            f"audio.input.transcription が含まれること。audio={audio}"
+        )
+        assert "noise_reduction" in audio["input"], (
+            f"audio.input.noise_reduction が含まれること（noise_reduction なしでは "
+            f"input_transcript が発行されない: 実機検証 2026-05-16 確認）。audio={audio}"
         )
 
-    def test_ga_session_update_no_audio_input_even_when_source_transcript_false(self):
-        """request_source_transcript=False でも audio.input は含まないこと（GA 版）。"""
+    def test_ga_session_update_no_audio_input_when_source_transcript_false(self):
+        """request_source_transcript=False のとき audio.input は含まないこと。"""
         payload = _capture_session_update(
             request_source_transcript=False,
         )
         audio = payload.get("session", {}).get("audio", {})
         assert "input" not in audio, (
-            f"GA 版では request_source_transcript の値に関わらず audio.input は送らないこと。audio={audio}"
+            f"request_source_transcript=False のとき audio.input は送らないこと。audio={audio}"
         )
 
     def test_ga_session_update_no_turn_detection_when_vad_enabled_true(self):
         """vad_enabled=True でも audio.input.turn_detection は含まないこと（GA 版）。
 
-        GA 版では turn_detection は仕様外で無視または拒否されるため送らない。
+        GA 版では turn_detection は仕様外（Unknown parameter エラー）で拒否されるため送らない。
+        audio.input は request_source_transcript=True（デフォルト）なので存在する。
         """
         payload = _capture_session_update(
             vad_enabled=True,
+            request_source_transcript=True,
         )
         audio = payload.get("session", {}).get("audio", {})
-        # audio.input 自体が存在しないこと
-        assert "input" not in audio, (
-            f"GA 版では vad_enabled=True でも audio.input は送らないこと。audio={audio}"
+        # audio.input は存在するが turn_detection は含まないこと
+        audio_input = audio.get("input", {})
+        assert "turn_detection" not in audio_input, (
+            f"GA 版では vad_enabled=True でも audio.input.turn_detection は送らないこと。"
+            f"audio_input={audio_input}"
         )
 
     def test_ga_session_update_no_turn_detection_when_vad_enabled_false(self):
-        """vad_enabled=False でも audio.input は含まないこと（GA 版）。"""
+        """vad_enabled=False のとき turn_detection は含まないこと（GA 版）。"""
         payload = _capture_session_update(
             vad_enabled=False,
+            request_source_transcript=True,
         )
         audio = payload.get("session", {}).get("audio", {})
-        assert "input" not in audio, (
-            f"GA 版では vad_enabled=False でも audio.input は送らないこと。audio={audio}"
+        audio_input = audio.get("input", {})
+        assert "turn_detection" not in audio_input, (
+            f"GA 版では vad_enabled=False のとき turn_detection は含まれないこと。"
+            f"audio_input={audio_input}"
         )
 
-    def test_ga_session_update_only_contains_output_key(self):
-        """GA 版 session.update の audio セクションは output キーのみ持つこと。
+    def test_ga_session_update_audio_keys_when_source_transcript_true(self):
+        """request_source_transcript=True のとき audio セクションは output と input を持つこと。
 
-        Beta 時代は input / output の両方を持つ場合があったが、
-        GA 版では output のみ。
+        実機検証（2026-05-16）: audio.input.transcription + noise_reduction が必要。
         """
         payload = _capture_session_update(
             request_source_transcript=True,
@@ -211,12 +230,12 @@ class TestGASessionUpdatePayload:
         )
         audio = payload.get("session", {}).get("audio", {})
         audio_keys = set(audio.keys())
-        # 'output' のみ存在し、'input' は存在しないこと
         assert "output" in audio_keys, (
             f"audio に 'output' が存在すること。audio_keys={audio_keys}"
         )
-        assert "input" not in audio_keys, (
-            f"audio に 'input' が存在しないこと（GA 版）。audio_keys={audio_keys}"
+        assert "input" in audio_keys, (
+            f"request_source_transcript=True のとき audio に 'input' が存在すること。"
+            f"audio_keys={audio_keys}"
         )
 
     def test_ga_session_update_language_code_passed_correctly_en(self):
@@ -229,16 +248,28 @@ class TestGASessionUpdatePayload:
             f"audio.output.language は 'en' であること。audio={audio}"
         )
 
-    def test_ga_session_update_no_transcription_field(self):
-        """audio.input.transcription フィールドが存在しないこと（GA 版では不要）。"""
+    def test_ga_session_update_transcription_model_correct(self):
+        """audio.input.transcription.model が 'gpt-realtime-whisper' であること。"""
         payload = _capture_session_update(
             request_source_transcript=True,
         )
         audio = payload.get("session", {}).get("audio", {})
         audio_input = audio.get("input", {})
-        # audio.input 自体がないので transcription もない
-        assert "transcription" not in audio_input, (
-            f"GA 版では audio.input.transcription は送らないこと。audio_input={audio_input}"
+        assert audio_input.get("transcription", {}).get("model") == "gpt-realtime-whisper", (
+            f"audio.input.transcription.model は 'gpt-realtime-whisper' であること。"
+            f"audio_input={audio_input}"
+        )
+
+    def test_ga_session_update_noise_reduction_type_correct(self):
+        """audio.input.noise_reduction.type が 'near_field' であること。"""
+        payload = _capture_session_update(
+            request_source_transcript=True,
+        )
+        audio = payload.get("session", {}).get("audio", {})
+        audio_input = audio.get("input", {})
+        assert audio_input.get("noise_reduction", {}).get("type") == "near_field", (
+            f"audio.input.noise_reduction.type は 'near_field' であること。"
+            f"audio_input={audio_input}"
         )
 
 
@@ -330,34 +361,44 @@ class TestGAMigrationBackwardCompat:
         )
         assert translator._vad_silence_duration_ms == 800
 
-    def test_request_source_transcript_has_no_effect_on_session_update(self):
-        """request_source_transcript の値に関わらず session.update の audio 構造が同じこと。"""
+    def test_request_source_transcript_controls_audio_input(self):
+        """request_source_transcript の値によって session.update の audio.input の有無が変わること。
+
+        実機検証（2026-05-16）:
+        - True のとき: audio.input.transcription + noise_reduction をセット送信
+        - False のとき: audio.input は送らない
+        """
         payload_true = _capture_session_update(request_source_transcript=True)
         payload_false = _capture_session_update(request_source_transcript=False)
 
         audio_true = payload_true.get("session", {}).get("audio", {})
         audio_false = payload_false.get("session", {}).get("audio", {})
 
-        # どちらも audio.input は含まないこと
-        assert "input" not in audio_true, (
-            f"request_source_transcript=True でも audio.input は含まないこと。audio={audio_true}"
+        # True のとき: audio.input が含まれること
+        assert "input" in audio_true, (
+            f"request_source_transcript=True のとき audio.input が含まれること。audio={audio_true}"
         )
+        # False のとき: audio.input は含まないこと
         assert "input" not in audio_false, (
-            f"request_source_transcript=False でも audio.input は含まないこと。audio={audio_false}"
+            f"request_source_transcript=False のとき audio.input は含まないこと。audio={audio_false}"
         )
 
-    def test_vad_enabled_has_no_effect_on_session_update(self):
-        """vad_enabled の値に関わらず session.update の audio 構造が同じこと。"""
-        payload_true = _capture_session_update(vad_enabled=True)
-        payload_false = _capture_session_update(vad_enabled=False)
+    def test_vad_enabled_has_no_effect_on_turn_detection(self):
+        """vad_enabled の値に関わらず turn_detection は送信されないこと（GA 版）。
+
+        GA 版では turn_detection は仕様外（Unknown parameter エラー）。
+        audio.input の有無は request_source_transcript で決まる（デフォルト=True）。
+        """
+        payload_true = _capture_session_update(vad_enabled=True, request_source_transcript=True)
+        payload_false = _capture_session_update(vad_enabled=False, request_source_transcript=True)
 
         audio_true = payload_true.get("session", {}).get("audio", {})
         audio_false = payload_false.get("session", {}).get("audio", {})
 
-        # どちらも audio.input は含まないこと
-        assert "input" not in audio_true, (
-            f"vad_enabled=True でも audio.input は含まないこと（GA 版）。audio={audio_true}"
+        # どちらも turn_detection は含まないこと
+        assert "turn_detection" not in audio_true.get("input", {}), (
+            f"vad_enabled=True でも turn_detection は含まないこと（GA 版）。audio={audio_true}"
         )
-        assert "input" not in audio_false, (
-            f"vad_enabled=False でも audio.input は含まないこと（GA 版）。audio={audio_false}"
+        assert "turn_detection" not in audio_false.get("input", {}), (
+            f"vad_enabled=False でも turn_detection は含まないこと（GA 版）。audio={audio_false}"
         )

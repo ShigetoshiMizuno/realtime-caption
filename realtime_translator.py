@@ -112,10 +112,11 @@ class RealtimeTranslator:
                                   注 (GA 移行 2026-05-12): GA 版では audio.output.language は
                                   このフラグに関わらず常に送信される。Beta 時代の互換性のため属性は残置。
         on_audio_delta:           音声出力チャンクコールバック (pcm16_bytes: bytes) -> None
-        request_source_transcript: [DEPRECATED: GA 移行 2026-05-12 以降は効果なし]
-                                  GA 版では transcript イベントは自動発行されるため、
-                                  audio.input.transcription の明示指定は不要。
-                                  Beta 時代の互換性のため属性は残置。将来の breaking change で削除予定。
+        request_source_transcript: True のとき session.update に audio.input.transcription +
+                                  noise_reduction をセット送信し、input_transcript.delta を有効化する。
+                                  実機検証（2026-05-16）: noise_reduction なしでは input_transcript が
+                                  発行されない。False のとき audio.input は送らない（コスト削減）。
+                                  Beta 時代の動作から変更: GA 版ではこのフラグが audio.input の送受信を制御する。
         vad_enabled:              [DEPRECATED: GA 移行 2026-05-12 以降は効果なし]
                                   GA 版では turn_detection は仕様外（無視または拒否）のため送信しない。
                                   Beta 時代の互換性のため属性は残置。将来の breaking change で削除予定。
@@ -330,19 +331,26 @@ class RealtimeTranslator:
             if self._test_force_401:
                 raise _AuthError("test_force_401 flag")
 
-            # GA 版 (2026-05-12 以降): output.language のみで transcript イベントが自動発行される。
-            # Beta 時代の audio.input.transcription / turn_detection / noise_reduction は
-            # GA 版では仕様外（無視または拒否）のため送信しない。
-            # self._request_source_transcript / self._vad_enabled は Beta 時代のパラメータ。
-            # GA 版 (2026-05-12 以降) では effect なし。互換性のため属性は残置。
-            # 将来の breaking change で削除予定。
+            # GA 版 (2026-05-12 以降):
+            # - output.language は必須（翻訳出力言語の指定に必要）
+            # - input_transcript.delta を受信するには audio.input.transcription + noise_reduction を
+            #   セットで指定する必要がある（実機検証 2026-05-16 で確認）。
+            #   noise_reduction なしでは input_transcript が発行されない。
+            # - turn_detection は GA 仕様外（送ると Unknown parameter エラー）→ 送信しない
+            # - self._vad_enabled は Beta 時代のパラメータ。GA では effect なし（属性は後方互換で残置）。
+            audio_section: dict = {
+                "output": {"language": self._target_language_code},
+            }
+            if self._request_source_transcript:
+                # 実機検証（2026-05-16）: transcription + noise_reduction をセットで指定しないと
+                # input_transcript.delta が発行されない。noise_reduction は near_field を指定。
+                audio_section["input"] = {
+                    "transcription": {"model": "gpt-realtime-whisper"},
+                    "noise_reduction": {"type": "near_field"},
+                }
             session_payload = {
                 "type": "session.update",
-                "session": {
-                    "audio": {
-                        "output": {"language": self._target_language_code}
-                    }
-                }
+                "session": {"audio": audio_section},
             }
             self._log_verbose("RT_SESSION_UPDATE_SEND", payload=json.dumps(session_payload, ensure_ascii=False))
             await ws.send(json.dumps(session_payload))
