@@ -67,6 +67,7 @@ import argparse
 import asyncio
 from contextlib import contextmanager
 import functools
+import inspect
 import io
 import json
 import queue
@@ -165,8 +166,42 @@ def _verbose_callback(name: str = None):
     def decorator(func):
         cb_name = name or func.__name__
 
+        # func の必要引数数を取得（デフォルト値なし POSITIONAL_OR_KEYWORD）
+        try:
+            sig = inspect.signature(func)
+            required_count = sum(
+                1 for p in sig.parameters.values()
+                if p.kind in (
+                    inspect.Parameter.POSITIONAL_ONLY,
+                    inspect.Parameter.POSITIONAL_OR_KEYWORD,
+                )
+                and p.default is inspect.Parameter.empty
+            )
+        except (ValueError, TypeError):
+            required_count = 0
+
+        # func の positional パラメータ名リストを保持（kwargs との重複チェック用）
+        try:
+            _param_names = [
+                p.name for p in inspect.signature(func).parameters.values()
+                if p.kind in (
+                    inspect.Parameter.POSITIONAL_ONLY,
+                    inspect.Parameter.POSITIONAL_OR_KEYWORD,
+                )
+                and p.default is inspect.Parameter.empty
+            ]
+        except (ValueError, TypeError):
+            _param_names = []
+
         @functools.wraps(func)
         def wrapper(*args, **kwargs):
+            # dpg が起動時に引数なしで callback を呼ぶケースに備え、
+            # 必要引数数まで None で補完する。
+            # ただし kwargs で既に渡されているパラメータはカウントから除外する。
+            already_in_kwargs = sum(1 for n in _param_names[:required_count] if n in kwargs)
+            effective_required = required_count - already_in_kwargs
+            while len(args) < effective_required:
+                args = args + (None,)
             if not _verbose_state:
                 return func(*args, **kwargs)
             # verbose ON 時のみ記録
