@@ -90,9 +90,9 @@ class TestCaptionSystemInitParams:
         assert cs._idle_timeout_sec == pytest.approx(120.0)
 
     def test_idle_audio_threshold_default(self):
-        """idle_audio_threshold のデフォルトは 100。"""
+        """idle_audio_threshold のデフォルトは 200（TBD-4-2 実機計測で 100 は厳しすぎると判明）。"""
         cs = _make_caption_system()
-        assert cs._idle_audio_threshold == 100
+        assert cs._idle_audio_threshold == 200
 
     def test_idle_audio_threshold_custom(self):
         """idle_audio_threshold に任意の値を渡せること。"""
@@ -603,9 +603,9 @@ class TestRouteConfigIdleFields:
         assert hasattr(rc, "idle_audio_threshold")
 
     def test_route_config_idle_audio_threshold_default(self):
-        """RouteConfig.idle_audio_threshold のデフォルトは 100。"""
+        """RouteConfig.idle_audio_threshold のデフォルトは 200（TBD-4-2 実機計測で 100 は厳しすぎると判明）。"""
         rc = self._make_route_config()
-        assert rc.idle_audio_threshold == 100
+        assert rc.idle_audio_threshold == 200
 
     def test_route_config_idle_audio_threshold_custom(self):
         """RouteConfig.idle_audio_threshold に任意の値を設定できること。"""
@@ -723,4 +723,4 @@ class TestMultiCaptionSystemIdlePropagation:
         assert mcs.route_a_system is not None
         assert mcs.route_a_system._idle_disconnect_enabled is False
         assert mcs.route_a_system._idle_timeout_sec == pytest.approx(300.0)
-        assert mcs.route_a_system._idle_audio_threshold == 100
+        assert mcs.route_a_system._idle_audio_threshold == 200  # TBD-4-2: デフォルト 100→200 に変更

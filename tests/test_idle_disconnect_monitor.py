@@ -58,12 +58,12 @@ class TestInit:
         assert default == 300.0, f"デフォルト idle_timeout_sec が 300.0 でない: {default}"
 
     def test_default_audio_threshold(self):
-        """audio_threshold のデフォルトが 100 であること。"""
+        """audio_threshold のデフォルトが 200 であること（TBD-4-2 実機計測で 100 は厳しすぎると判明）。"""
         import inspect
 
         sig = inspect.signature(IdleDisconnectMonitor.__init__)
         default = sig.parameters["audio_threshold"].default
-        assert default == 100, f"デフォルト audio_threshold が 100 でない: {default}"
+        assert default == 200, f"デフォルト audio_threshold が 200 でない: {default}"
 
     def test_default_on_idle_timeout_is_none(self):
         """on_idle_timeout のデフォルトが None であること。"""
