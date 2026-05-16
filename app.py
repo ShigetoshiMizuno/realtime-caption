@@ -2864,29 +2864,37 @@ def _load_fonts(size: int = 16):
 
 def _build_gui():
     global _dpg_ready
-    dpg.create_context()
+    with _startup_step("dpg.create_context"):
+        dpg.create_context()
     _dpg_ready = True
 
-    _load_fonts(16)
-    if _font_main:
-        dpg.bind_font(_font_main)  # 日本語テキストをデフォルトに
+    with _startup_step("フォントロード"):
+        _load_fonts(16)
+        if _font_main:
+            dpg.bind_font(_font_main)  # 日本語テキストをデフォルトに
 
     # レベルメーター色テーマ（progress bar の塗りを 緑/黄/赤 に切替）
-    with dpg.theme(tag=TAG_LEVEL_THEME_GREEN):
-        with dpg.theme_component(dpg.mvProgressBar):
-            dpg.add_theme_color(dpg.mvThemeCol_PlotHistogram, (60, 180, 75))
-    with dpg.theme(tag=TAG_LEVEL_THEME_YELLOW):
-        with dpg.theme_component(dpg.mvProgressBar):
-            dpg.add_theme_color(dpg.mvThemeCol_PlotHistogram, (240, 200, 40))
-    with dpg.theme(tag=TAG_LEVEL_THEME_RED):
-        with dpg.theme_component(dpg.mvProgressBar):
-            dpg.add_theme_color(dpg.mvThemeCol_PlotHistogram, (230, 60, 60))
+    with _startup_step("テーマ作成（progress bar カラー）"):
+        with dpg.theme(tag=TAG_LEVEL_THEME_GREEN):
+            with dpg.theme_component(dpg.mvProgressBar):
+                dpg.add_theme_color(dpg.mvThemeCol_PlotHistogram, (60, 180, 75))
+        with dpg.theme(tag=TAG_LEVEL_THEME_YELLOW):
+            with dpg.theme_component(dpg.mvProgressBar):
+                dpg.add_theme_color(dpg.mvThemeCol_PlotHistogram, (240, 200, 40))
+        with dpg.theme(tag=TAG_LEVEL_THEME_RED):
+            with dpg.theme_component(dpg.mvProgressBar):
+                dpg.add_theme_color(dpg.mvThemeCol_PlotHistogram, (230, 60, 60))
 
     # viewport title は Windows API 経由で ANSI 変換されるため ASCII で設定し、
     # 表示後に Win32 API (SetWindowTextW) で UTF-16 に書き換える
-    dpg.create_viewport(title="Realtime Caption", width=960, height=680, resizable=True)
-    dpg.setup_dearpygui()
+    with _startup_step("dpg.create_viewport"):
+        dpg.create_viewport(title="Realtime Caption", width=960, height=680, resizable=True)
+    with _startup_step("dpg.setup_dearpygui"):
+        dpg.setup_dearpygui()
 
+    # ウィジェット追加計測：__enter__/__exit__ を明示的に呼び出してインデント変更なしで包む
+    _widget_step = _startup_step("ウィジェット追加")
+    _widget_step.__enter__()
     rpc_port = _config.get("rpc", {}).get("port", 8767)
     saved = _load_settings()
     route_a_saved = saved.get("route_a", {})
@@ -3444,6 +3452,7 @@ def _build_gui():
             dpg.add_text("", tag=TAG_STATUS_COST)
 
     dpg.set_primary_window("main_window", True)
+    _widget_step.__exit__(None, None, None)
     # ステータスバーの文字は Meiryo（グローバル）で統一する。
     # ⏹⏳⚪🔵🟡🔴 等は Meiryo に収録されているためモノクロで表示可能。
 
@@ -3693,7 +3702,8 @@ def main():
         _devices = list_audio_devices(host_api=_host_api)
 
     rpc_port = _config.get("rpc", {}).get("port", 8767)
-    _start_rpc_server(rpc_port)
+    with _startup_step("RPC サーバー起動"):
+        _start_rpc_server(rpc_port)
 
     with _startup_step("settings.json 状態復元"):
         _ptt_saved = _load_ptt_settings(_load_settings())
@@ -3703,14 +3713,16 @@ def main():
         _create_konnyaku_system()
 
     # PTT マネージャー初期化（_konnyaku_system 生成後に行う）
-    _init_ptt_manager(
-        ptt_enabled=_ptt_saved["ptt_enabled"],
-        ptt_hotkey=_ptt_saved["ptt_hotkey"],
-    )
+    with _startup_step("PTT マネージャー初期化"):
+        _init_ptt_manager(
+            ptt_enabled=_ptt_saved["ptt_enabled"],
+            ptt_hotkey=_ptt_saved["ptt_hotkey"],
+        )
 
     with _startup_step("GUI 構築"):
         _build_gui()
-    dpg.show_viewport()
+    with _startup_step("ビューポート表示"):
+        dpg.show_viewport()
 
     _app_startup_dt = time.monotonic() - _app_start_time
     print(f"[STARTUP] 全体起動時間: {_app_startup_dt:.2f}s", flush=True)
