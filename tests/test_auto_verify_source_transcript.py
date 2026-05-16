@@ -95,7 +95,8 @@ class TestCountRtWsRecvEvents:
     def test_output_audio_counted(self):
         """session.output_audio.delta が正確にカウントされること。"""
         counts = avst.count_rt_ws_recv_events(SAMPLE_VERBOSE_WITH_SOURCE)
-        assert counts.get("session.output_audio.delta", 0) == 2
+        # SAMPLE_VERBOSE_WITH_SOURCE 内の output_audio.delta 行数に合わせる（3件）
+        assert counts.get("session.output_audio.delta", 0) == 3
 
     def test_session_created_counted(self):
         """session.created が 1 件カウントされること。"""
