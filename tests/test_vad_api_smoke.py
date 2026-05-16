@@ -497,3 +497,185 @@ class TestRunSmokeTest:
         assert result["params"]["vad_silence_ms"] == 800
         assert result["params"]["vad_prefix_ms"] == 200
         assert result["params"]["target_language"] == "en"
+
+
+# ---------------------------------------------------------------------------
+# 5. run_smoke_test — エラーレスポンス検出の強化（Fix 3: hotfix/vad-force-off-and-smoke-strict）
+# ---------------------------------------------------------------------------
+
+class TestRunSmokeTestErrorDetection:
+    """session.created 後にエラーレスポンスが来た場合も unsupported 検出できること。
+    TBD-3-1 再オープン（2026-05-16 実機検証）の教訓:
+    接続成功 (session.created) 後に error が来ても正しく検出すること。
+    """
+
+    def test_error_after_session_created_returns_unsupported(self):
+        """session.created の後に Unknown parameter エラーが来た場合、unsupported と判定すること。"""
+        # 1回目: session.created / 2回目: error
+        recv_responses = [
+            json.dumps({"type": "session.created", "session": {"id": "fake-sess-0000"}}),
+            json.dumps({
+                "type": "error",
+                "error": {
+                    "type": "invalid_request_error",
+                    "code": "unknown_parameter",
+                    "message": "Unknown parameter: 'session.audio.input.turn_detection'.",
+                },
+            }),
+        ]
+        recv_iter = iter(recv_responses)
+
+        mock_ws = MagicMock()
+
+        async def mock_recv():
+            try:
+                return next(recv_iter)
+            except StopIteration:
+                import asyncio as _asyncio
+                raise _asyncio.TimeoutError()
+
+        mock_ws.recv = mock_recv
+        mock_ws.send = MagicMock(return_value=None)
+
+        async def fake_send(data):
+            pass
+
+        mock_ws.send = fake_send
+        mock_ws.__aenter__ = AsyncMock(return_value=mock_ws)
+        mock_ws.__aexit__ = AsyncMock(return_value=None)
+
+        with patch("test_vad_api_smoke.websockets_connect", return_value=mock_ws):
+            result = asyncio.run(
+                run_smoke_test(
+                    api_key="sk-test-fake-smoke-errorafter-0000",
+                    threshold=0.5,
+                    silence_ms=500,
+                    prefix_ms=300,
+                    target_lang="ja",
+                    timeout=2.0,
+                )
+            )
+
+        assert result["status"] == "unsupported", (
+            f"session.created 後の Unknown parameter error は unsupported であること。got={result}"
+        )
+        assert result["error_category"] == "unsupported"
+
+    def test_session_updated_after_session_created_returns_ok(self):
+        """session.created の後に session.updated が来た場合、ok と判定すること。"""
+        recv_responses = [
+            json.dumps({"type": "session.created", "session": {"id": "fake-sess-0001"}}),
+            json.dumps({"type": "session.updated", "session": {"id": "fake-sess-0001"}}),
+        ]
+        recv_iter = iter(recv_responses)
+
+        mock_ws = MagicMock()
+
+        async def mock_recv():
+            try:
+                return next(recv_iter)
+            except StopIteration:
+                import asyncio as _asyncio
+                raise _asyncio.TimeoutError()
+
+        mock_ws.recv = mock_recv
+
+        async def fake_send(data):
+            pass
+
+        mock_ws.send = fake_send
+        mock_ws.__aenter__ = AsyncMock(return_value=mock_ws)
+        mock_ws.__aexit__ = AsyncMock(return_value=None)
+
+        with patch("test_vad_api_smoke.websockets_connect", return_value=mock_ws):
+            result = asyncio.run(
+                run_smoke_test(
+                    api_key="sk-test-fake-smoke-updated-0000",
+                    threshold=0.5,
+                    silence_ms=500,
+                    prefix_ms=300,
+                    target_lang="ja",
+                    timeout=2.0,
+                )
+            )
+
+        assert result["status"] == "ok", (
+            f"session.created 後に session.updated が来たら ok であること。got={result}"
+        )
+
+    def test_only_session_created_no_further_response_returns_no_response_or_ok(self):
+        """session.created のみで session.updated もエラーも来ない場合、
+        no_response もしくは ok が返ること（タイムアウト = 未確定）。"""
+        recv_responses = [
+            json.dumps({"type": "session.created", "session": {"id": "fake-sess-0002"}}),
+        ]
+        recv_iter = iter(recv_responses)
+
+        mock_ws = MagicMock()
+
+        async def mock_recv():
+            try:
+                return next(recv_iter)
+            except StopIteration:
+                import asyncio as _asyncio
+                raise _asyncio.TimeoutError()
+
+        mock_ws.recv = mock_recv
+
+        async def fake_send(data):
+            pass
+
+        mock_ws.send = fake_send
+        mock_ws.__aenter__ = AsyncMock(return_value=mock_ws)
+        mock_ws.__aexit__ = AsyncMock(return_value=None)
+
+        with patch("test_vad_api_smoke.websockets_connect", return_value=mock_ws):
+            result = asyncio.run(
+                run_smoke_test(
+                    api_key="sk-test-fake-smoke-noresponse-0000",
+                    threshold=0.5,
+                    silence_ms=500,
+                    prefix_ms=300,
+                    target_lang="ja",
+                    timeout=0.5,
+                )
+            )
+
+        # session.created のみで session.updated がない場合、ok または no_response のどちらかを許容
+        # (run_smoke_test の実装次第だが、少なくとも unsupported / auth_error ではないこと)
+        assert result["status"] in ("ok", "no_response"), (
+            f"session.created のみの場合は ok または no_response であること。got={result}"
+        )
+
+    def test_error_code_unknown_parameter_in_code_field(self):
+        """error.code が 'unknown_parameter' の場合も unsupported に分類されること。"""
+        error_data = {
+            "type": "invalid_request_error",
+            "code": "unknown_parameter",
+            "message": "Unknown parameter: 'session.audio.input.turn_detection'.",
+        }
+        category, message = parse_error_response(error_data)
+        assert category == "unsupported", (
+            f"error.code='unknown_parameter' は unsupported に分類されること。category={category}"
+        )
+
+    def test_format_report_no_response_status(self):
+        """status='no_response' のとき format_report が適切な文字列を返すこと。"""
+        result = {
+            "status": "no_response",
+            "error_category": None,
+            "error_message": None,
+            "elapsed": 3.0,
+            "timeout": 3.0,
+            "params": {
+                "vad_enabled": True,
+                "vad_threshold": 0.5,
+                "vad_silence_ms": 500,
+                "vad_prefix_ms": 300,
+                "target_language": "ja",
+            },
+        }
+        text = format_report(result, output_json=False)
+        # no_response は「不確定」として処理されるので、クラッシュしないこと
+        assert isinstance(text, str)
+        assert len(text) > 0
