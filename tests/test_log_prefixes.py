@@ -333,10 +333,18 @@ class TestRpcHandlerLog:
         handler = _RPCHandler_NoServer(path=path, method=method, body=body)
         return handler
 
+    def _mock_dpg(self):
+        """dpg をモックする。does_item_exist=False で全ウィジェット無効にする。"""
+        m = MagicMock()
+        m.does_item_exist.return_value = False
+        m.get_value.return_value = ""
+        return m
+
     def test_do_get_status_emits_rpc(self, capsys):
         """GET /api/status が [RPC] ログを出力すること。"""
         handler = self._make_handler("/api/status")
-        with patch.object(handler, "_send_json"):
+        with patch.object(handler, "_send_json"), \
+             patch("app.dpg", self._mock_dpg()):
             handler.do_GET()
         captured = capsys.readouterr()
         assert "[RPC]" in captured.out, \
@@ -347,7 +355,8 @@ class TestRpcHandlerLog:
     def test_do_get_log_emits_rpc(self, capsys):
         """GET /api/log が [RPC] ログを出力すること。"""
         handler = self._make_handler("/api/log")
-        with patch.object(handler, "_send_json"):
+        with patch.object(handler, "_send_json"), \
+             patch("app.dpg", self._mock_dpg()):
             handler.do_GET()
         captured = capsys.readouterr()
         assert "[RPC]" in captured.out, \
@@ -356,7 +365,8 @@ class TestRpcHandlerLog:
     def test_do_get_devices_emits_rpc(self, capsys):
         """GET /api/devices が [RPC] ログを出力すること。"""
         handler = self._make_handler("/api/devices")
-        with patch.object(handler, "_send_json"):
+        with patch.object(handler, "_send_json"), \
+             patch("app.dpg", self._mock_dpg()):
             handler.do_GET()
         captured = capsys.readouterr()
         assert "[RPC]" in captured.out, \
@@ -365,7 +375,8 @@ class TestRpcHandlerLog:
     def test_do_get_audio_emits_rpc(self, capsys):
         """GET /api/audio が [RPC] ログを出力すること。"""
         handler = self._make_handler("/api/audio")
-        with patch.object(handler, "_send_json"):
+        with patch.object(handler, "_send_json"), \
+             patch("app.dpg", self._mock_dpg()):
             handler.do_GET()
         captured = capsys.readouterr()
         assert "[RPC]" in captured.out, \
@@ -375,7 +386,8 @@ class TestRpcHandlerLog:
         """POST /api/stop が [RPC] ログを出力すること。"""
         handler = self._make_handler("/api/stop", method="POST")
         with patch.object(handler, "_send_json"), \
-             patch.object(app, "_enqueue"):
+             patch.object(app, "_enqueue"), \
+             patch("app.dpg", self._mock_dpg()):
             handler.do_POST()
         captured = capsys.readouterr()
         assert "[RPC]" in captured.out, \
@@ -389,7 +401,8 @@ class TestRpcHandlerLog:
         body = _json.dumps({"device_index": 22}).encode("utf-8")
         handler = self._make_handler("/api/start", method="POST", body=body)
         with patch.object(handler, "_send_json"), \
-             patch.object(app, "_enqueue"):
+             patch.object(app, "_enqueue"), \
+             patch("app.dpg", self._mock_dpg()):
             handler.do_POST()
         captured = capsys.readouterr()
         assert "[RPC]" in captured.out, \

@@ -117,6 +117,28 @@ def _startup_step(label: str):
 
 
 # ---------------------------------------------------------------------------
+# ログヘルパー — [USER] / [RPC] / [ACTION] プリフィックス (issue #121-B)
+# ---------------------------------------------------------------------------
+
+def _log_user(event: str, **kwargs) -> None:
+    """ボタン押下・UI イベント受信ログ。dpg コールバックの入口で必ず呼ぶ。"""
+    detail = " ".join(f"{k}={v}" for k, v in kwargs.items())
+    print(f"[USER] {event}{(' ' + detail) if detail else ''}", flush=True)
+
+
+def _log_rpc(event: str, **kwargs) -> None:
+    """RPC リクエスト受信ログ。_RPCHandler の各 do_GET/do_POST 分岐で呼ぶ。"""
+    detail = " ".join(f"{k}={v}" for k, v in kwargs.items())
+    print(f"[RPC] {event}{(' ' + detail) if detail else ''}", flush=True)
+
+
+def _log_action(event: str, **kwargs) -> None:
+    """処理実行ログ。実際の処理ロジック（再起動、設定更新、API呼出等）の前後で呼ぶ。"""
+    detail = " ".join(f"{k}={v}" for k, v in kwargs.items())
+    print(f"[ACTION] {event}{(' ' + detail) if detail else ''}", flush=True)
+
+
+# ---------------------------------------------------------------------------
 # グローバル状態
 # ---------------------------------------------------------------------------
 
@@ -654,7 +676,7 @@ def _on_gain_value_change(sender, value, user_data):
 
 def _on_route_a_volume_change(sender, app_data, user_data):
     """経路A 出力音量スライダー変更時。動作中の AudioOutputStream に即反映。"""
-    print(f"[USER] 系統1 出力音量変更: {float(app_data):.2f}", flush=True)
+    _log_user(f"系統1 出力音量変更: {float(app_data):.2f}")
     _save_settings()
     if _konnyaku_system is None or _konnyaku_system.route_a_system is None:
         return
@@ -666,7 +688,7 @@ def _on_route_a_volume_change(sender, app_data, user_data):
 
 def _on_route_b_volume_change(sender, app_data, user_data):
     """経路B 出力音量スライダー変更時。動作中の AudioOutputStream に即反映。"""
-    print(f"[USER] 系統2 出力音量変更: {float(app_data):.2f}", flush=True)
+    _log_user(f"系統2 出力音量変更: {float(app_data):.2f}")
     _save_settings()
     if _konnyaku_system is None or _konnyaku_system.route_b_system is None:
         return
@@ -678,7 +700,7 @@ def _on_route_b_volume_change(sender, app_data, user_data):
 
 def _on_route_a_output_device_change(sender, app_data, user_data):
     """経路A 出力デバイス変更時。動作中の系統に即反映。"""
-    print(f"[USER] 系統1 出力デバイス選択: {app_data!r}", flush=True)
+    _log_user(f"系統1 出力デバイス選択: {app_data!r}")
     _save_settings()
     if _konnyaku_system is None or _konnyaku_system.route_a_system is None:
         return
@@ -697,7 +719,7 @@ def _on_route_a_output_device_change(sender, app_data, user_data):
 
 def _on_route_b_output_device_change(sender, app_data, user_data):
     """経路B 出力デバイス変更時。動作中の系統に即反映。"""
-    print(f"[USER] 系統2 出力デバイス選択: {app_data!r}", flush=True)
+    _log_user(f"系統2 出力デバイス選択: {app_data!r}")
     _save_settings()
     if _konnyaku_system is None or _konnyaku_system.route_b_system is None:
         return
@@ -734,6 +756,7 @@ def _restart_route_for_change(route_id: str, reason_label: str) -> None:
     lock = _restart_locks[route_id]
     if not lock.acquire(blocking=False):
         # 既に同系統の再起動が進行中 → スキップして通知
+        _log_action(f"route_{route_id} 再起動 skip", reason="既に再起動中")
         _gui_queue.put({
             "cmd": "set_status",
             "text": f"系統{route_id.upper()} 再起動中のため別の切替はスキップしました",
@@ -741,9 +764,10 @@ def _restart_route_for_change(route_id: str, reason_label: str) -> None:
         return
 
     try:
-        print(f"[INFO] route_{route_id} {reason_label}のため再起動開始", flush=True)
+        _log_action(f"route_{route_id} 再起動開始", reason=reason_label)
         _konnyaku_system.stop_route(route_id)
         _konnyaku_system.start_route(route_id)
+        _log_action(f"route_{route_id} 再起動完了")
     except Exception as e:
         print(f"[ERROR] route_{route_id} {reason_label}再起動失敗: {e}", flush=True)
     finally:
@@ -754,7 +778,7 @@ def _restart_route_for_change(route_id: str, reason_label: str) -> None:
 
 def _on_route_a_output_enable_change(sender, app_data, user_data):
     """経路A 音声出力 ON/OFF 変更時。稼働中なら再起動して API 側を即反映（W-COST-1 案B）。"""
-    print(f"[USER] 系統1 音声出力 {'ON' if app_data else 'OFF'}", flush=True)
+    _log_user(f"系統1 音声出力 {'ON' if app_data else 'OFF'}")
     _save_settings()
     if _konnyaku_system is None or _konnyaku_system.route_a_system is None:
         return
@@ -796,7 +820,7 @@ def _on_route_a_output_enable_change(sender, app_data, user_data):
 
 def _on_route_b_output_enable_change(sender, app_data, user_data):
     """経路B 音声出力 ON/OFF 変更時。稼働中なら再起動して API 側を即反映（W-COST-1 案B）。"""
-    print(f"[USER] 系統2 音声出力 {'ON' if app_data else 'OFF'}", flush=True)
+    _log_user(f"系統2 音声出力 {'ON' if app_data else 'OFF'}")
     _save_settings()
     if _konnyaku_system is None or _konnyaku_system.route_b_system is None:
         return
@@ -843,6 +867,8 @@ def _on_route_a_source_transcript_change(sender, app_data):
     _restart_route_for_change で stop_route -> start_route を実行し、
     Whisper コスト削減を即時反映する。
     """
+    new_val = "ON" if app_data else "OFF"
+    _log_user(f"系統1 原文表示 → {new_val}")
     _save_settings()
     if (
         _konnyaku_running
@@ -852,12 +878,12 @@ def _on_route_a_source_transcript_change(sender, app_data):
     ):
         if dpg.does_item_exist(TAG_STATUS_STATE):
             try:
-                dpg.set_value(TAG_STATUS_STATE, "系統1 原文表示 ON/OFF 切替中...")
+                dpg.set_value(TAG_STATUS_STATE, f"系統1 原文表示 → {new_val} 切替中...")
             except Exception:
                 pass
         threading.Thread(
             target=_restart_route_for_change,
-            args=("a", "原文表示 ON/OFF 切替"),
+            args=("a", f"原文表示 → {new_val}"),
             daemon=True,
             name="RestartRouteAForSourceTranscript",
         ).start()
@@ -870,6 +896,8 @@ def _on_route_b_source_transcript_change(sender, app_data):
     _restart_route_for_change で stop_route -> start_route を実行し、
     Whisper コスト削減を即時反映する。
     """
+    new_val = "ON" if app_data else "OFF"
+    _log_user(f"系統2 原文表示 → {new_val}")
     _save_settings()
     if (
         _konnyaku_running
@@ -879,12 +907,12 @@ def _on_route_b_source_transcript_change(sender, app_data):
     ):
         if dpg.does_item_exist(TAG_STATUS_STATE):
             try:
-                dpg.set_value(TAG_STATUS_STATE, "系統2 原文表示 ON/OFF 切替中...")
+                dpg.set_value(TAG_STATUS_STATE, f"系統2 原文表示 → {new_val} 切替中...")
             except Exception:
                 pass
         threading.Thread(
             target=_restart_route_for_change,
-            args=("b", "原文表示 ON/OFF 切替"),
+            args=("b", f"原文表示 → {new_val}"),
             daemon=True,
             name="RestartRouteBForSourceTranscript",
         ).start()
@@ -901,6 +929,8 @@ def _on_route_a_vad_enable_change(sender, app_data):
     stop_route -> start_route を実行し、最新の vad_enabled を RealtimeTranslator に反映する。
     停止中なら _save_settings のみ実行する。
     """
+    new_val = "ON" if app_data else "OFF"
+    _log_user(f"系統1 VAD → {new_val}")
     _save_settings()
     # スライダーの enabled 状態を VAD ON/OFF に連動して切替（W-1 対応）
     if dpg.does_item_exist(TAG_ROUTE_A_VAD_SILENCE_MS):
@@ -915,12 +945,12 @@ def _on_route_a_vad_enable_change(sender, app_data):
     ):
         if dpg.does_item_exist(TAG_STATUS_STATE):
             try:
-                dpg.set_value(TAG_STATUS_STATE, "系統1 VAD ON/OFF 切替中...")
+                dpg.set_value(TAG_STATUS_STATE, f"系統1 VAD → {new_val} 切替中...")
             except Exception:
                 pass
         threading.Thread(
             target=_restart_route_for_change,
-            args=("a", "VAD ON/OFF 切替"),
+            args=("a", f"VAD → {new_val}"),
             daemon=True,
             name="RestartRouteAForVadEnable",
         ).start()
@@ -928,6 +958,8 @@ def _on_route_a_vad_enable_change(sender, app_data):
 
 def _on_route_b_vad_enable_change(sender, app_data):
     """系統B VAD 有効化 ON/OFF 変更時。稼働中なら即時再起動して反映（W-COST-3）。"""
+    new_val = "ON" if app_data else "OFF"
+    _log_user(f"系統2 VAD → {new_val}")
     _save_settings()
     # スライダーの enabled 状態を VAD ON/OFF に連動して切替（W-1 対応）
     if dpg.does_item_exist(TAG_ROUTE_B_VAD_SILENCE_MS):
@@ -942,12 +974,12 @@ def _on_route_b_vad_enable_change(sender, app_data):
     ):
         if dpg.does_item_exist(TAG_STATUS_STATE):
             try:
-                dpg.set_value(TAG_STATUS_STATE, "系統2 VAD ON/OFF 切替中...")
+                dpg.set_value(TAG_STATUS_STATE, f"系統2 VAD → {new_val} 切替中...")
             except Exception:
                 pass
         threading.Thread(
             target=_restart_route_for_change,
-            args=("b", "VAD ON/OFF 切替"),
+            args=("b", f"VAD → {new_val}"),
             daemon=True,
             name="RestartRouteBForVadEnable",
         ).start()
@@ -955,6 +987,7 @@ def _on_route_b_vad_enable_change(sender, app_data):
 
 def _on_route_a_vad_silence_ms_change(sender, app_data):
     """系統A VAD silence_duration_ms スライダー変更時。稼働中なら即時再起動（W-COST-3）。"""
+    _log_user(f"系統1 VAD 無音時間 → {int(app_data)} ms")
     _save_settings()
     if (
         _konnyaku_running
@@ -964,12 +997,12 @@ def _on_route_a_vad_silence_ms_change(sender, app_data):
     ):
         if dpg.does_item_exist(TAG_STATUS_STATE):
             try:
-                dpg.set_value(TAG_STATUS_STATE, "系統1 VAD 無音時間 切替中...")
+                dpg.set_value(TAG_STATUS_STATE, f"系統1 VAD 無音時間 → {int(app_data)} ms 切替中...")
             except Exception:
                 pass
         threading.Thread(
             target=_restart_route_for_change,
-            args=("a", "VAD silence_duration_ms 変更"),
+            args=("a", f"VAD silence_duration_ms → {int(app_data)} ms"),
             daemon=True,
             name="RestartRouteAForVadSilenceMs",
         ).start()
@@ -977,6 +1010,7 @@ def _on_route_a_vad_silence_ms_change(sender, app_data):
 
 def _on_route_b_vad_silence_ms_change(sender, app_data):
     """系統B VAD silence_duration_ms スライダー変更時。稼働中なら即時再起動（W-COST-3）。"""
+    _log_user(f"系統2 VAD 無音時間 → {int(app_data)} ms")
     _save_settings()
     if (
         _konnyaku_running
@@ -986,12 +1020,12 @@ def _on_route_b_vad_silence_ms_change(sender, app_data):
     ):
         if dpg.does_item_exist(TAG_STATUS_STATE):
             try:
-                dpg.set_value(TAG_STATUS_STATE, "系統2 VAD 無音時間 切替中...")
+                dpg.set_value(TAG_STATUS_STATE, f"系統2 VAD 無音時間 → {int(app_data)} ms 切替中...")
             except Exception:
                 pass
         threading.Thread(
             target=_restart_route_for_change,
-            args=("b", "VAD silence_duration_ms 変更"),
+            args=("b", f"VAD silence_duration_ms → {int(app_data)} ms"),
             daemon=True,
             name="RestartRouteBForVadSilenceMs",
         ).start()
@@ -999,6 +1033,7 @@ def _on_route_b_vad_silence_ms_change(sender, app_data):
 
 def _on_route_a_vad_threshold_change(sender, app_data):
     """系統A VAD threshold スライダー変更時。稼働中なら即時再起動（W-COST-3）。"""
+    _log_user(f"系統1 VAD 感度 → {float(app_data):.2f}")
     _save_settings()
     if (
         _konnyaku_running
@@ -1008,12 +1043,12 @@ def _on_route_a_vad_threshold_change(sender, app_data):
     ):
         if dpg.does_item_exist(TAG_STATUS_STATE):
             try:
-                dpg.set_value(TAG_STATUS_STATE, "系統1 VAD 感度 切替中...")
+                dpg.set_value(TAG_STATUS_STATE, f"系統1 VAD 感度 → {float(app_data):.2f} 切替中...")
             except Exception:
                 pass
         threading.Thread(
             target=_restart_route_for_change,
-            args=("a", "VAD threshold 変更"),
+            args=("a", f"VAD threshold → {float(app_data):.2f}"),
             daemon=True,
             name="RestartRouteAForVadThreshold",
         ).start()
@@ -1021,6 +1056,7 @@ def _on_route_a_vad_threshold_change(sender, app_data):
 
 def _on_route_b_vad_threshold_change(sender, app_data):
     """系統B VAD threshold スライダー変更時。稼働中なら即時再起動（W-COST-3）。"""
+    _log_user(f"系統2 VAD 感度 → {float(app_data):.2f}")
     _save_settings()
     if (
         _konnyaku_running
@@ -1030,12 +1066,12 @@ def _on_route_b_vad_threshold_change(sender, app_data):
     ):
         if dpg.does_item_exist(TAG_STATUS_STATE):
             try:
-                dpg.set_value(TAG_STATUS_STATE, "系統2 VAD 感度 切替中...")
+                dpg.set_value(TAG_STATUS_STATE, f"系統2 VAD 感度 → {float(app_data):.2f} 切替中...")
             except Exception:
                 pass
         threading.Thread(
             target=_restart_route_for_change,
-            args=("b", "VAD threshold 変更"),
+            args=("b", f"VAD threshold → {float(app_data):.2f}"),
             daemon=True,
             name="RestartRouteBForVadThreshold",
         ).start()
@@ -1050,23 +1086,25 @@ def _on_idle_disconnect_enabled_change(sender, app_data, user_data=None) -> None
 
     稼働中の場合は設定変更を次回起動時に反映（セッション再起動不要の軽量設定）。
     """
-    print(f"[USER] アイドル切断 {'ON' if app_data else 'OFF'}", flush=True)
+    _log_user(f"アイドル切断 {'ON' if app_data else 'OFF'}")
     _save_settings()
 
 
 def _on_idle_timeout_change(sender, app_data, user_data=None) -> None:
     """アイドルタイムアウト スライダー変更時。設定を保存する。"""
+    _log_user(f"アイドルタイムアウト → {int(app_data)} 秒")
     _save_settings()
 
 
 def _on_idle_audio_threshold_change(sender, app_data, user_data=None) -> None:
     """音声検知閾値 スライダー変更時。設定を保存する。"""
+    _log_user(f"アイドル音声検知閾値 → {int(app_data)}")
     _save_settings()
 
 
 def _on_idle_resume_click(sender, app_data, user_data=None) -> None:
     """「再開」ボタンクリック → 両系統 resume_from_idle()。"""
-    print("[USER] アイドル切断から再開ボタン押下", flush=True)
+    _log_user("アイドル切断から再開ボタン押下")
     if _konnyaku_system is None:
         return
     if _konnyaku_system.route_a_system is not None:
@@ -1106,7 +1144,7 @@ def _on_route_a_language_change(sender, app_data, user_data) -> None:
     _restart_route_for_change で stop_route -> start_route を実行し、
     最新の target_language_code を RealtimeTranslator に反映する。
     """
-    print(f"[USER] 系統1 翻訳先言語 -> {app_data}", flush=True)
+    _log_user(f"系統1 翻訳先言語 -> {app_data}")
     _save_settings()
 
     # 表示名 → 言語コードに変換して _config を更新（W-1 修正: set_target_language 配線）
@@ -1143,7 +1181,7 @@ def _on_route_b_language_change(sender, app_data, user_data) -> None:
     _restart_route_for_change で stop_route -> start_route を実行し、
     最新の target_language_code を RealtimeTranslator に反映する。
     """
-    print(f"[USER] 系統2 翻訳先言語 -> {app_data}", flush=True)
+    _log_user(f"系統2 翻訳先言語 -> {app_data}")
     _save_settings()
 
     # 表示名 → 言語コードに変換して _config を更新（W-1 修正: set_target_language 配線）
@@ -1226,7 +1264,7 @@ def _on_zoom_preset_click():
 
 def _on_both_routes_on(sender=None, app_data=None, user_data=None):
     """系統1・系統2 を両方とも有効化（一括 ON）。"""
-    print("[USER] 両方 ON ボタン押下", flush=True)
+    _log_user("両方 ON ボタン押下")
     if dpg.does_item_exist(TAG_ROUTE_A_ENABLE):
         dpg.set_value(TAG_ROUTE_A_ENABLE, True)
     if dpg.does_item_exist(TAG_ROUTE_B_ENABLE):
@@ -1236,7 +1274,7 @@ def _on_both_routes_on(sender=None, app_data=None, user_data=None):
 
 def _on_both_routes_off(sender=None, app_data=None, user_data=None):
     """系統1・系統2 を両方とも無効化（一括 OFF）。"""
-    print("[USER] 両方 OFF ボタン押下", flush=True)
+    _log_user("両方 OFF ボタン押下")
     if dpg.does_item_exist(TAG_ROUTE_A_ENABLE):
         dpg.set_value(TAG_ROUTE_A_ENABLE, False)
     if dpg.does_item_exist(TAG_ROUTE_B_ENABLE):
@@ -1493,11 +1531,20 @@ def _create_konnyaku_system() -> None:
     if _konnyaku_system.route_b_system is not None:
         _konnyaku_system.route_b_system.gain_mode = "auto"
     print("[INFO] MultiCaptionSystem 常駐生成完了", flush=True)
+    _log_action(
+        "MultiCaptionSystem 生成完了",
+        route_a_request_source_transcript=a_source_transcript_enabled,
+        route_a_vad_enabled=a_vad_enabled,
+        route_a_output_enabled=a_output_enabled,
+        route_b_request_source_transcript=b_source_transcript_enabled,
+        route_b_vad_enabled=b_vad_enabled,
+        route_b_output_enabled=b_output_enabled,
+    )
 
 
 def _on_route_a_enable_change(sender, app_data, user_data) -> None:
     """系統1 有効チェック変更時。稼働中なら即時反映（B-14）。"""
-    print(f"[USER] 系統1 有効チェック {'ON' if app_data else 'OFF'}", flush=True)
+    _log_user(f"系統1 有効チェック {'ON' if app_data else 'OFF'}")
     _save_settings()
     if _konnyaku_system is None:
         return
@@ -1522,6 +1569,7 @@ def _on_ptt_press(event) -> None:
     start_route("b") は WebSocket 接続を含むため別スレッドで実行する（F-2.1）。
     _konnyaku_running=False の場合は no-op（F-7.4）。
     """
+    _log_user("PTT 押下")
     if not _konnyaku_running:
         return
     if _konnyaku_system is None:
@@ -1545,6 +1593,7 @@ def _on_ptt_release(event) -> None:
     stop_route("b") は別スレッドで実行する（F-2.2）。
     _konnyaku_running=False の場合は no-op。
     """
+    _log_user("PTT 離脱")
     if not _konnyaku_running:
         return
     if _konnyaku_system is None:
@@ -1819,8 +1868,7 @@ def _on_route_b_enable_change_ptt_aware(enabled: bool) -> None:
         チェックボックスの新しい値。
     """
     global _ptt_enabled
-    print(f"[USER] 系統2 有効チェック {'ON' if enabled else 'OFF'} "
-          f"(PTT={'ON' if _ptt_enabled else 'OFF'})", flush=True)
+    _log_user(f"系統2 有効チェック {'ON' if enabled else 'OFF'} (PTT={'ON' if _ptt_enabled else 'OFF'})")
 
     if _ptt_enabled:
         if not enabled:
@@ -1901,7 +1949,7 @@ def _update_ptt_visual_feedback() -> None:
 
 def _on_route_a_device_change(sender, app_data, user_data) -> None:
     """系統1 入力デバイス変更時。稼働中なら新デバイスで再起動（B-15）。"""
-    print(f"[USER] 系統1 入力デバイス選択: {app_data!r}", flush=True)
+    _log_user(f"系統1 入力デバイス選択: {app_data!r}")
     _save_settings()
     if _konnyaku_system is None or _konnyaku_system.route_a_system is None:
         return
@@ -1918,7 +1966,7 @@ def _on_route_a_device_change(sender, app_data, user_data) -> None:
 
 def _on_route_b_device_change(sender, app_data, user_data) -> None:
     """系統2 入力デバイス変更時。稼働中なら新デバイスで再起動（B-15）。"""
-    print(f"[USER] 系統2 入力デバイス選択: {app_data!r}", flush=True)
+    _log_user(f"系統2 入力デバイス選択: {app_data!r}")
     _save_settings()
     if _konnyaku_system is None or _konnyaku_system.route_b_system is None:
         return
@@ -1941,14 +1989,10 @@ def _on_konnyaku_start_stop_click():
     # 停止処理中に「開始」連打すると二重起動や内部状態不整合が起きるため早期 return する。
     if dpg.does_item_exist(TAG_KONNYAKU_START_BTN):
         if not dpg.get_item_configuration(TAG_KONNYAKU_START_BTN).get("enabled", True):
-            print("[USER] 開始ボタン連打を無視 (処理中)", flush=True)
+            _log_user("開始ボタン連打を無視 (処理中)")
             return
 
-    print(
-        f"[USER] {'停止' if _konnyaku_running else '開始'}ボタン押下"
-        f" (running={_konnyaku_running})",
-        flush=True,
-    )
+    _log_user(f"{'停止' if _konnyaku_running else '開始'}ボタン押下", running=_konnyaku_running)
 
     if _konnyaku_running:
         # 停止ボタン押下: すぐにボタンを「停止中...」+ disabled に切り替え、
@@ -1961,6 +2005,7 @@ def _on_konnyaku_start_stop_click():
 
         def _stop_in_background():
             global _konnyaku_running
+            _log_action("こんにゃくモード 停止開始")
             try:
                 if _konnyaku_system is not None:
                     _konnyaku_system.stop_all()
@@ -1968,6 +2013,7 @@ def _on_konnyaku_start_stop_click():
                 print(f"[ERROR] こんにゃく停止失敗: {e}", flush=True)
             finally:
                 _konnyaku_running = False
+                _log_action("こんにゃくモード 停止完了")
                 try:
                     _gui_set_label(TAG_KONNYAKU_START_BTN, "開始",
                                    name="konnyaku_start_btn", enabled=True)
@@ -2041,12 +2087,14 @@ def _on_konnyaku_start_stop_click():
                 print(f"[INFO] route_b device synced from GUI: '{b_label}' (index={b_dev.get('index')})", flush=True)
 
         # 有効な系統だけ start_route（常駐モデル: start_all でなく個別制御）
+        _log_action("こんにゃくモード 起動開始", route_a=route_a_enabled, route_b=route_b_enabled)
         if route_a_enabled and _konnyaku_system.route_a_system is not None:
             _konnyaku_system.start_route("a")
         if route_b_enabled and _konnyaku_system.route_b_system is not None:
             _konnyaku_system.start_route("b")
 
         _konnyaku_running = True
+        _log_action("こんにゃくモード 起動完了")
 
         if dpg.does_item_exist(TAG_KONNYAKU_START_BTN):
             _gui_set_label(TAG_KONNYAKU_START_BTN, "停止", name="konnyaku_start_btn")
@@ -2705,6 +2753,7 @@ class _RPCHandler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         if self.path == "/api/status":
+            _log_rpc("GET /api/status")
             ws_clients = _system._broadcaster.client_count if _system else 0
             device_label = dpg.get_value(TAG_DEVICE_COMBO) if dpg.does_item_exist(TAG_DEVICE_COMBO) else ""
             model = dpg.get_value(TAG_MODEL_COMBO) if dpg.does_item_exist(TAG_MODEL_COMBO) else ""
@@ -2721,12 +2770,15 @@ class _RPCHandler(BaseHTTPRequestHandler):
             })
 
         elif self.path == "/api/log":
+            _log_rpc("GET /api/log")
             self._send_json(_log_entries[-100:])
 
         elif self.path == "/api/devices":
+            _log_rpc("GET /api/devices")
             self._send_json(_devices)
 
         elif self.path == "/api/audio":
+            _log_rpc("GET /api/audio")
             peak = _system.audio_peak if _system else 0
             chunks = _system.audio_chunks_per_sec if _system else 0
             gain = _system.effective_gain if _system else 1.0
@@ -2744,6 +2796,7 @@ class _RPCHandler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         if self.path == "/api/stop":
+            _log_rpc("POST /api/stop")
             _enqueue("stop_system")
             self._send_json({"ok": True})
         elif self.path == "/api/start":
@@ -2754,6 +2807,7 @@ class _RPCHandler(BaseHTTPRequestHandler):
                     body = json.loads(self.rfile.read(length))
                 except Exception:
                     pass
+            _log_rpc("POST /api/start", device_index=body.get("device_index"))
             _enqueue("start_system", device_index=body.get("device_index"),
                      model=body.get("model"))
             self._send_json({"ok": True})
