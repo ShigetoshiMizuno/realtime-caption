@@ -32,7 +32,11 @@ from test_vad_api_smoke import (
 # ---------------------------------------------------------------------------
 
 class TestBuildSessionUpdate:
-    """build_session_update が正しい session.update payload を構築すること。"""
+    """GA 版 (2026-05-12 以降): build_session_update が最小ペイロードを構築すること。
+
+    TBD-3-1 確定: turn_detection は 'Unknown parameter' エラーで拒否されるため送らない。
+    GA 版では audio.output.language のみ送信する。
+    """
 
     def test_type_is_session_update(self):
         """payload の type が 'session.update' であること。"""
@@ -41,70 +45,57 @@ class TestBuildSessionUpdate:
         )
         assert payload["type"] == "session.update"
 
-    def test_session_audio_input_exists(self):
-        """session.audio.input が存在すること。"""
+    def test_session_audio_output_exists_ga(self):
+        """GA 版: session.audio.output が存在すること（input は送らない）。"""
         payload = build_session_update(
             threshold=0.5, silence_ms=500, prefix_ms=300, target_lang="ja"
         )
         assert "session" in payload
         assert "audio" in payload["session"]
-        assert "input" in payload["session"]["audio"]
+        assert "output" in payload["session"]["audio"], (
+            f"GA 版では audio.output が存在すること: {payload['session']['audio']}"
+        )
+        assert "input" not in payload["session"]["audio"], (
+            f"GA 版では audio.input は送らないこと: {payload['session']['audio']}"
+        )
 
-    def test_transcription_model_is_gpt_realtime_whisper(self):
-        """audio.input.transcription.model が 'gpt-realtime-whisper' であること（PR #29 との一致）。"""
+    def test_audio_output_language_is_target_lang_ga(self):
+        """GA 版: audio.output.language が target_lang と一致すること。"""
         payload = build_session_update(
             threshold=0.5, silence_ms=500, prefix_ms=300, target_lang="ja"
         )
-        audio_input = payload["session"]["audio"]["input"]
-        assert audio_input["transcription"]["model"] == "gpt-realtime-whisper"
+        assert payload["session"]["audio"]["output"]["language"] == "ja", (
+            f"audio.output.language は 'ja' であること: {payload}"
+        )
 
-    def test_turn_detection_type_is_server_vad(self):
-        """turn_detection.type が 'server_vad' であること。"""
+    def test_audio_output_language_en_ga(self):
+        """GA 版: target_lang='en' のとき audio.output.language が 'en' であること。"""
+        payload = build_session_update(
+            threshold=0.5, silence_ms=500, prefix_ms=300, target_lang="en"
+        )
+        assert payload["session"]["audio"]["output"]["language"] == "en"
+
+    def test_no_turn_detection_ga(self):
+        """GA 版: turn_detection は含まれないこと（TBD-3-1 確定: GA 版では仕様外）。"""
         payload = build_session_update(
             threshold=0.5, silence_ms=500, prefix_ms=300, target_lang="ja"
         )
-        td = payload["session"]["audio"]["input"]["turn_detection"]
-        assert td["type"] == "server_vad"
-
-    def test_turn_detection_threshold(self):
-        """turn_detection.threshold が指定値通りであること。"""
-        payload = build_session_update(
-            threshold=0.7, silence_ms=500, prefix_ms=300, target_lang="ja"
+        audio = payload["session"]["audio"]
+        audio_input = audio.get("input", {})
+        assert "turn_detection" not in audio_input, (
+            f"GA 版では turn_detection は送らないこと: {audio}"
         )
-        td = payload["session"]["audio"]["input"]["turn_detection"]
-        assert td["threshold"] == pytest.approx(0.7)
 
-    def test_turn_detection_silence_duration_ms(self):
-        """turn_detection.silence_duration_ms が指定値通りであること。"""
-        payload = build_session_update(
-            threshold=0.5, silence_ms=800, prefix_ms=300, target_lang="ja"
-        )
-        td = payload["session"]["audio"]["input"]["turn_detection"]
-        assert td["silence_duration_ms"] == 800
-
-    def test_turn_detection_prefix_padding_ms(self):
-        """turn_detection.prefix_padding_ms が指定値通りであること。"""
-        payload = build_session_update(
-            threshold=0.5, silence_ms=500, prefix_ms=200, target_lang="ja"
-        )
-        td = payload["session"]["audio"]["input"]["turn_detection"]
-        assert td["prefix_padding_ms"] == 200
-
-    def test_default_threshold(self):
-        """デフォルト threshold は 0.5 であること。"""
+    def test_no_transcription_ga(self):
+        """GA 版: audio.input.transcription は含まれないこと（transcript は自動発行）。"""
         payload = build_session_update(
             threshold=0.5, silence_ms=500, prefix_ms=300, target_lang="ja"
         )
-        td = payload["session"]["audio"]["input"]["turn_detection"]
-        assert td["threshold"] == pytest.approx(0.5)
-
-    def test_turn_detection_matches_pr97_session_update(self):
-        """PR #97 の session.update と同じ構造であること（turn_detection 全フィールド）。"""
-        payload = build_session_update(
-            threshold=0.5, silence_ms=500, prefix_ms=300, target_lang="ja"
+        audio = payload["session"]["audio"]
+        audio_input = audio.get("input", {})
+        assert "transcription" not in audio_input, (
+            f"GA 版では audio.input.transcription は送らないこと: {audio}"
         )
-        td = payload["session"]["audio"]["input"]["turn_detection"]
-        assert set(td.keys()) >= {"type", "threshold", "prefix_padding_ms", "silence_duration_ms"}
 
     def test_serializable_to_json(self):
         """payload が JSON シリアライズ可能であること。"""
@@ -114,6 +105,20 @@ class TestBuildSessionUpdate:
         dumped = json.dumps(payload)
         reloaded = json.loads(dumped)
         assert reloaded["type"] == "session.update"
+
+    def test_minimum_payload_structure_ga(self):
+        """GA 版: payload は type / session / audio / output / language の最小構造であること。"""
+        payload = build_session_update(
+            threshold=0.5, silence_ms=500, prefix_ms=300, target_lang="ja"
+        )
+        assert payload == {
+            "type": "session.update",
+            "session": {
+                "audio": {
+                    "output": {"language": "ja"},
+                },
+            },
+        }, f"GA 版最小ペイロードと一致すること: {payload}"
 
 
 # ---------------------------------------------------------------------------

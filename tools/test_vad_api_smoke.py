@@ -67,32 +67,28 @@ def build_session_update(
 ) -> dict:
     """session.update payload を構築して返す（純関数）。
 
-    PR #97 の session.update と同じ構造（audio.input.turn_detection）に準拠する。
+    GA 版 (2026-05-12 以降): audio.output.language のみ送る最小ペイロード。
+    TBD-3-1 確定: turn_detection は 'Unknown parameter' エラーで拒否されるため送らない。
+    transcript イベントは GA 版では自動発行される。
 
     Parameters
     ----------
-    threshold   : VAD 起動音量閾値（0.0〜1.0）
-    silence_ms  : silence_duration_ms（ms）
-    prefix_ms   : prefix_padding_ms（ms）
+    threshold   : [DEPRECATED] Beta 時代の VAD 閾値パラメータ。GA 版では使用しない。
+    silence_ms  : [DEPRECATED] Beta 時代の silence_duration_ms パラメータ。GA 版では使用しない。
+    prefix_ms   : [DEPRECATED] Beta 時代の prefix_padding_ms パラメータ。GA 版では使用しない。
     target_lang : 翻訳先言語コード（BCP-47）
 
     Returns
     -------
     session.update の JSON payload（dict）
     """
+    # GA 版: audio.output.language のみ送る
+    # (audio.input.transcription / turn_detection は仕様外で拒否される)
     return {
         "type": "session.update",
         "session": {
             "audio": {
-                "input": {
-                    "transcription": {"model": "gpt-realtime-whisper"},
-                    "turn_detection": {
-                        "type": "server_vad",
-                        "threshold": threshold,
-                        "prefix_padding_ms": prefix_ms,
-                        "silence_duration_ms": silence_ms,
-                    },
-                },
+                "output": {"language": target_lang},
             },
         },
     }
@@ -176,13 +172,13 @@ def format_report(result: dict, output_json: bool) -> str:
     lines.append("=== 結果 ===")
 
     if status == "ok":
-        lines.append("OK: API 受入 OK — turn_detection エラーなし")
-        lines.append("  session.audio.input.transcription / turn_detection 両方受理")
-        lines.append("TBD-3-1: クローズ可（実装通り動作）")
+        lines.append("OK: API 受入 OK — GA 版 session.update（output.language のみ）受理")
+        lines.append("  audio.output.language のみ送信。transcript イベントは自動発行される。")
+        lines.append("TBD-3-1: GA 移行確定（2026-05-12）。W-COST-3 は廃止。")
     elif status == "unsupported":
         lines.append(f"NG: API 受入 NG — {error_message}")
-        lines.append("TBD-3-1: gpt-realtime-translate は turn_detection 未対応")
-        lines.append("推奨: W-COST-3 を将来課題に棚上げ、または別エンドポイント検討")
+        lines.append("TBD-3-1: GA 移行確定 - turn_detection は仕様外で拒否される")
+        lines.append("推奨: W-COST-3 を廃止。GA 版最小ペイロード（output.language のみ）を使用すること")
     elif status == "auth_error":
         lines.append(f"ERROR: 認証エラー — {error_message}")
         lines.append("  API キーを確認してください")

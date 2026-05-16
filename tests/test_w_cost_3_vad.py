@@ -188,159 +188,131 @@ class TestRealtimeTranslatorVadDefaults:
 # ---------------------------------------------------------------------------
 
 class TestRealtimeTranslatorVadSessionUpdate:
-    """vad_enabled フラグによる session.update ペイロードの変化を検証する。"""
+    """GA 版 (2026-05-12 以降): vad_enabled フラグは session.update に効果なし。
 
-    def test_session_update_excludes_turn_detection_when_vad_disabled(self):
-        """vad_enabled=False（デフォルト）のとき session.update に turn_detection が含まれないこと。"""
+    GA 版では turn_detection は仕様外（無視または拒否）のため audio.input は送らない。
+    vad_enabled 属性は Beta 時代の互換性のため残置されるが効果なし。
+    """
+
+    def test_session_update_no_audio_input_when_vad_disabled_ga(self):
+        """GA 版: vad_enabled=False（デフォルト）のとき session.update に audio.input が含まれないこと。"""
         payload = _capture_session_update(vad_enabled=False)
 
         assert payload.get("type") == "session.update", f"expected session.update, got: {payload}"
-        audio_input = payload.get("session", {}).get("audio", {}).get("input", {})
-        assert "turn_detection" not in audio_input, (
-            f"vad_enabled=False のとき turn_detection は含まれないこと。audio.input={audio_input}"
+        audio = payload.get("session", {}).get("audio", {})
+        assert "input" not in audio, (
+            f"GA 版では vad_enabled=False のとき audio.input は含まれないこと。audio={audio}"
         )
 
-    def test_session_update_includes_turn_detection_when_vad_enabled(self):
-        """vad_enabled=True のとき session.update の audio.input に turn_detection が含まれること。"""
+    def test_session_update_no_audio_input_when_vad_enabled_ga(self):
+        """GA 版: vad_enabled=True でも session.update に audio.input が含まれないこと。
+
+        GA 版では turn_detection は仕様外（無視または拒否）のため送信しない。
+        """
         payload = _capture_session_update(vad_enabled=True)
 
         assert payload.get("type") == "session.update", f"expected session.update, got: {payload}"
-        audio_input = payload.get("session", {}).get("audio", {}).get("input", {})
-        assert "turn_detection" in audio_input, (
-            f"vad_enabled=True のとき turn_detection が存在すること。audio.input={audio_input}"
+        audio = payload.get("session", {}).get("audio", {})
+        assert "input" not in audio, (
+            f"GA 版では vad_enabled=True でも audio.input は含まれないこと。audio={audio}"
         )
 
-    def test_session_update_turn_detection_type_is_server_vad(self):
-        """turn_detection.type が 'server_vad' であること。"""
+    def test_session_update_no_turn_detection_when_vad_enabled_ga(self):
+        """GA 版: vad_enabled=True でも turn_detection は送信されないこと。"""
         payload = _capture_session_update(vad_enabled=True)
 
-        audio_input = payload.get("session", {}).get("audio", {}).get("input", {})
-        td = audio_input.get("turn_detection", {})
-        assert td.get("type") == "server_vad", (
-            f"turn_detection.type は 'server_vad' であること。got={td}"
+        audio = payload.get("session", {}).get("audio", {})
+        audio_input = audio.get("input", {})
+        assert "turn_detection" not in audio_input, (
+            f"GA 版では turn_detection は送信されないこと。audio_input={audio_input}"
         )
 
-    def test_session_update_turn_detection_threshold(self):
-        """turn_detection.threshold が指定値通りに送信されること。"""
-        payload = _capture_session_update(vad_enabled=True, vad_threshold=0.7)
+    def test_session_update_no_turn_detection_when_vad_disabled_ga(self):
+        """GA 版: vad_enabled=False のとき turn_detection は含まれないこと（GA/Beta 共通）。"""
+        payload = _capture_session_update(vad_enabled=False)
 
         audio_input = payload.get("session", {}).get("audio", {}).get("input", {})
-        td = audio_input.get("turn_detection", {})
-        assert td.get("threshold") == pytest.approx(0.7), (
-            f"turn_detection.threshold は 0.7 であること。got={td}"
+        assert "turn_detection" not in audio_input, (
+            f"vad_enabled=False のとき turn_detection は含まれないこと。audio_input={audio_input}"
         )
 
-    def test_session_update_turn_detection_prefix_padding_ms(self):
-        """turn_detection.prefix_padding_ms が指定値通りに送信されること。"""
-        payload = _capture_session_update(vad_enabled=True, vad_prefix_padding_ms=200)
+    def test_session_update_no_transcription_when_vad_enabled_ga(self):
+        """GA 版: vad_enabled=True でも audio.input.transcription は含まれないこと。
 
-        audio_input = payload.get("session", {}).get("audio", {}).get("input", {})
-        td = audio_input.get("turn_detection", {})
-        assert td.get("prefix_padding_ms") == 200, (
-            f"turn_detection.prefix_padding_ms は 200 であること。got={td}"
-        )
-
-    def test_session_update_turn_detection_silence_duration_ms(self):
-        """turn_detection.silence_duration_ms が指定値通りに送信されること。"""
-        payload = _capture_session_update(vad_enabled=True, vad_silence_duration_ms=800)
-
-        audio_input = payload.get("session", {}).get("audio", {}).get("input", {})
-        td = audio_input.get("turn_detection", {})
-        assert td.get("silence_duration_ms") == 800, (
-            f"turn_detection.silence_duration_ms は 800 であること。got={td}"
-        )
-
-    def test_session_update_default_vad_params_in_turn_detection(self):
-        """デフォルトパラメータ（threshold=0.5, prefix_padding_ms=300, silence_duration_ms=500）
-        が turn_detection に含まれること。"""
-        payload = _capture_session_update(vad_enabled=True)
-
-        audio_input = payload.get("session", {}).get("audio", {}).get("input", {})
-        td = audio_input.get("turn_detection", {})
-        assert td.get("threshold") == pytest.approx(0.5), f"threshold default は 0.5: {td}"
-        assert td.get("prefix_padding_ms") == 300, f"prefix_padding_ms default は 300: {td}"
-        assert td.get("silence_duration_ms") == 500, f"silence_duration_ms default は 500: {td}"
-
-    def test_transcription_still_present_when_vad_enabled(self):
-        """vad_enabled=True でも audio.input.transcription は含まれること。"""
+        GA 版では transcript イベントは自動発行されるため transcription の明示指定は不要。
+        """
         payload = _capture_session_update(vad_enabled=True, request_source_transcript=True)
 
-        audio_input = payload.get("session", {}).get("audio", {}).get("input", {})
-        assert "transcription" in audio_input, (
-            f"vad_enabled=True でも transcription は含まれること。audio.input={audio_input}"
-        )
-        assert audio_input["transcription"].get("model") == "gpt-realtime-whisper", (
-            f"transcription.model は gpt-realtime-whisper であること。got={audio_input['transcription']}"
+        audio = payload.get("session", {}).get("audio", {})
+        audio_input = audio.get("input", {})
+        assert "transcription" not in audio_input, (
+            f"GA 版では audio.input.transcription は送らないこと。audio_input={audio_input}"
         )
 
-    def test_no_turn_detection_when_source_transcript_disabled(self):
-        """request_source_transcript=False のとき VAD 設定に関係なく audio.input 自体が除外されること。
-
-        W-COST-2 の既存挙動維持（audio.input キーなし = turn_detection も含まれない）。
-        """
+    def test_no_audio_input_when_source_transcript_disabled_ga(self):
+        """GA 版: request_source_transcript=False でも audio.input は含まれないこと（変化なし）。"""
         payload = _capture_session_update(
             vad_enabled=True,
             request_source_transcript=False,
         )
 
         audio = payload.get("session", {}).get("audio", {})
-        # request_source_transcript=False のとき audio.input キー自体が存在しない
         assert "input" not in audio, (
-            f"request_source_transcript=False のとき audio.input は除外されること。audio={audio}"
+            f"GA 版では audio.input は含まれないこと。audio={audio}"
         )
 
+    def test_session_update_has_output_language_ga(self):
+        """GA 版: session.update には audio.output.language が含まれること。"""
+        payload = _capture_session_update(vad_enabled=True)
 
-# ---------------------------------------------------------------------------
-# 3. RealtimeTranslator: request_audio_output x vad_enabled の 2x2 マトリクス
-# ---------------------------------------------------------------------------
+        audio = payload.get("session", {}).get("audio", {})
+        assert "output" in audio, (
+            f"GA 版では audio.output が存在すること。audio={audio}"
+        )
+        assert audio["output"].get("language") == "ja", (
+            f"audio.output.language は target_language_code と一致すること。audio={audio}"
+        )
 
 class TestRealtimeTranslatorVadMatrixTest:
-    """request_audio_output x vad_enabled の 4 ケースで session.update の構造を検証する。"""
+    """GA 版 (2026-05-12 以降): request_audio_output x vad_enabled の 2x2 マトリクス。
 
-    @pytest.mark.parametrize("request_audio_output,vad_enabled,expect_output,expect_td", [
-        (False, False, False, False),
-        (False, True,  False, True),
-        (True,  False, True,  False),
-        (True,  True,  True,  True),
+    GA 版では全ケースで audio.input は送らない。
+    audio.output.language は request_audio_output の値に関わらず常に含まれる。
+    """
+
+    @pytest.mark.parametrize("request_audio_output,vad_enabled", [
+        (False, False),
+        (False, True),
+        (True,  False),
+        (True,  True),
     ])
-    def test_2x2_matrix(self, request_audio_output, vad_enabled, expect_output, expect_td):
-        """request_audio_output x vad_enabled の 2x2 組み合わせで session.update の構造を確認する。"""
+    def test_2x2_matrix_ga(self, request_audio_output, vad_enabled):
+        """GA 版: 全ての 2x2 組み合わせで audio.input は含まれず audio.output.language のみ送ること。"""
         payload = _capture_session_update(
             vad_enabled=vad_enabled,
             request_audio_output=request_audio_output,
         )
 
         audio = payload.get("session", {}).get("audio", {})
-        audio_input = audio.get("input", {})
 
-        # audio.output の有無
-        if expect_output:
-            assert "output" in audio, (
-                f"request_audio_output=True のとき audio.output が存在すること。audio={audio}"
-            )
-        else:
-            assert "output" not in audio, (
-                f"request_audio_output=False のとき audio.output は除外されること。audio={audio}"
-            )
+        # GA 版: audio.output は常に存在すること（language 指定に必要）
+        assert "output" in audio, (
+            f"GA 版では audio.output が常に存在すること。"
+            f"params: request_audio_output={request_audio_output}, vad_enabled={vad_enabled}. "
+            f"audio={audio}"
+        )
+        assert audio["output"].get("language") == "ja", (
+            f"audio.output.language は 'ja' であること。"
+            f"params: request_audio_output={request_audio_output}, vad_enabled={vad_enabled}. "
+            f"audio={audio}"
+        )
 
-        # audio.input.turn_detection の有無
-        if expect_td:
-            assert "turn_detection" in audio_input, (
-                f"vad_enabled=True のとき turn_detection が存在すること。"
-                f"params: request_audio_output={request_audio_output}, vad_enabled={vad_enabled}. "
-                f"audio.input={audio_input}"
-            )
-        else:
-            assert "turn_detection" not in audio_input, (
-                f"vad_enabled=False のとき turn_detection は含まれないこと。"
-                f"params: request_audio_output={request_audio_output}, vad_enabled={vad_enabled}. "
-                f"audio.input={audio_input}"
-            )
-
-
-# ---------------------------------------------------------------------------
-# 4. CaptionSystem: vad_enabled が RealtimeTranslator に伝播
-# ---------------------------------------------------------------------------
+        # GA 版: audio.input は全ケースで含まれないこと
+        assert "input" not in audio, (
+            f"GA 版では全ケースで audio.input は含まれないこと（turn_detection/transcription は仕様外）。"
+            f"params: request_audio_output={request_audio_output}, vad_enabled={vad_enabled}. "
+            f"audio={audio}"
+        )
 
 class TestCaptionSystemVadPropagation:
     """CaptionSystem の VAD パラメータが RealtimeTranslator に正しく渡される。"""

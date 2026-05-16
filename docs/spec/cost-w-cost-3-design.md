@@ -5,6 +5,23 @@
 
 ---
 
+## ⚠️ GA 移行（2026-05-12）による機能無効化・廃止
+
+**W-COST-3 は GA 移行により機能無効化・廃止とする。**
+
+- 2026-05-12: OpenAI Realtime API が Beta から GA へ移行
+- GA 版では `audio.input.turn_detection` は仕様外（`Unknown parameter` エラーで拒否）
+- 実機検証（2026-05-16, TBD-3-1 クローズ）により確定
+- `hotfix/realtime-api-ga-migration` にて `session.update` ペイロードを最小化
+  （`audio.output.language` のみ送信）
+- `vad_enabled` / `vad_threshold` / `vad_prefix_padding_ms` / `vad_silence_duration_ms`
+  パラメータは後方互換のため属性として残置されるが **GA 版では効果なし**
+- 将来の breaking change で削除予定
+
+参照: `hotfix/realtime-api-ga-migration`, `tests/test_ga_migration.py`
+
+---
+
 ## 概要
 
 realtime_translator.py の session.update に turn_detection 設定を追加し、

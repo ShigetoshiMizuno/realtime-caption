@@ -109,38 +109,32 @@ class TestRealtimeTranslatorSourceTranscriptFlag:
 
         return captured.get("payload", {})
 
-    def test_session_update_includes_transcription_when_true(self):
-        """request_source_transcript=True のとき session.update に
-        audio.input.transcription が含まれること。"""
+    def test_session_update_no_audio_input_when_true_ga(self):
+        """GA 版 (2026-05-12 以降): request_source_transcript=True でも
+        session.update に audio.input は含まれないこと。
+
+        GA 版では transcript イベントは自動発行されるため audio.input.transcription の
+        明示指定は不要（仕様外として無視または拒否される）。
+        request_source_transcript は Beta 時代の互換性のため属性として残置されるが効果なし。
+        """
         payload = self._capture_session_update(request_source_transcript=True)
 
         assert payload.get("type") == "session.update", f"expected session.update, got: {payload}"
-        session = payload.get("session", {})
-        audio = session.get("audio", {})
-        assert "input" in audio, (
-            f"request_source_transcript=True のとき audio.input が存在すること。audio={audio}"
-        )
-        assert "transcription" in audio["input"], (
-            f"request_source_transcript=True のとき audio.input.transcription が存在すること。"
-            f"audio.input={audio['input']}"
-        )
-        assert audio["input"]["transcription"].get("model") == "gpt-realtime-whisper", (
-            f"transcription.model が 'gpt-realtime-whisper' であること。"
-            f"got={audio['input']['transcription']}"
+        audio = payload.get("session", {}).get("audio", {})
+        assert "input" not in audio, (
+            f"GA 版では request_source_transcript=True でも audio.input は送らないこと。audio={audio}"
         )
 
     def test_session_update_excludes_transcription_when_false(self):
         """request_source_transcript=False のとき session.update の
-        audio.input.transcription が除外されること。"""
+        audio.input.transcription が除外されること（GA 版では audio.input 自体なし）。"""
         payload = self._capture_session_update(request_source_transcript=False)
 
         assert payload.get("type") == "session.update", f"expected session.update, got: {payload}"
-        session = payload.get("session", {})
-        audio = session.get("audio", {})
-        # transcription キーが audio.input に存在しないこと
-        audio_input = audio.get("input", {})
-        assert "transcription" not in audio_input, (
-            f"request_source_transcript=False のとき audio.input.transcription が除外されること。"
+        audio = payload.get("session", {}).get("audio", {})
+        # GA 版: audio.input 自体が存在しないこと
+        assert "input" not in audio, (
+            f"GA 版では request_source_transcript=False でも audio.input は除外されること。"
             f"audio={audio}"
         )
 
