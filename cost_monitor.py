@@ -134,7 +134,7 @@ class IdleDisconnectMonitor:
     使用例:
         monitor = IdleDisconnectMonitor(
             idle_timeout_sec=300.0,
-            audio_threshold=100,
+            audio_threshold=200,
             on_idle_timeout=lambda: print("idle"),
         )
         monitor.start()
@@ -149,7 +149,7 @@ class IdleDisconnectMonitor:
 
     Args:
         idle_timeout_sec: アイドル判定タイムアウト（秒）。デフォルト 300.0。
-        audio_threshold: 無音とみなす音量上限（int16 絶対値 max）。デフォルト 100。
+        audio_threshold: 無音とみなす音量上限（int16 絶対値 max）。デフォルト 200（TBD-4-2 実機計測反映）。
         on_idle_timeout: アイドルタイムアウト時のコールバック。一度だけ呼ばれる。
         timeout_override: テスト用 DI。指定時はこの値をタイムアウトとして使用する。
     """
@@ -157,7 +157,7 @@ class IdleDisconnectMonitor:
     def __init__(
         self,
         idle_timeout_sec: float = 300.0,
-        audio_threshold: int = 100,
+        audio_threshold: int = 200,
         on_idle_timeout: Callable[[], None] | None = None,
         *,
         timeout_override: float | None = None,

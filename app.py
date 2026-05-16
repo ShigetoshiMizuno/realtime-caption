@@ -414,7 +414,7 @@ def _save_settings():
 
         data["idle_disconnect_enabled"] = bool(_get(TAG_IDLE_DISCONNECT_ENABLED, False))
         data["idle_timeout_sec"] = _safe_get_int(TAG_IDLE_TIMEOUT_SEC, 300)
-        data["idle_audio_threshold"] = _safe_get_int(TAG_IDLE_AUDIO_THRESHOLD, 100)
+        data["idle_audio_threshold"] = _safe_get_int(TAG_IDLE_AUDIO_THRESHOLD, 200)  # TBD-4-2: 100→200
         with open(_SETTINGS_PATH, "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False, indent=2)
     except Exception:
@@ -1443,7 +1443,7 @@ def _create_konnyaku_system() -> None:
     # W-COST-4: アイドル切断設定を保存設定から読み込む（系統共通設定、トップレベルキー）
     idle_disconnect_enabled = bool(saved.get("idle_disconnect_enabled", False))
     idle_timeout_sec = _safe_int(saved.get("idle_timeout_sec", 300), 300)
-    idle_audio_threshold = _safe_int(saved.get("idle_audio_threshold", 100), 100)
+    idle_audio_threshold = _safe_int(saved.get("idle_audio_threshold", 200), 200)  # TBD-4-2: 100→200
 
     route_a_cfg = RouteConfig(
         route_id="a",
@@ -3377,7 +3377,7 @@ def _build_gui():
         # --- W-COST-4: アイドル切断設定セクション（全系統共通）（issue #81）---
         _idle_disconnect_enabled_saved = bool(saved.get("idle_disconnect_enabled", False))
         _idle_timeout_sec_saved = int(saved.get("idle_timeout_sec", 300))
-        _idle_audio_threshold_saved = int(saved.get("idle_audio_threshold", 100))
+        _idle_audio_threshold_saved = int(saved.get("idle_audio_threshold", 200))  # TBD-4-2: 100→200
         dpg.add_text("アイドル切断設定（全系統共通）:", color=(200, 200, 255))
         with dpg.group(horizontal=True):
             dpg.add_text("自動切断:")

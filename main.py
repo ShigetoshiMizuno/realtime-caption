@@ -435,7 +435,7 @@ class CaptionSystem:
                  vad_silence_duration_ms: int = 500,
                  idle_disconnect_enabled: bool = False,
                  idle_timeout_sec: float = 300.0,
-                 idle_audio_threshold: int = 100):
+                 idle_audio_threshold: int = 200):  # W-COST-4: TBD-4-2 実機計測で 100→200 に変更
         self._config = config
         self._device_info = device_info
         self._model_name = model_name
@@ -1652,7 +1652,7 @@ class RouteConfig:
     vad_silence_duration_ms: int = 500      # W-COST-3: 無音判定時間（ms）
     idle_disconnect_enabled: bool = False   # W-COST-4: アイドル切断有効フラグ。デフォルト False（後方互換・安全側）
     idle_timeout_sec: float = 300.0         # W-COST-4: アイドル判定タイムアウト（秒）
-    idle_audio_threshold: int = 100         # W-COST-4: 無音とみなす音量上限（int16 絶対値 max）
+    idle_audio_threshold: int = 200         # W-COST-4: 無音とみなす音量上限（int16 絶対値 max）。TBD-4-2 実機計測で 100→200 に変更
 
 
 class MultiCaptionSystem:
