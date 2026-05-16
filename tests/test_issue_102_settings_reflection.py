@@ -681,7 +681,8 @@ class TestSourceTranscriptAndVADCombinations:
         assert kwargs.get("vad_enabled") is False
 
     def test_source_transcript_on_vad_on(self):
-        """原文表示 ON × VAD ON の組み合わせが translator に渡ること。"""
+        """原文表示 ON × VAD ON: hotfix により vad_enabled は強制 False になること。
+        (hotfix/vad-force-off-and-smoke-strict: TBD-3-1 再オープン、issue #121)"""
         cs = _make_caption_system(request_source_transcript=True, vad_enabled=True)
         with patch("realtime_translator.RealtimeTranslator") as MockRT, \
              patch("cost_monitor.CostMonitor"):
@@ -689,10 +690,12 @@ class TestSourceTranscriptAndVADCombinations:
             cs._create_realtime_translator()
         _, kwargs = MockRT.call_args
         assert kwargs.get("request_source_transcript") is True
-        assert kwargs.get("vad_enabled") is True
+        # hotfix により vad_enabled=True は CaptionSystem.__init__ で False に強制される
+        assert kwargs.get("vad_enabled") is False
 
     def test_source_transcript_off_vad_on(self):
-        """原文表示 OFF × VAD ON の組み合わせが translator に渡ること。"""
+        """原文表示 OFF × VAD ON: hotfix により vad_enabled は強制 False になること。
+        (hotfix/vad-force-off-and-smoke-strict: TBD-3-1 再オープン、issue #121)"""
         cs = _make_caption_system(request_source_transcript=False, vad_enabled=True)
         with patch("realtime_translator.RealtimeTranslator") as MockRT, \
              patch("cost_monitor.CostMonitor"):
@@ -700,7 +703,8 @@ class TestSourceTranscriptAndVADCombinations:
             cs._create_realtime_translator()
         _, kwargs = MockRT.call_args
         assert kwargs.get("request_source_transcript") is False
-        assert kwargs.get("vad_enabled") is True
+        # hotfix により vad_enabled=True は CaptionSystem.__init__ で False に強制される
+        assert kwargs.get("vad_enabled") is False
 
 
 # ---------------------------------------------------------------------------

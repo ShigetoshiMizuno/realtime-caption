@@ -1582,8 +1582,20 @@ def _create_konnyaku_system() -> None:
 
     # W-COST-3: Server VAD 有効フラグを保存設定から読み込む（デフォルト False）
     # GUI ウィジェットは次 PR で実装予定。現状は settings.json の値のみ参照する。
-    a_vad_enabled = bool(route_a_saved.get("vad_enabled", False))
-    b_vad_enabled = bool(route_b_saved.get("vad_enabled", False))
+    # Fix 3 (hotfix/vad-force-off-and-smoke-strict):
+    # 実機検証（2026-05-16）で session.audio.input.turn_detection が API 拒否されることを確認。
+    # TBD-3-1 再オープン（issue #121）。正しいパスが判明するまで VAD は強制 OFF。
+    a_vad_enabled_saved = bool(route_a_saved.get("vad_enabled", False))
+    b_vad_enabled_saved = bool(route_b_saved.get("vad_enabled", False))
+    if a_vad_enabled_saved or b_vad_enabled_saved:
+        print(
+            "[WARN] _create_konnyaku_system: settings.json に vad_enabled=True が含まれていますが、"
+            "API が session.audio.input.turn_detection を未対応のため強制 OFF にします "
+            "(TBD-3-1 再オープン、issue #121 関連)",
+            flush=True,
+        )
+    a_vad_enabled = False  # 強制 OFF（TBD-3-1 再オープン）
+    b_vad_enabled = False  # 強制 OFF（TBD-3-1 再オープン）
 
     # W-COST-3: VAD 数値パラメータを保存設定から読み込む（不正値はデフォルトにフォールバック）
     # GUI 未実装のため settings.json はデフォルト値固定保存だが、将来の UI 結線に備えて読み込む

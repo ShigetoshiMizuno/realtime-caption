@@ -318,7 +318,7 @@ VB-CABLE 経由 Zoom 音声ではループバック音声が常に音が入っ�
 
 | TBD | 内容 | 影響 |
 |---|---|---|
-| ~~TBD-3-1~~ | ~~gpt-realtime-translate エンドポイントが audio.input.turn_detection を受け入れるか実機検証が必要~~ | **✅ クローズ済み（2026-05-16 実機検証）。tools/test_vad_api_smoke.py で audio.input.turn_detection を受理・接続成功を確認。API エラーなし。** |
+| **TBD-3-1（再オープン）** | gpt-realtime-translate エンドポイントの `turn_detection` の正しい API パスを調査する必要あり | **実機検証（2026-05-16）: `session.audio.input.turn_detection` を送信すると API が `Unknown parameter: 'session.audio.input.turn_detection'` を返して session 全体を拒否する。turn_detection の正しいパス調査が必要（issue #121）。暫定対応: VAD 強制 OFF（hotfix/vad-force-off-and-smoke-strict）。** |
 | TBD-3-2 | 案 A（常時 ON、PR1+2 のみ）か案 B（UI 切替、PR1+2+3）か | PR3 の要否。初期値 True/False の選択 |
 | ~~TBD-3-3~~ | ~~vad_enabled のデフォルト値: True（即時効果）か False（既存挙動維持・安全側）か~~ | **監督判断: False を採用（安全側・既存挙動維持）[クローズ]** |
 
