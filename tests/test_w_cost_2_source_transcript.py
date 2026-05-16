@@ -109,32 +109,36 @@ class TestRealtimeTranslatorSourceTranscriptFlag:
 
         return captured.get("payload", {})
 
-    def test_session_update_no_audio_input_when_true_ga(self):
-        """GA 版 (2026-05-12 以降): request_source_transcript=True でも
-        session.update に audio.input は含まれないこと。
+    def test_session_update_has_audio_input_when_true(self):
+        """request_source_transcript=True のとき session.update に audio.input が含まれること。
 
-        GA 版では transcript イベントは自動発行されるため audio.input.transcription の
-        明示指定は不要（仕様外として無視または拒否される）。
-        request_source_transcript は Beta 時代の互換性のため属性として残置されるが効果なし。
+        実機検証（2026-05-16）: input_transcript.delta を受信するには
+        audio.input.transcription + noise_reduction をセットで指定する必要がある。
+        noise_reduction なしでは input_transcript が発行されない。
         """
         payload = self._capture_session_update(request_source_transcript=True)
 
         assert payload.get("type") == "session.update", f"expected session.update, got: {payload}"
         audio = payload.get("session", {}).get("audio", {})
-        assert "input" not in audio, (
-            f"GA 版では request_source_transcript=True でも audio.input は送らないこと。audio={audio}"
+        assert "input" in audio, (
+            f"request_source_transcript=True のとき audio.input が含まれること。audio={audio}"
+        )
+        assert "transcription" in audio.get("input", {}), (
+            f"audio.input.transcription が含まれること。audio={audio}"
+        )
+        assert "noise_reduction" in audio.get("input", {}), (
+            f"audio.input.noise_reduction が含まれること（実機検証 2026-05-16: "
+            f"noise_reduction なしでは input_transcript が発行されない）。audio={audio}"
         )
 
-    def test_session_update_excludes_transcription_when_false(self):
-        """request_source_transcript=False のとき session.update の
-        audio.input.transcription が除外されること（GA 版では audio.input 自体なし）。"""
+    def test_session_update_excludes_audio_input_when_false(self):
+        """request_source_transcript=False のとき session.update に audio.input が含まれないこと。"""
         payload = self._capture_session_update(request_source_transcript=False)
 
         assert payload.get("type") == "session.update", f"expected session.update, got: {payload}"
         audio = payload.get("session", {}).get("audio", {})
-        # GA 版: audio.input 自体が存在しないこと
         assert "input" not in audio, (
-            f"GA 版では request_source_transcript=False でも audio.input は除外されること。"
+            f"request_source_transcript=False のとき audio.input は除外されること。"
             f"audio={audio}"
         )
 
