@@ -66,6 +66,7 @@ os.environ["RC_MODELS_CONFIGURED"] = "1"
 import argparse
 import asyncio
 from contextlib import contextmanager
+import functools
 import io
 import json
 import queue
@@ -141,6 +142,57 @@ def _verbose_write(category: str, line: str) -> None:
             f.write(f"[{ts}] [{category}] {line}\n")
     except Exception:
         pass  # ロギング自体で失敗してもアプリは止めない
+
+
+def _verbose_callback(name: str = None):
+    """dpg callback を verbose で記録するデコレータ。
+
+    使用例:
+        @_verbose_callback("route_a_source_transcript_change")
+        def _on_route_a_source_transcript_change(sender, app_data, user_data):
+            ...
+
+    記録内容:
+    - 開始: [GUI_CALLBACK] start=<name> sender=<id> app_data=<value>
+    - 終了: [GUI_CALLBACK] end=<name> duration_ms=<n.nn>
+    - 例外: [GUI_CALLBACK] error=<name> duration_ms=<n.nn> error_type=<T> error_msg=<msg>
+
+    name が None のときは関数名から自動取得。
+    verbose=False のときはオーバーヘッドなし（早期 return）。
+    """
+    def decorator(func):
+        cb_name = name or func.__name__
+
+        @functools.wraps(func)
+        def wrapper(*args, **kwargs):
+            if not _verbose_state:
+                return func(*args, **kwargs)
+            # verbose ON 時のみ記録
+            t0 = time.monotonic()
+            # sender/app_data は args[0], args[1] と推定（dpg 標準）
+            sender = args[0] if len(args) > 0 else None
+            app_data = args[1] if len(args) > 1 else None
+            _verbose_write(
+                "GUI_CALLBACK",
+                f"start={cb_name} sender={sender!r} app_data={app_data!r}",
+            )
+            try:
+                result = func(*args, **kwargs)
+                dt_ms = (time.monotonic() - t0) * 1000
+                _verbose_write("GUI_CALLBACK", f"end={cb_name} duration_ms={dt_ms:.2f}")
+                return result
+            except Exception as e:
+                dt_ms = (time.monotonic() - t0) * 1000
+                _verbose_write(
+                    "GUI_CALLBACK",
+                    f"error={cb_name} duration_ms={dt_ms:.2f} "
+                    f"error_type={type(e).__name__} error_msg={e!r}",
+                )
+                raise
+
+        return wrapper
+
+    return decorator
 
 
 def _log_user(event: str, **kwargs) -> None:
@@ -563,6 +615,7 @@ def _save_api_keys_to_config(
         return False
 
 
+@_verbose_callback()
 def _on_key_show_toggle(sender, app_data, user_data):
     """Show/Hide トグルボタンのコールバック。パスワードモードを切り替える。"""
     tag = user_data  # TAG_OPENAI_KEY_INPUT または TAG_DEEPL_KEY_INPUT
@@ -575,6 +628,7 @@ def _on_key_show_toggle(sender, app_data, user_data):
     dpg.configure_item(sender, label="非表示" if show_now else "表示")
 
 
+@_verbose_callback()
 def _on_save_api_keys():
     """保存ボタン押下のコールバック。"""
     openai_plain = dpg.get_value(TAG_OPENAI_KEY_INPUT) if dpg.does_item_exist(TAG_OPENAI_KEY_INPUT) else ""
@@ -612,6 +666,7 @@ def _on_save_api_keys():
             dpg.set_value(TAG_KEY_STATUS, "保存に失敗しました")
 
 
+@_verbose_callback()
 def _on_open_quota_page(sender=None, app_data=None, user_data=None):
     """クォータを Web で確認ボタンのコールバック。(issue #80)"""
     _open_quota_usage_page()
@@ -621,6 +676,7 @@ def _on_open_quota_page(sender=None, app_data=None, user_data=None):
 # Host API フィルタ変更
 # ---------------------------------------------------------------------------
 
+@_verbose_callback()
 def _on_host_api_change(sender, value, user_data):
     """Host API フィルタ変更時にデバイスコンボを再列挙する。
 
@@ -670,6 +726,7 @@ def _on_host_api_change(sender, value, user_data):
 # VAD リアルタイム更新
 # ---------------------------------------------------------------------------
 
+@_verbose_callback()
 def _on_vad_sensitivity_change(sender, value, user_data):
     if _system and _system._recorder:
         try:
@@ -678,6 +735,7 @@ def _on_vad_sensitivity_change(sender, value, user_data):
             pass
 
 
+@_verbose_callback()
 def _on_vad_silence_change(sender, value, user_data):
     if _system and _system._recorder:
         try:
@@ -686,6 +744,7 @@ def _on_vad_silence_change(sender, value, user_data):
             pass
 
 
+@_verbose_callback()
 def _on_gain_mode_change(sender, value, user_data):
     if _system:
         _system.gain_mode = value
@@ -698,11 +757,13 @@ def _on_gain_mode_change(sender, value, user_data):
     _save_settings()
 
 
+@_verbose_callback()
 def _on_gain_value_change(sender, value, user_data):
     if _system:
         _system.manual_gain = float(value)
 
 
+@_verbose_callback()
 def _on_route_a_volume_change(sender, app_data, user_data):
     """経路A 出力音量スライダー変更時。動作中の AudioOutputStream に即反映。"""
     _log_user(f"系統1 出力音量変更: {float(app_data):.2f}")
@@ -715,6 +776,7 @@ def _on_route_a_volume_change(sender, app_data, user_data):
         pass
 
 
+@_verbose_callback()
 def _on_route_b_volume_change(sender, app_data, user_data):
     """経路B 出力音量スライダー変更時。動作中の AudioOutputStream に即反映。"""
     _log_user(f"系統2 出力音量変更: {float(app_data):.2f}")
@@ -727,6 +789,7 @@ def _on_route_b_volume_change(sender, app_data, user_data):
         pass
 
 
+@_verbose_callback()
 def _on_route_a_output_device_change(sender, app_data, user_data):
     """経路A 出力デバイス変更時。動作中の系統に即反映。"""
     _log_user(f"系統1 出力デバイス選択: {app_data!r}")
@@ -746,6 +809,7 @@ def _on_route_a_output_device_change(sender, app_data, user_data):
         print(f"[ERROR] route_a 出力デバイス変更失敗: {e}", flush=True)
 
 
+@_verbose_callback()
 def _on_route_b_output_device_change(sender, app_data, user_data):
     """経路B 出力デバイス変更時。動作中の系統に即反映。"""
     _log_user(f"系統2 出力デバイス選択: {app_data!r}")
@@ -805,6 +869,7 @@ def _restart_route_for_change(route_id: str, reason_label: str) -> None:
         _gui_queue.put({"cmd": "set_status", "text": ""})
 
 
+@_verbose_callback()
 def _on_route_a_output_enable_change(sender, app_data, user_data):
     """経路A 音声出力 ON/OFF 変更時。稼働中なら再起動して API 側を即反映（W-COST-1 案B）。"""
     _log_user(f"系統1 音声出力 {'ON' if app_data else 'OFF'}")
@@ -847,6 +912,7 @@ def _on_route_a_output_enable_change(sender, app_data, user_data):
         ).start()
 
 
+@_verbose_callback()
 def _on_route_b_output_enable_change(sender, app_data, user_data):
     """経路B 音声出力 ON/OFF 変更時。稼働中なら再起動して API 側を即反映（W-COST-1 案B）。"""
     _log_user(f"系統2 音声出力 {'ON' if app_data else 'OFF'}")
@@ -889,6 +955,7 @@ def _on_route_b_output_enable_change(sender, app_data, user_data):
         ).start()
 
 
+@_verbose_callback()
 def _on_route_a_source_transcript_change(sender, app_data):
     """経路A 原文表示 ON/OFF 変更時。稼働中なら即時再起動して反映（W-COST-2）。
 
@@ -918,6 +985,7 @@ def _on_route_a_source_transcript_change(sender, app_data):
         ).start()
 
 
+@_verbose_callback()
 def _on_route_b_source_transcript_change(sender, app_data):
     """経路B 原文表示 ON/OFF 変更時。稼働中なら即時再起動して反映（W-COST-2）。
 
@@ -951,6 +1019,7 @@ def _on_route_b_source_transcript_change(sender, app_data):
 # W-COST-3: Server VAD コールバック（issue #81 / feat/w-cost-3-ui）
 # ---------------------------------------------------------------------------
 
+@_verbose_callback()
 def _on_route_a_vad_enable_change(sender, app_data):
     """系統A VAD 有効化 ON/OFF 変更時。稼働中なら即時再起動して反映（W-COST-3）。
 
@@ -985,6 +1054,7 @@ def _on_route_a_vad_enable_change(sender, app_data):
         ).start()
 
 
+@_verbose_callback()
 def _on_route_b_vad_enable_change(sender, app_data):
     """系統B VAD 有効化 ON/OFF 変更時。稼働中なら即時再起動して反映（W-COST-3）。"""
     new_val = "ON" if app_data else "OFF"
@@ -1014,6 +1084,7 @@ def _on_route_b_vad_enable_change(sender, app_data):
         ).start()
 
 
+@_verbose_callback()
 def _on_route_a_vad_silence_ms_change(sender, app_data):
     """系統A VAD silence_duration_ms スライダー変更時。稼働中なら即時再起動（W-COST-3）。"""
     _log_user(f"系統1 VAD 無音時間 → {int(app_data)} ms")
@@ -1037,6 +1108,7 @@ def _on_route_a_vad_silence_ms_change(sender, app_data):
         ).start()
 
 
+@_verbose_callback()
 def _on_route_b_vad_silence_ms_change(sender, app_data):
     """系統B VAD silence_duration_ms スライダー変更時。稼働中なら即時再起動（W-COST-3）。"""
     _log_user(f"系統2 VAD 無音時間 → {int(app_data)} ms")
@@ -1060,6 +1132,7 @@ def _on_route_b_vad_silence_ms_change(sender, app_data):
         ).start()
 
 
+@_verbose_callback()
 def _on_route_a_vad_threshold_change(sender, app_data):
     """系統A VAD threshold スライダー変更時。稼働中なら即時再起動（W-COST-3）。"""
     _log_user(f"系統1 VAD 感度 → {float(app_data):.2f}")
@@ -1083,6 +1156,7 @@ def _on_route_a_vad_threshold_change(sender, app_data):
         ).start()
 
 
+@_verbose_callback()
 def _on_route_b_vad_threshold_change(sender, app_data):
     """系統B VAD threshold スライダー変更時。稼働中なら即時再起動（W-COST-3）。"""
     _log_user(f"系統2 VAD 感度 → {float(app_data):.2f}")
@@ -1110,6 +1184,7 @@ def _on_route_b_vad_threshold_change(sender, app_data):
 # W-COST-4: アイドル切断設定コールバック（issue #81 PR3）
 # ---------------------------------------------------------------------------
 
+@_verbose_callback()
 def _on_idle_disconnect_enabled_change(sender, app_data, user_data=None) -> None:
     """アイドル切断有効化チェックボックス変更時。設定を保存する。
 
@@ -1119,18 +1194,21 @@ def _on_idle_disconnect_enabled_change(sender, app_data, user_data=None) -> None
     _save_settings()
 
 
+@_verbose_callback()
 def _on_idle_timeout_change(sender, app_data, user_data=None) -> None:
     """アイドルタイムアウト スライダー変更時。設定を保存する。"""
     _log_user(f"アイドルタイムアウト → {int(app_data)} 秒")
     _save_settings()
 
 
+@_verbose_callback()
 def _on_idle_audio_threshold_change(sender, app_data, user_data=None) -> None:
     """音声検知閾値 スライダー変更時。設定を保存する。"""
     _log_user(f"アイドル音声検知閾値 → {int(app_data)}")
     _save_settings()
 
 
+@_verbose_callback()
 def _on_idle_resume_click(sender, app_data, user_data=None) -> None:
     """「再開」ボタンクリック → 両系統 resume_from_idle()。"""
     _log_user("アイドル切断から再開ボタン押下")
@@ -1166,6 +1244,7 @@ def _update_idle_status() -> None:
         dpg.configure_item(TAG_IDLE_RESUME_BUTTON, enabled=any_idle)
 
 
+@_verbose_callback()
 def _on_route_a_language_change(sender, app_data, user_data) -> None:
     """系統A 翻訳先言語変更時。稼働中なら即時再起動して反映（Fix 2, issue #102）。
 
@@ -1203,6 +1282,7 @@ def _on_route_a_language_change(sender, app_data, user_data) -> None:
         ).start()
 
 
+@_verbose_callback()
 def _on_route_b_language_change(sender, app_data, user_data) -> None:
     """系統B 翻訳先言語変更時。稼働中なら即時再起動して反映（Fix 2, issue #102）。
 
@@ -1261,6 +1341,7 @@ def _find_zoom_preset_output(devices: list[dict]) -> int | None:
     return None
 
 
+@_verbose_callback()
 def _on_zoom_preset_click():
     """
     Zoom 同時通訳プリセットボタン押下。
@@ -1291,6 +1372,7 @@ def _on_zoom_preset_click():
     _save_settings()
 
 
+@_verbose_callback()
 def _on_both_routes_on(sender=None, app_data=None, user_data=None):
     """系統1・系統2 を両方とも有効化（一括 ON）。"""
     _log_user("両方 ON ボタン押下")
@@ -1301,6 +1383,7 @@ def _on_both_routes_on(sender=None, app_data=None, user_data=None):
     _save_settings()
 
 
+@_verbose_callback()
 def _on_both_routes_off(sender=None, app_data=None, user_data=None):
     """系統1・系統2 を両方とも無効化（一括 OFF）。"""
     _log_user("両方 OFF ボタン押下")
@@ -1324,6 +1407,7 @@ def _konnyaku_thread_error_handler(route_id: str, exc: Exception, tb: str) -> No
         dpg.set_value(TAG_STATUS_STATE, msg)
 
 
+@_verbose_callback()
 def _on_realtime_error_handler(route_id: str, category: str, display_text: str) -> None:
     """RealtimeTranslator エラーを GUI ステータスバーに表示する。
 
@@ -1346,6 +1430,7 @@ def _on_realtime_error_handler(route_id: str, category: str, display_text: str) 
             pass
 
 
+@_verbose_callback()
 def _on_result_route_a_dispatch(original: str, translated: str) -> None:
     """系統1 翻訳結果を GUI ログに追加（常駐 callback）。"""
     ts = datetime.now().strftime("%H:%M:%S")
@@ -1365,6 +1450,7 @@ def _on_result_route_a_dispatch(original: str, translated: str) -> None:
     )
 
 
+@_verbose_callback()
 def _on_result_route_b_dispatch(original: str, translated: str) -> None:
     """系統2 翻訳結果を GUI ログに追加（常駐 callback）。"""
     ts = datetime.now().strftime("%H:%M:%S")
@@ -1571,6 +1657,7 @@ def _create_konnyaku_system() -> None:
     )
 
 
+@_verbose_callback()
 def _on_route_a_enable_change(sender, app_data, user_data) -> None:
     """系統1 有効チェック変更時。稼働中なら即時反映（B-14）。"""
     _log_user(f"系統1 有効チェック {'ON' if app_data else 'OFF'}")
@@ -1583,6 +1670,7 @@ def _on_route_a_enable_change(sender, app_data, user_data) -> None:
         _konnyaku_system.stop_route("a")
 
 
+@_verbose_callback()
 def _on_route_b_enable_change(sender, app_data, user_data) -> None:
     """系統2 有効チェック変更時。PTT 対応版に委譲（B-14 / TBD-4）。"""
     _on_route_b_enable_change_ptt_aware(enabled=bool(app_data))
@@ -1592,6 +1680,7 @@ def _on_route_b_enable_change(sender, app_data, user_data) -> None:
 # PTT (Push-to-Talk) コールバック・管理関数 (issue #82 / ptt-mode-design.md)
 # ---------------------------------------------------------------------------
 
+@_verbose_callback()
 def _on_ptt_press(event) -> None:
     """PTT ホットキー押下コールバック（keyboard スレッドから呼ばれる）。
 
@@ -1616,6 +1705,7 @@ def _on_ptt_press(event) -> None:
     _gui_queue.put({"cmd": "update_ptt_visual"})
 
 
+@_verbose_callback()
 def _on_ptt_release(event) -> None:
     """PTT ホットキー離脱コールバック（keyboard スレッドから呼ばれる）。
 
@@ -1637,6 +1727,7 @@ def _on_ptt_release(event) -> None:
     _gui_queue.put({"cmd": "update_ptt_visual"})
 
 
+@_verbose_callback()
 def _on_ptt_chatter_warning() -> None:
     """連打上限（10秒内に 5 回以上）検出時のコールバック（F-4.3）。"""
     print("[PTT] 警告: 連打（chatter）を検出しました。しばらく操作をお待ちください。", flush=True)
@@ -1829,6 +1920,7 @@ def _is_ptt_pressing() -> bool:
     return route_b.state in (RouteState.STARTING, RouteState.RUNNING)
 
 
+@_verbose_callback()
 def _on_ptt_enabled_change(enabled: bool) -> None:
     """PTT モード有効チェックボックス変更時のコールバック（F-5）。
 
@@ -1859,6 +1951,7 @@ def _on_ptt_enabled_change(enabled: bool) -> None:
     _update_ptt_visual_feedback()
 
 
+@_verbose_callback()
 def _on_ptt_hotkey_change(new_hotkey: str) -> None:
     """PTT ホットキー入力欄変更時のコールバック（F-5）。
 
@@ -1882,6 +1975,7 @@ def _on_ptt_hotkey_change(new_hotkey: str) -> None:
     _update_ptt_visual_feedback()
 
 
+@_verbose_callback()
 def _on_route_b_enable_change_ptt_aware(enabled: bool) -> None:
     """系統2 有効チェックボックス変更時の PTT 対応コールバック（TBD-4）。
 
@@ -1976,6 +2070,7 @@ def _update_ptt_visual_feedback() -> None:
         dpg.configure_item(TAG_ROUTE_B_DEVICE_COMBO, enabled=not pressing)
 
 
+@_verbose_callback()
 def _on_route_a_device_change(sender, app_data, user_data) -> None:
     """系統1 入力デバイス変更時。稼働中なら新デバイスで再起動（B-15）。"""
     _log_user(f"系統1 入力デバイス選択: {app_data!r}")
@@ -1993,6 +2088,7 @@ def _on_route_a_device_change(sender, app_data, user_data) -> None:
         print(f"[WARN] 系統1 入力デバイス変更に失敗: {type(e).__name__}: {e}", flush=True)
 
 
+@_verbose_callback()
 def _on_route_b_device_change(sender, app_data, user_data) -> None:
     """系統2 入力デバイス変更時。稼働中なら新デバイスで再起動（B-15）。"""
     _log_user(f"系統2 入力デバイス選択: {app_data!r}")
@@ -2010,6 +2106,7 @@ def _on_route_b_device_change(sender, app_data, user_data) -> None:
         print(f"[WARN] 系統2 入力デバイス変更に失敗: {type(e).__name__}: {e}", flush=True)
 
 
+@_verbose_callback()
 def _on_konnyaku_start_stop_click():
     """翻訳こんにゃくモードの開始/停止ボタン（常駐モデル）。"""
     global _konnyaku_system, _konnyaku_running
@@ -2146,6 +2243,7 @@ def _on_konnyaku_start_stop_click():
         _konnyaku_running = False
 
 
+@_verbose_callback()
 def _on_verbose_toggle():
     """Verbose ボタン押下: ON/OFF をトグルし、稼働中のシステムにも反映。"""
     global _verbose_state
@@ -2746,6 +2844,7 @@ def _do_stop():
     # threading.Thread(target=_trigger_preload, daemon=True).start()
 
 
+@_verbose_callback()
 def _on_start_stop_click():
     if _is_running:
         _do_stop()
@@ -2781,67 +2880,77 @@ class _RPCHandler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def do_GET(self):
-        if self.path == "/api/status":
-            _log_rpc("GET /api/status")
-            ws_clients = _system._broadcaster.client_count if _system else 0
-            device_label = dpg.get_value(TAG_DEVICE_COMBO) if dpg.does_item_exist(TAG_DEVICE_COMBO) else ""
-            model = dpg.get_value(TAG_MODEL_COMBO) if dpg.does_item_exist(TAG_MODEL_COMBO) else ""
-            peak = _system.audio_peak if _system else 0
-            chunks = _system.audio_chunks_per_sec if _system else 0
-            self._send_json({
-                "state": "running" if _is_running else "stopped",
-                "device": device_label,
-                "model": model,
-                "ws_clients": ws_clients,
-                "audio_peak": peak,
-                "audio_peak_pct": peak * 100 // 32767,
-                "audio_chunks_per_sec": chunks,
-            })
+        t0 = time.monotonic()
+        try:
+            if self.path == "/api/status":
+                _log_rpc("GET /api/status")
+                ws_clients = _system._broadcaster.client_count if _system else 0
+                device_label = dpg.get_value(TAG_DEVICE_COMBO) if dpg.does_item_exist(TAG_DEVICE_COMBO) else ""
+                model = dpg.get_value(TAG_MODEL_COMBO) if dpg.does_item_exist(TAG_MODEL_COMBO) else ""
+                peak = _system.audio_peak if _system else 0
+                chunks = _system.audio_chunks_per_sec if _system else 0
+                self._send_json({
+                    "state": "running" if _is_running else "stopped",
+                    "device": device_label,
+                    "model": model,
+                    "ws_clients": ws_clients,
+                    "audio_peak": peak,
+                    "audio_peak_pct": peak * 100 // 32767,
+                    "audio_chunks_per_sec": chunks,
+                })
 
-        elif self.path == "/api/log":
-            _log_rpc("GET /api/log")
-            self._send_json(_log_entries[-100:])
+            elif self.path == "/api/log":
+                _log_rpc("GET /api/log")
+                self._send_json(_log_entries[-100:])
 
-        elif self.path == "/api/devices":
-            _log_rpc("GET /api/devices")
-            self._send_json(_devices)
+            elif self.path == "/api/devices":
+                _log_rpc("GET /api/devices")
+                self._send_json(_devices)
 
-        elif self.path == "/api/audio":
-            _log_rpc("GET /api/audio")
-            peak = _system.audio_peak if _system else 0
-            chunks = _system.audio_chunks_per_sec if _system else 0
-            gain = _system.effective_gain if _system else 1.0
-            mode = _system.gain_mode if _system else "off"
-            self._send_json({
-                "peak": peak,
-                "peak_pct": peak * 100 // 32767,
-                "chunks_per_sec": chunks,
-                "gain": round(gain, 2),
-                "gain_mode": mode,
-            })
+            elif self.path == "/api/audio":
+                _log_rpc("GET /api/audio")
+                peak = _system.audio_peak if _system else 0
+                chunks = _system.audio_chunks_per_sec if _system else 0
+                gain = _system.effective_gain if _system else 1.0
+                mode = _system.gain_mode if _system else "off"
+                self._send_json({
+                    "peak": peak,
+                    "peak_pct": peak * 100 // 32767,
+                    "chunks_per_sec": chunks,
+                    "gain": round(gain, 2),
+                    "gain_mode": mode,
+                })
 
-        else:
-            self._send_json({"error": "not found"}, status=404)
+            else:
+                self._send_json({"error": "not found"}, status=404)
+        finally:
+            dt_ms = (time.monotonic() - t0) * 1000
+            _verbose_write("RPC", f"end={self.path} duration_ms={dt_ms:.2f}")
 
     def do_POST(self):
-        if self.path == "/api/stop":
-            _log_rpc("POST /api/stop")
-            _enqueue("stop_system")
-            self._send_json({"ok": True})
-        elif self.path == "/api/start":
-            body = {}
-            length = int(self.headers.get("Content-Length", 0))
-            if length:
-                try:
-                    body = json.loads(self.rfile.read(length))
-                except Exception:
-                    pass
-            _log_rpc("POST /api/start", device_index=body.get("device_index"))
-            _enqueue("start_system", device_index=body.get("device_index"),
-                     model=body.get("model"))
-            self._send_json({"ok": True})
-        else:
-            self._send_json({"error": "not found"}, status=404)
+        t0 = time.monotonic()
+        try:
+            if self.path == "/api/stop":
+                _log_rpc("POST /api/stop")
+                _enqueue("stop_system")
+                self._send_json({"ok": True})
+            elif self.path == "/api/start":
+                body = {}
+                length = int(self.headers.get("Content-Length", 0))
+                if length:
+                    try:
+                        body = json.loads(self.rfile.read(length))
+                    except Exception:
+                        pass
+                _log_rpc("POST /api/start", device_index=body.get("device_index"))
+                _enqueue("start_system", device_index=body.get("device_index"),
+                         model=body.get("model"))
+                self._send_json({"ok": True})
+            else:
+                self._send_json({"error": "not found"}, status=404)
+        finally:
+            dt_ms = (time.monotonic() - t0) * 1000
+            _verbose_write("RPC", f"end={self.path} duration_ms={dt_ms:.2f}")
 
 
 def _start_rpc_server(port: int):
