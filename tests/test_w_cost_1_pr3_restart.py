@@ -32,6 +32,7 @@ class FakeRouteSystem:
     def __init__(self, state: RouteState = RouteState.IDLE):
         self._state = state
         self.set_output_device = MagicMock()
+        self.update_output_config = MagicMock()
 
     @property
     def state(self) -> RouteState:
@@ -97,8 +98,12 @@ class TestRouteAOutputOffRestart:
         assert len(stop_order) == 1
         assert len(start_order) == 1
 
-    def test_off_sets_output_device_none_before_restart(self):
-        """音声出力 OFF のとき set_output_device(None) が再起動前に呼ばれること。"""
+    def test_off_updates_output_config_none_before_restart(self):
+        """音声出力 OFF のとき（RUNNING中）update_output_config(None) が再起動前に呼ばれること。
+
+        Bug 1 修正: RUNNING中は set_output_device（ストリーム操作）ではなく
+        update_output_config（設定のみ更新）を使う。ストリーム操作は restart に任せる。
+        """
         fake_system = FakeMultiCaptionSystem(route_a_state=RouteState.RUNNING)
         app._konnyaku_system = fake_system
         app._konnyaku_running = True
@@ -109,14 +114,15 @@ class TestRouteAOutputOffRestart:
 
             app._on_route_a_output_enable_change(sender=None, app_data=False, user_data=None)
 
-        # set_output_device(None) が呼ばれること
+        # update_output_config(None) が呼ばれること（set_output_device ではない）
         deadline = time.monotonic() + 3.0
         while time.monotonic() < deadline:
-            if fake_system.route_a_system.set_output_device.called:
+            if fake_system.route_a_system.update_output_config.called:
                 break
             time.sleep(0.05)
 
-        fake_system.route_a_system.set_output_device.assert_called_once_with(None)
+        fake_system.route_a_system.update_output_config.assert_called_once_with(None)
+        fake_system.route_a_system.set_output_device.assert_not_called()
 
 
 # ---------------------------------------------------------------------------
@@ -175,8 +181,12 @@ class TestRouteBOutputOffRestart:
         fake_system.stop_route.assert_called_once_with("b")
         fake_system.start_route.assert_called_once_with("b")
 
-    def test_off_sets_output_device_none_before_restart(self):
-        """系統 B 音声出力 OFF のとき set_output_device(None) が呼ばれること。"""
+    def test_off_updates_output_config_none_before_restart(self):
+        """系統 B 音声出力 OFF のとき（RUNNING中）update_output_config(None) が呼ばれること。
+
+        Bug 1 修正: RUNNING中は set_output_device（ストリーム操作）ではなく
+        update_output_config（設定のみ更新）を使う。
+        """
         fake_system = FakeMultiCaptionSystem(route_b_state=RouteState.RUNNING)
         app._konnyaku_system = fake_system
         app._konnyaku_running = True
@@ -189,11 +199,12 @@ class TestRouteBOutputOffRestart:
 
         deadline = time.monotonic() + 3.0
         while time.monotonic() < deadline:
-            if fake_system.route_b_system.set_output_device.called:
+            if fake_system.route_b_system.update_output_config.called:
                 break
             time.sleep(0.05)
 
-        fake_system.route_b_system.set_output_device.assert_called_once_with(None)
+        fake_system.route_b_system.update_output_config.assert_called_once_with(None)
+        fake_system.route_b_system.set_output_device.assert_not_called()
 
 
 # ---------------------------------------------------------------------------

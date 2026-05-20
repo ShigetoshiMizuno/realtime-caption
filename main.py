@@ -991,6 +991,21 @@ class CaptionSystem:
         self._output_device_index = device_index
         self._audio_output_mode = True
 
+    def update_output_config(self, device_index: "int | None") -> None:
+        """出力デバイス設定のみ更新（ストリーム再起動なし）。
+
+        _restart_route_for_change と組み合わせて使う。
+        RUNNING中に直接 set_output_device を呼ぶ代わりにこのメソッドを使い、
+        ストリームの再起動は _restart_route_for_change に任せる。
+
+        Parameters
+        ----------
+        device_index : int | None
+            新しい出力デバイスインデックス。None なら音声出力 OFF。
+        """
+        self._output_device_index = device_index
+        self._audio_output_mode = device_index is not None
+
     def set_input_device(self, device_info: dict) -> None:
         """入力デバイスを動的に変更する (C-4, W-1 対応)。
 

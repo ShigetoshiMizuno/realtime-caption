@@ -531,6 +531,9 @@ class TestPressDebounce:
     def test_press_after_debounce_window_fires_again(self):
         """押下デバウンス後（200ms 経過をシミュレート）は再度 on_press が発火すること"""
         self.kb.simulate_press("f8")   # 1 回目: 発火
+        # リリースして _key_held をリセット（PTT の実際の操作: press → release）
+        self.kb.simulate_release("f8")
+        self.timer_factory.latest().fire()  # 離脱タイマー発火 → _key_held=False
         # _last_press_time を過去に設定して 200ms 経過をシミュレート
         self.mgr._last_press_time -= 0.201
         self.kb.simulate_press("f8")   # 2 回目: 200ms 以上経過したので発火
@@ -539,6 +542,9 @@ class TestPressDebounce:
     def test_press_debounce_threshold_is_200ms(self):
         """押下デバウンスの閾値が 200ms であること（199ms は無視、201ms は発火）"""
         self.kb.simulate_press("f8")   # 1 回目: 発火
+        # リリースして _key_held をリセット
+        self.kb.simulate_release("f8")
+        self.timer_factory.latest().fire()  # _key_held=False
 
         # 199ms 経過 → まだ無視
         self.mgr._last_press_time -= 0.199
@@ -665,10 +671,15 @@ class TestChatterWarning:
         self.mgr.start()
 
     def _press_n_times(self, n: int):
-        """n 回押下する。各押下で 200ms 以上経過したとみなすよう _last_press_time を調整。"""
+        """n 回 press-release サイクルを実行する。各押下で 200ms 以上経過したとみなすよう調整。"""
         for _ in range(n):
             self.mgr._last_press_time -= 0.201
             self.kb.simulate_press("f8")
+            # リリースして _key_held をリセット（OS キーリピートではなく意図的な連打をシミュレート）
+            self.kb.simulate_release("f8")
+            timer = self.timer_factory.latest()
+            if timer is not None:
+                timer.fire()  # 離脱タイマー発火 → _key_held=False
 
     def test_chatter_warning_fires_on_fifth_press(self):
         """10秒以内に5回押下すると on_chatter_warning が発火すること"""
