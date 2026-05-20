@@ -26,6 +26,7 @@ _PRESS_DEBOUNCE_SEC = 0.200   # 押下デバウンス: 200ms (F-4.1)
 _RELEASE_DEBOUNCE_SEC = 0.500  # 離脱デバウンス: 500ms (F-4.2, TBD-1 確定値)
 _CHATTER_WINDOW_SEC = 10.0     # 連打カウント窓: 10秒 (F-4.3)
 _CHATTER_LIMIT = 5             # 連打上限: 5回 (F-4.3)
+# F-4.4: キーリピート対策。保持中の再押下（OS キーリピート）は on_press を発火しない。
 
 
 class PttHotkeyManager:
@@ -40,7 +41,9 @@ class PttHotkeyManager:
     - 離脱デバウンス 500ms: 離脱後 500ms のタイマー満了で on_release を発火する
       (500ms 以内の再押下でタイマーをキャンセルし on_release を発火しない)
     - 連打上限 10s/5回: 10秒スライディングウィンドウ内で 5 回以上の押下で
-      on_chatter_warning を発火し、以降の押下を drop する
+      on_chatter_warning を発火し、以降の押下を drop する（10秒後に自動リセット）
+    - キーリピート無視: キー保持中の OS リピートイベントは on_press を発火せず
+      chatter カウントにも加算しない (F-4.4)
 
     テスト時は keyboard_module 引数に FakeKeyboardBackend を渡すことで
     実キーボードなしに動作を検証できる。
@@ -99,8 +102,12 @@ class PttHotkeyManager:
         # 連打カウント: 直近 _CHATTER_WINDOW_SEC 内の押下タイムスタンプ
         self._press_times: deque = deque()
 
-        # 連打警告フラグ: True の間は新規押下を drop する
+        # 連打警告フラグ: True の間は新規押下を drop する（_CHATTER_WINDOW_SEC 後に自動リセット）
         self._chatter_triggered: bool = False
+
+        # キー保持フラグ: on_press 発火後〜on_release 発火前は True (F-4.4)
+        # OS キーリピートによる誤チャッター検出を防ぐ
+        self._key_held: bool = False
 
     # ------------------------------------------------------------------
     # Public properties
@@ -218,10 +225,17 @@ class PttHotkeyManager:
         押下デバウンス（200ms）と連打上限チェックを行い、
         通過した場合のみ on_press を発火する。
         離脱デバウンス中（タイマー動作中）なら離脱タイマーをキャンセルする。
+        キー保持中（_key_held=True）のリピートイベントは離脱タイマーキャンセルのみ行い
+        on_press 発火・chatter カウント加算はしない (F-4.4)。
         """
         now = time.monotonic()
 
         with self._lock:
+            # キーリピート: 保持中の再押下は離脱タイマーのみキャンセルして無視 (F-4.4)
+            if self._key_held:
+                self._cancel_release_timer_locked()
+                return
+
             # 連打警告中は drop
             if self._chatter_triggered:
                 return
@@ -242,15 +256,23 @@ class PttHotkeyManager:
             # 連打上限チェック (F-4.3)
             if len(self._press_times) >= _CHATTER_LIMIT:
                 self._chatter_triggered = True
-                # warning コールバックはロック外で発火（デッドロック防止）
                 warning_cb = self.on_chatter_warning
+                # _CHATTER_WINDOW_SEC 後に自動リセット
+                chatter_reset_timer = self._timer_factory(
+                    _CHATTER_WINDOW_SEC, self._reset_chatter
+                )
             else:
                 warning_cb = None
+                chatter_reset_timer = None
 
             self._last_press_time = now
+            if not self._chatter_triggered:
+                self._key_held = True
             press_cb = self.on_press if not self._chatter_triggered else None
 
-        # ロック外でコールバック発火
+        # ロック外でタイマー・コールバック発火
+        if chatter_reset_timer is not None:
+            chatter_reset_timer.start()
         if warning_cb is not None:
             warning_cb()
         if press_cb is not None:
@@ -286,6 +308,14 @@ class PttHotkeyManager:
             if self._release_timer is None:
                 return
             self._release_timer = None
+            self._key_held = False  # 保持状態を解除 (F-4.4)
 
         if release_cb is not None:
             release_cb(event)
+
+    def _reset_chatter(self) -> None:
+        """チャッターロックを解除する（_CHATTER_WINDOW_SEC 後に自動呼び出し）。"""
+        with self._lock:
+            self._chatter_triggered = False
+            self._press_times.clear()
+        print("[PTT] 連打ガード解除。操作を再開できます。", flush=True)
