@@ -1544,12 +1544,16 @@ class CaptionSystem:
                 # WebSocket サーバーは broadcaster owner（route_a）が管理する
                 await self._stop_event_async.wait()
         except OSError as e:
-            msg = (
-                f"WebSocket サーバーの起動に失敗しました（ポート {ws_port} が使用中）。"
-                "アプリの二重起動がないか確認してください。"
-            )
+            import errno as _errno
+            if e.errno == _errno.EADDRINUSE or e.errno == 10048:  # 10048 = Windows WSAEADDRINUSE
+                msg = (
+                    f"WebSocket サーバーの起動に失敗しました（ポート {ws_port} が使用中）。"
+                    f"アプリの二重起動がないか確認してください。[{e}]"
+                )
+            else:
+                msg = f"WebSocket サーバーの起動に失敗しました: {e}"
             self._log("ERROR", msg)
-            if self._on_realtime_error_external is not None:
+            if self._on_realtime_error_external:
                 try:
                     self._on_realtime_error_external(msg)
                 except Exception:
