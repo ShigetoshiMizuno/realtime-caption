@@ -3028,6 +3028,7 @@ def _load_fonts(size: int = 16):
             # 追加しないと CJK が描画されない。
             with dpg.font(jp_font_path, size) as _font_main_ctx:
                 dpg.add_font_range_hint(dpg.mvFontRangeHint_Japanese)
+                dpg.add_font_range(0x25A0, 0x25FF)  # Geometric Shapes: ■●○◆▶ etc.
             _font_main = _font_main_ctx
         _font_emoji = None
 
