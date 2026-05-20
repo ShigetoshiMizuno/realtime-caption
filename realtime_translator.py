@@ -505,6 +505,9 @@ class RealtimeTranslator:
                     else:
                         self._fire_error(f"サーバーエラー: {message}")
 
+                elif event_type in ("session.created", "session.updated"):
+                    self._log_verbose("RT_SESSION_EVENT", type=event_type)
+
                 else:
                     self._log_verbose("RT_RAW_UNKNOWN", type=event_type, msg=str(msg)[:200])
 
