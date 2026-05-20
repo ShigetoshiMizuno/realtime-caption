@@ -178,3 +178,68 @@ class TestCallbackContract:
             f"dpg 標準シグネチャと非互換:\n"
             + "\n".join(f"  {name}: {reason}" for name, reason in non_conforming)
         )
+
+
+# ---------------------------------------------------------------------------
+# PTT ホールド式ボタン + ラッチチェック（issue #???）
+# ---------------------------------------------------------------------------
+
+class TestPttHoldLatchCallbacks:
+    """PTT ホールド式ボタン / 固定ラッチ チェックボックスのコールバック存在とシグネチャを検証する。"""
+
+    @pytest.mark.parametrize("func_name", [
+        "_on_ptt_btn_pressed",
+        "_on_ptt_btn_released",
+        "_on_ptt_latch_changed",
+    ])
+    def test_callback_exists(self, func_name):
+        """新規コールバック 3 つが app モジュールに公開されていること。"""
+        assert hasattr(app, func_name), f"app.{func_name} が存在しない"
+        assert callable(getattr(app, func_name)), f"app.{func_name} が callable でない"
+
+    @pytest.mark.parametrize("func_name", [
+        "_on_ptt_btn_pressed",
+        "_on_ptt_btn_released",
+        "_on_ptt_latch_changed",
+    ])
+    def test_callback_has_verbose_decorator(self, func_name):
+        """コールバックが @_verbose_callback() デコレータで装飾されていること。
+
+        _verbose_callback wrapper は __wrapped__ 属性を持つ（functools.wraps）。
+        """
+        func = getattr(app, func_name)
+        assert hasattr(func, "__wrapped__"), (
+            f"app.{func_name} に __wrapped__ がない。"
+            "@_verbose_callback() デコレータが付いていない可能性がある"
+        )
+
+    @pytest.mark.parametrize("func_name,tag_name", [
+        ("_on_ptt_btn_pressed",  "TAG_PTT_BTN_HANDLER"),
+        ("_on_ptt_btn_released", "TAG_PTT_BTN_HANDLER"),
+        ("_on_ptt_latch_changed", "TAG_PTT_LATCH_CHECK"),
+    ])
+    def test_related_tag_constants_exist(self, func_name, tag_name):
+        """関連 TAG 定数が app モジュールに存在すること。"""
+        assert hasattr(app, tag_name), f"app.{tag_name} が存在しない"
+        assert isinstance(getattr(app, tag_name), str), f"app.{tag_name} が str でない"
+
+    @pytest.mark.parametrize("func_name", [
+        "_on_ptt_btn_pressed",
+        "_on_ptt_btn_released",
+        "_on_ptt_latch_changed",
+    ])
+    @pytest.mark.parametrize("nargs", [0, 1, 2, 3])
+    def test_callback_accepts_any_arg_count(self, func_name, nargs):
+        """各コールバックが 0〜3 引数で「引数不一致 TypeError」を出さないこと。"""
+        func = getattr(app, func_name)
+        args = (None,) * nargs
+        dpg_mock = _make_dpg_mock()
+        with patch("app.dpg", dpg_mock):
+            try:
+                func(*args)
+            except TypeError as e:
+                if _is_arg_mismatch_typeerror(e):
+                    pytest.fail(
+                        f"app.{func_name}({', '.join(['None']*nargs)}) "
+                        f"が引数不一致 TypeError: {e}"
+                    )
