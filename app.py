@@ -730,6 +730,7 @@ def _on_save_api_keys():
 @_verbose_callback()
 def _on_open_quota_page(sender=None, app_data=None, user_data=None):
     """クォータを Web で確認ボタンのコールバック。(issue #80)"""
+    _log_user("クォータ確認 Web ページ を開くボタン押下")
     _open_quota_usage_page()
 
 
