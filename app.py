@@ -865,10 +865,19 @@ def _on_route_a_output_device_change(sender, app_data, user_data):
         out_devices = list_audio_devices(device_type="output")
         matched = find_device_by_name(label, out_devices)
         index = matched["index"] if matched else None
-    try:
-        _konnyaku_system.route_a_system.set_output_device(index)
-    except Exception as e:
-        print(f"[ERROR] route_a 出力デバイス変更失敗: {e}", flush=True)
+
+    # 稼働中なら再起動で確実に切替。停止中は軽量な直接切替。
+    if _konnyaku_system.route_a_system.state == RouteState.RUNNING:
+        threading.Thread(
+            target=_restart_route_for_change,
+            args=("a", "出力デバイス切替"),
+            daemon=True,
+        ).start()
+    else:
+        try:
+            _konnyaku_system.route_a_system.set_output_device(index)
+        except Exception as e:
+            print(f"[ERROR] route_a 出力デバイス変更失敗: {e}", flush=True)
 
 
 @_verbose_callback()
@@ -885,10 +894,19 @@ def _on_route_b_output_device_change(sender, app_data, user_data):
         out_devices = list_audio_devices(device_type="output")
         matched = find_device_by_name(label, out_devices)
         index = matched["index"] if matched else None
-    try:
-        _konnyaku_system.route_b_system.set_output_device(index)
-    except Exception as e:
-        print(f"[ERROR] route_b 出力デバイス変更失敗: {e}", flush=True)
+
+    # 稼働中なら再起動で確実に切替。停止中は軽量な直接切替。
+    if _konnyaku_system.route_b_system.state == RouteState.RUNNING:
+        threading.Thread(
+            target=_restart_route_for_change,
+            args=("b", "出力デバイス切替"),
+            daemon=True,
+        ).start()
+    else:
+        try:
+            _konnyaku_system.route_b_system.set_output_device(index)
+        except Exception as e:
+            print(f"[ERROR] route_b 出力デバイス変更失敗: {e}", flush=True)
 
 
 def _restart_route_for_change(route_id: str, reason_label: str) -> None:
