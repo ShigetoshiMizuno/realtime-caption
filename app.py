@@ -868,6 +868,9 @@ def _on_route_a_output_device_change(sender, app_data, user_data):
 
     # 稼働中なら再起動で確実に切替。停止中は軽量な直接切替。
     if _konnyaku_system.route_a_system.state == RouteState.RUNNING:
+        # Bug 2 修正: restart 前にインデックスを更新しておく。
+        # これをしないと start_route が古い _output_device_index を使ってしまう。
+        _konnyaku_system.route_a_system.update_output_config(index)
         threading.Thread(
             target=_restart_route_for_change,
             args=("a", "出力デバイス切替"),
@@ -897,6 +900,9 @@ def _on_route_b_output_device_change(sender, app_data, user_data):
 
     # 稼働中なら再起動で確実に切替。停止中は軽量な直接切替。
     if _konnyaku_system.route_b_system.state == RouteState.RUNNING:
+        # Bug 2 修正: restart 前にインデックスを更新しておく。
+        # これをしないと start_route が古い _output_device_index を使ってしまう。
+        _konnyaku_system.route_b_system.update_output_config(index)
         threading.Thread(
             target=_restart_route_for_change,
             args=("b", "出力デバイス切替"),
@@ -957,6 +963,12 @@ def _on_route_a_output_enable_change(sender, app_data, user_data):
     if _konnyaku_system is None or _konnyaku_system.route_a_system is None:
         return
     enabled = bool(app_data)
+    route_a = _konnyaku_system.route_a_system
+    is_running = (
+        _konnyaku_running
+        and route_a.state == RouteState.RUNNING
+    )
+
     if enabled:
         label = (dpg.get_value(TAG_ROUTE_A_OUTPUT_DEVICE_COMBO)
                  if dpg.does_item_exist(TAG_ROUTE_A_OUTPUT_DEVICE_COMBO) else "")
@@ -964,21 +976,27 @@ def _on_route_a_output_enable_change(sender, app_data, user_data):
             out_devices = list_audio_devices(device_type="output")
             matched = find_device_by_name(label, out_devices)
             if matched:
-                try:
-                    _konnyaku_system.route_a_system.set_output_device(matched["index"])
-                except Exception as e:
-                    print(f"[ERROR] route_a 出力 ON 失敗: {e}", flush=True)
+                if is_running:
+                    # Bug 1 修正: RUNNING中は set_output_device（ストリーム操作）を直接呼ばない。
+                    # 設定のみ更新し、ストリーム再起動は _restart_route_for_change に任せる。
+                    route_a.update_output_config(matched["index"])
+                else:
+                    try:
+                        route_a.set_output_device(matched["index"])
+                    except Exception as e:
+                        print(f"[ERROR] route_a 出力 ON 失敗: {e}", flush=True)
     else:
-        try:
-            _konnyaku_system.route_a_system.set_output_device(None)
-        except Exception as e:
-            print(f"[ERROR] route_a 出力 OFF 失敗: {e}", flush=True)
+        if is_running:
+            # Bug 1 修正: RUNNING中は set_output_device（ストリーム操作）を直接呼ばない。
+            route_a.update_output_config(None)
+        else:
+            try:
+                route_a.set_output_device(None)
+            except Exception as e:
+                print(f"[ERROR] route_a 出力 OFF 失敗: {e}", flush=True)
 
     # 稼働中の場合は stop_route -> start_route で再起動し API 側を即反映（W-COST-1 §4.3）
-    if (
-        _konnyaku_running
-        and _konnyaku_system.route_a_system.state == RouteState.RUNNING
-    ):
+    if is_running:
         if dpg.does_item_exist(TAG_STATUS_STATE):
             try:
                 dpg.set_value(TAG_STATUS_STATE, "系統1 音声出力 ON/OFF 切替中...")
@@ -1000,6 +1018,12 @@ def _on_route_b_output_enable_change(sender, app_data, user_data):
     if _konnyaku_system is None or _konnyaku_system.route_b_system is None:
         return
     enabled = bool(app_data)
+    route_b = _konnyaku_system.route_b_system
+    is_running = (
+        _konnyaku_running
+        and route_b.state == RouteState.RUNNING
+    )
+
     if enabled:
         label = (dpg.get_value(TAG_ROUTE_B_OUTPUT_DEVICE_COMBO)
                  if dpg.does_item_exist(TAG_ROUTE_B_OUTPUT_DEVICE_COMBO) else "")
@@ -1007,21 +1031,27 @@ def _on_route_b_output_enable_change(sender, app_data, user_data):
             out_devices = list_audio_devices(device_type="output")
             matched = find_device_by_name(label, out_devices)
             if matched:
-                try:
-                    _konnyaku_system.route_b_system.set_output_device(matched["index"])
-                except Exception as e:
-                    print(f"[ERROR] route_b 出力 ON 失敗: {e}", flush=True)
+                if is_running:
+                    # Bug 1 修正: RUNNING中は set_output_device（ストリーム操作）を直接呼ばない。
+                    # 設定のみ更新し、ストリーム再起動は _restart_route_for_change に任せる。
+                    route_b.update_output_config(matched["index"])
+                else:
+                    try:
+                        route_b.set_output_device(matched["index"])
+                    except Exception as e:
+                        print(f"[ERROR] route_b 出力 ON 失敗: {e}", flush=True)
     else:
-        try:
-            _konnyaku_system.route_b_system.set_output_device(None)
-        except Exception as e:
-            print(f"[ERROR] route_b 出力 OFF 失敗: {e}", flush=True)
+        if is_running:
+            # Bug 1 修正: RUNNING中は set_output_device（ストリーム操作）を直接呼ばない。
+            route_b.update_output_config(None)
+        else:
+            try:
+                route_b.set_output_device(None)
+            except Exception as e:
+                print(f"[ERROR] route_b 出力 OFF 失敗: {e}", flush=True)
 
     # 稼働中の場合は stop_route -> start_route で再起動し API 側を即反映（W-COST-1 §4.3）
-    if (
-        _konnyaku_running
-        and _konnyaku_system.route_b_system.state == RouteState.RUNNING
-    ):
+    if is_running:
         if dpg.does_item_exist(TAG_STATUS_STATE):
             try:
                 dpg.set_value(TAG_STATUS_STATE, "系統2 音声出力 ON/OFF 切替中...")
@@ -2101,7 +2131,7 @@ def _on_konnyaku_start_stop_click():
         _log_action("こんにゃくモード 起動開始", route_a=route_a_enabled, route_b=route_b_enabled)
         if route_a_enabled and _konnyaku_system.route_a_system is not None:
             _konnyaku_system.start_route("a")
-        if route_b_enabled and _konnyaku_system.route_b_system is not None:
+        if route_b_enabled and _konnyaku_system.route_b_system is not None and not _ptt_enabled:
             _konnyaku_system.start_route("b")
 
         _konnyaku_running = True

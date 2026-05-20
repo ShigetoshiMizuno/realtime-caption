@@ -486,6 +486,37 @@ class TestKonnyakuStartFlow:
             "スレッドエラー時に TAG_STATUS_STATE に set_value が呼ばれていない"
         )
 
+    def test_ptt_enabled_prevents_route_b_auto_start(self):
+        """PTT モード有効時、開始ボタン押下で Route B が自動起動しないこと。
+
+        ptt_enabled=True のときスタートボタンを押すと、Route B の start_route が
+        呼ばれず、F8 押下まで待機状態になること（課金防止）。
+        """
+        fake_devices = _fake_devices()
+        route_a_label = _device_label_for(fake_devices[0])
+        route_b_label = _device_label_for(fake_devices[1])
+        widget_values = _make_widget_values(route_a_label, route_b_label)
+        mock_dpg = _make_dpg_mock(widget_values)
+        mock_instance = MagicMock()
+        mock_instance.route_a_system = MagicMock()
+        mock_instance.route_b_system = MagicMock()
+
+        with (
+            patch.object(app, "dpg", mock_dpg),
+            patch.object(app, "_devices", fake_devices),
+            patch.object(app, "_config", _fake_config()),
+            patch.object(app, "_system", None),
+            patch.object(app, "_konnyaku_system", mock_instance),
+            patch.object(app, "_konnyaku_running", False),
+            patch.object(app, "_ptt_enabled", True),
+        ):
+            app._on_konnyaku_start_stop_click()
+
+        calls = [str(c) for c in mock_instance.start_route.call_args_list]
+        assert not any("b" in c for c in calls), (
+            f"PTT ON でも Route B の start_route が呼ばれた: {calls}"
+        )
+
 
 # ---------------------------------------------------------------------------
 # Task D: モックなし MultiCaptionSystem テスト（クラッシュ再現用）
@@ -886,6 +917,7 @@ class TestRouteToggle:
             patch.object(app, "_system", None),
             patch.object(app, "_konnyaku_system", mock_instance),
             patch.object(app, "_konnyaku_running", False),
+            patch.object(app, "_ptt_enabled", False),
         ):
             app._on_konnyaku_start_stop_click()
 
@@ -919,6 +951,7 @@ class TestRouteToggle:
             patch.object(app, "_system", None),
             patch.object(app, "_konnyaku_system", mock_instance),
             patch.object(app, "_konnyaku_running", False),
+            patch.object(app, "_ptt_enabled", False),
         ):
             app._on_konnyaku_start_stop_click()
 
