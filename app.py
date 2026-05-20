@@ -351,7 +351,9 @@ TAG_STATUS_COST = "status_cost"
 TAG_HOST_API_COMBO = "host_api_combo"
 
 # 課金状態ランプ (Issue #99)
-TAG_BILLING_LAMP = "billing_lamp"
+TAG_BILLING_LAMP = "billing_lamp"      # 旧: 一体ランプ（後方互換のため残置）
+TAG_BILLING_LAMP_A = "billing_lamp_a"  # 系統A 個別ランプ
+TAG_BILLING_LAMP_B = "billing_lamp_b"  # 系統B 個別ランプ
 
 # ---------------------------------------------------------------------------
 # 翻訳こんにゃくモード GUI タグ (Issue #38 Phase 4)
@@ -2339,7 +2341,7 @@ def _gui_set_label(tag: str, new_label: str, name: str | None = None,
 # ---------------------------------------------------------------------------
 
 def _get_billing_state() -> str:
-    """課金状態を判定して 'none' / 'single' / 'both' を返す。
+    """課金状態を判定して 'none' / 'single' / 'both' を返す（後方互換）。
 
     STARTING / RUNNING のいずれかを課金中とみなす。
     """
@@ -2361,6 +2363,18 @@ def _get_billing_state() -> str:
     return "none"
 
 
+def _get_route_billing_active(route_id: str) -> bool:
+    """指定系統が課金中（STARTING/RUNNING）かを返す。"""
+    system = _konnyaku_system
+    if system is None:
+        return False
+    route = system.route_a_system if route_id == "a" else system.route_b_system
+    return (
+        route is not None
+        and route.state in (RouteState.STARTING, RouteState.RUNNING)
+    )
+
+
 _BILLING_LAMP_LABELS = {
     "none": "● 課金なし",
     "single": "● 片方課金",
@@ -2373,18 +2387,38 @@ _BILLING_LAMP_COLORS = {
     "both": (220, 0, 0, 255),      # 赤
 }
 
+_BILLING_ROUTE_LAMP_COLOR_ON = (220, 0, 0, 255)    # 赤: 課金中
+_BILLING_ROUTE_LAMP_COLOR_OFF = (0, 200, 0, 255)   # 緑: 課金なし
+
 
 def _update_billing_lamp() -> None:
     """課金ランプを現在の状態に更新する。dpg は GUI スレッド前提。"""
     if not _dpg_ready:
         return
-    if not dpg.does_item_exist(TAG_BILLING_LAMP):
-        return
-    state = _get_billing_state()
-    label = _BILLING_LAMP_LABELS.get(state, _BILLING_LAMP_LABELS["none"])
-    color = _BILLING_LAMP_COLORS.get(state, _BILLING_LAMP_COLORS["none"])
-    _gui_set_value(TAG_BILLING_LAMP, label)
-    dpg.configure_item(TAG_BILLING_LAMP, color=color)
+
+    # 旧・一体ランプ（存在する場合のみ更新）
+    if dpg.does_item_exist(TAG_BILLING_LAMP):
+        state = _get_billing_state()
+        label = _BILLING_LAMP_LABELS.get(state, _BILLING_LAMP_LABELS["none"])
+        color = _BILLING_LAMP_COLORS.get(state, _BILLING_LAMP_COLORS["none"])
+        _gui_set_value(TAG_BILLING_LAMP, label)
+        dpg.configure_item(TAG_BILLING_LAMP, color=color)
+
+    # 系統A 個別ランプ
+    if dpg.does_item_exist(TAG_BILLING_LAMP_A):
+        a_on = _get_route_billing_active("a")
+        dpg.configure_item(
+            TAG_BILLING_LAMP_A,
+            color=_BILLING_ROUTE_LAMP_COLOR_ON if a_on else _BILLING_ROUTE_LAMP_COLOR_OFF,
+        )
+
+    # 系統B 個別ランプ
+    if dpg.does_item_exist(TAG_BILLING_LAMP_B):
+        b_on = _get_route_billing_active("b")
+        dpg.configure_item(
+            TAG_BILLING_LAMP_B,
+            color=_BILLING_ROUTE_LAMP_COLOR_ON if b_on else _BILLING_ROUTE_LAMP_COLOR_OFF,
+        )
 
 
 def _classify_preload_cache(cached_system, cached_key, requested_key) -> tuple[str, object | None]:
@@ -3506,7 +3540,10 @@ def _build_gui():
 
         # --- ステータスバー ---
         with dpg.group(horizontal=True):
-            dpg.add_text("● 課金なし", tag=TAG_BILLING_LAMP)
+            dpg.add_text("系統A●", tag=TAG_BILLING_LAMP_A,
+                         color=_BILLING_ROUTE_LAMP_COLOR_OFF)
+            dpg.add_text(" 系統B●", tag=TAG_BILLING_LAMP_B,
+                         color=_BILLING_ROUTE_LAMP_COLOR_OFF)
             dpg.add_text("  ", )
             dpg.add_text("■ 待機中", tag=TAG_STATUS_STATE)
             dpg.add_text("  |  認識 ○", tag=TAG_STATUS_STT)

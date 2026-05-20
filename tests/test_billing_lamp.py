@@ -198,18 +198,18 @@ class TestUpdateBillingLamp:
         dpg_mock.set_value.assert_called_once_with(app.TAG_BILLING_LAMP, "● 両方課金")
 
     def test_none_state_sets_green_color(self):
-        """課金なし（"none"）のとき configure_item で緑色 (0, 200, 0, 255) がセットされること。"""
+        """課金なし（"none"）のとき TAG_BILLING_LAMP に緑色がセットされること。"""
         dpg_mock = self._make_dpg_mock()
         with patch.object(app, "_dpg_ready", True), \
              patch.object(app, "dpg", dpg_mock), \
              patch.object(app, "_konnyaku_system", None):
             app._update_billing_lamp()
-        dpg_mock.configure_item.assert_called_once_with(
+        dpg_mock.configure_item.assert_any_call(
             app.TAG_BILLING_LAMP, color=(0, 200, 0, 255)
         )
 
     def test_single_state_sets_yellow_color(self):
-        """片方課金（"single"）のとき configure_item で黄色 (255, 200, 0, 255) がセットされること。"""
+        """片方課金（"single"）のとき TAG_BILLING_LAMP に黄色がセットされること。"""
         dpg_mock = self._make_dpg_mock()
         system = _make_konnyaku(
             _make_route(RouteState.RUNNING),
@@ -219,12 +219,12 @@ class TestUpdateBillingLamp:
              patch.object(app, "dpg", dpg_mock), \
              patch.object(app, "_konnyaku_system", system):
             app._update_billing_lamp()
-        dpg_mock.configure_item.assert_called_once_with(
+        dpg_mock.configure_item.assert_any_call(
             app.TAG_BILLING_LAMP, color=(255, 200, 0, 255)
         )
 
     def test_both_state_sets_red_color(self):
-        """両方課金（"both"）のとき configure_item で赤色 (220, 0, 0, 255) がセットされること。"""
+        """両方課金（"both"）のとき TAG_BILLING_LAMP に赤色がセットされること。"""
         dpg_mock = self._make_dpg_mock()
         system = _make_konnyaku(
             _make_route(RouteState.RUNNING),
@@ -234,8 +234,62 @@ class TestUpdateBillingLamp:
              patch.object(app, "dpg", dpg_mock), \
              patch.object(app, "_konnyaku_system", system):
             app._update_billing_lamp()
-        dpg_mock.configure_item.assert_called_once_with(
+        dpg_mock.configure_item.assert_any_call(
             app.TAG_BILLING_LAMP, color=(220, 0, 0, 255)
+        )
+
+    def test_route_a_running_lamp_a_is_red(self):
+        """系統A RUNNING のとき TAG_BILLING_LAMP_A が赤になること。"""
+        dpg_mock = self._make_dpg_mock()
+        system = _make_konnyaku(
+            _make_route(RouteState.RUNNING),
+            _make_route(RouteState.IDLE),
+        )
+        with patch.object(app, "_dpg_ready", True), \
+             patch.object(app, "dpg", dpg_mock), \
+             patch.object(app, "_konnyaku_system", system):
+            app._update_billing_lamp()
+        dpg_mock.configure_item.assert_any_call(
+            app.TAG_BILLING_LAMP_A, color=(220, 0, 0, 255)
+        )
+        dpg_mock.configure_item.assert_any_call(
+            app.TAG_BILLING_LAMP_B, color=(0, 200, 0, 255)
+        )
+
+    def test_route_b_running_lamp_b_is_red(self):
+        """系統B RUNNING のとき TAG_BILLING_LAMP_B が赤、系統A は緑になること。"""
+        dpg_mock = self._make_dpg_mock()
+        system = _make_konnyaku(
+            _make_route(RouteState.IDLE),
+            _make_route(RouteState.RUNNING),
+        )
+        with patch.object(app, "_dpg_ready", True), \
+             patch.object(app, "dpg", dpg_mock), \
+             patch.object(app, "_konnyaku_system", system):
+            app._update_billing_lamp()
+        dpg_mock.configure_item.assert_any_call(
+            app.TAG_BILLING_LAMP_A, color=(0, 200, 0, 255)
+        )
+        dpg_mock.configure_item.assert_any_call(
+            app.TAG_BILLING_LAMP_B, color=(220, 0, 0, 255)
+        )
+
+    def test_both_running_both_lamps_are_red(self):
+        """両系統 RUNNING のとき A/B 両ランプが赤になること。"""
+        dpg_mock = self._make_dpg_mock()
+        system = _make_konnyaku(
+            _make_route(RouteState.RUNNING),
+            _make_route(RouteState.RUNNING),
+        )
+        with patch.object(app, "_dpg_ready", True), \
+             patch.object(app, "dpg", dpg_mock), \
+             patch.object(app, "_konnyaku_system", system):
+            app._update_billing_lamp()
+        dpg_mock.configure_item.assert_any_call(
+            app.TAG_BILLING_LAMP_A, color=(220, 0, 0, 255)
+        )
+        dpg_mock.configure_item.assert_any_call(
+            app.TAG_BILLING_LAMP_B, color=(220, 0, 0, 255)
         )
 
 
