@@ -2101,7 +2101,7 @@ def _on_konnyaku_start_stop_click():
         _log_action("こんにゃくモード 起動開始", route_a=route_a_enabled, route_b=route_b_enabled)
         if route_a_enabled and _konnyaku_system.route_a_system is not None:
             _konnyaku_system.start_route("a")
-        if route_b_enabled and _konnyaku_system.route_b_system is not None:
+        if route_b_enabled and _konnyaku_system.route_b_system is not None and not _ptt_enabled:
             _konnyaku_system.start_route("b")
 
         _konnyaku_running = True
