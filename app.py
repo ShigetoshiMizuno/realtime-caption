@@ -442,6 +442,8 @@ TAG_PTT_GUI_BTN = "ptt_gui_btn"           # GUI PTT ボタン（タブ外・上�
 TAG_PTT_GUI_CONTAINER = "ptt_gui_container"  # PTT ボタンのコンテナ（show/hide 用）
 TAG_PTT_THEME_IDLE = "ptt_theme_idle"     # PTT ボタン待機時テーマ（青）
 TAG_PTT_THEME_ACTIVE = "ptt_theme_active" # PTT ボタン送信中テーマ（赤）
+TAG_PTT_LATCH_CHECK  = "ptt_latch_check"   # 固定チェックボックス
+TAG_PTT_BTN_HANDLER  = "ptt_btn_handler"   # ボタンのアイテムハンドラ登録
 
 # 系統1/2 TabBar タグ（GUI縦長解消 第3弾）
 TAG_ROUTE_TAB_BAR = "route_tab_bar"       # 系統タブバーコンテナ
@@ -1655,6 +1657,75 @@ def _on_ptt_chatter_warning() -> None:
 
 
 @_verbose_callback()
+def _on_ptt_btn_pressed(sender, app_data, user_data) -> None:
+    """PTT ボタン マウスダウン。ラッチ中なら解除して停止。"""
+    if not _konnyaku_running:
+        return
+    if _konnyaku_system is None or _konnyaku_system.route_b_system is None:
+        return
+    # ラッチ中にボタンを押したら解除して停止
+    if dpg.does_item_exist(TAG_PTT_LATCH_CHECK) and dpg.get_value(TAG_PTT_LATCH_CHECK):
+        dpg.set_value(TAG_PTT_LATCH_CHECK, False)
+        threading.Thread(
+            target=_konnyaku_system.stop_route, args=("b",),
+            daemon=True, name="PttBtnLatchOff"
+        ).start()
+        _gui_queue.put({"cmd": "update_ptt_visual"})
+        return
+    from main import RouteState
+    if _konnyaku_system.route_b_system.state not in (RouteState.RUNNING, RouteState.STARTING):
+        _konnyaku_system.route_b_system.resume_from_idle()
+        threading.Thread(
+            target=_konnyaku_system.start_route, args=("b",),
+            daemon=True, name="PttBtnPress"
+        ).start()
+    _gui_queue.put({"cmd": "update_ptt_visual"})
+
+
+@_verbose_callback()
+def _on_ptt_btn_released(sender, app_data, user_data) -> None:
+    """PTT ボタン マウスアップ。ラッチ中は停止しない。"""
+    if not _konnyaku_running:
+        return
+    if _konnyaku_system is None or _konnyaku_system.route_b_system is None:
+        return
+    if dpg.does_item_exist(TAG_PTT_LATCH_CHECK) and dpg.get_value(TAG_PTT_LATCH_CHECK):
+        return  # ラッチ中はリリースしても停止しない
+    from main import RouteState
+    if _konnyaku_system.route_b_system.state in (RouteState.RUNNING, RouteState.STARTING):
+        threading.Thread(
+            target=_konnyaku_system.stop_route, args=("b",),
+            daemon=True, name="PttBtnRelease"
+        ).start()
+    _gui_queue.put({"cmd": "update_ptt_visual"})
+
+
+@_verbose_callback()
+def _on_ptt_latch_changed(sender, app_data, user_data) -> None:
+    """固定チェックボックス変更: ON → Route B 開始、OFF → 停止。"""
+    checked = bool(app_data)
+    if not _konnyaku_running:
+        return
+    if _konnyaku_system is None or _konnyaku_system.route_b_system is None:
+        return
+    from main import RouteState
+    if checked:
+        if _konnyaku_system.route_b_system.state not in (RouteState.RUNNING, RouteState.STARTING):
+            _konnyaku_system.route_b_system.resume_from_idle()
+            threading.Thread(
+                target=_konnyaku_system.start_route, args=("b",),
+                daemon=True, name="PttLatchOn"
+            ).start()
+    else:
+        if _konnyaku_system.route_b_system.state in (RouteState.RUNNING, RouteState.STARTING):
+            threading.Thread(
+                target=_konnyaku_system.stop_route, args=("b",),
+                daemon=True, name="PttLatchOff"
+            ).start()
+    _gui_queue.put({"cmd": "update_ptt_visual"})
+
+
+@_verbose_callback()
 def _on_ptt_gui_button_click(sender, app_data, user_data) -> None:
     """GUI PTT ボタンのコールバック。Route B の起動/停止をトグルする。
 
@@ -2041,6 +2112,9 @@ def _update_ptt_visual_feedback() -> None:
         else:
             dpg.configure_item(TAG_PTT_GUI_BTN, label="● 話す (PTT)")
             dpg.bind_item_theme(TAG_PTT_GUI_BTN, TAG_PTT_THEME_IDLE)
+            # 外部停止時にラッチチェックを自動 OFF
+            if dpg.does_item_exist(TAG_PTT_LATCH_CHECK) and dpg.get_value(TAG_PTT_LATCH_CHECK):
+                dpg.set_value(TAG_PTT_LATCH_CHECK, False)
 
 
 @_verbose_callback()
@@ -3373,7 +3447,9 @@ def _build_gui():
             _route_b_on_at_init = bool(route_b_saved.get("enabled", True))
             _vp_w = dpg.get_viewport_width()
             _btn_w = _vp_w // 4
-            _pad_l = (_vp_w - _btn_w) // 2
+            _cb_gap = 10
+            _cb_label_w = 50   # "固定" チェックボックスの概算幅
+            _pad_l = (_vp_w - _btn_w - _cb_gap - _cb_label_w) // 2
             with dpg.group(horizontal=True, tag=TAG_PTT_GUI_CONTAINER,
                            show=_route_b_on_at_init):
                 dpg.add_dummy(width=_pad_l)
@@ -3381,9 +3457,20 @@ def _build_gui():
                     tag=TAG_PTT_GUI_BTN,
                     label="● 話す (PTT)",
                     width=_btn_w,
-                    callback=_on_ptt_gui_button_click,
                 )
                 dpg.bind_item_theme(TAG_PTT_GUI_BTN, TAG_PTT_THEME_IDLE)
+                dpg.add_spacer(width=_cb_gap)
+                dpg.add_checkbox(
+                    tag=TAG_PTT_LATCH_CHECK,
+                    label="固定",
+                    default_value=False,
+                    callback=_on_ptt_latch_changed,
+                )
+            # ホールド式ハンドラ登録（グループ外で定義）
+            with dpg.item_handler_registry(tag=TAG_PTT_BTN_HANDLER):
+                dpg.add_item_activated_handler(callback=_on_ptt_btn_pressed)
+                dpg.add_item_deactivated_handler(callback=_on_ptt_btn_released)
+            dpg.bind_item_handler_registry(TAG_PTT_GUI_BTN, TAG_PTT_BTN_HANDLER)
             dpg.add_separator()
 
             _lang_display_names = get_language_display_names()
