@@ -436,6 +436,7 @@ TAG_PTT_HOTKEY = "ptt_hotkey_input"
 # PTT 視覚フィードバック用タグ (ptt-mode-design.md F-6)
 TAG_ROUTE_B_LABEL = "route_b_label"       # 系統2 見出しテキスト（ラベル動的切替用）
 TAG_PTT_STATUS_LABEL = "ptt_status_label"  # 押下中ステータス表示ラベル
+TAG_PTT_GUI_BTN = "ptt_gui_btn"           # GUI PTT ボタン（タブ外・上部）
 
 # 系統1/2 TabBar タグ（GUI縦長解消 第3弾）
 TAG_ROUTE_TAB_BAR = "route_tab_bar"       # 系統タブバーコンテナ
@@ -1618,6 +1619,39 @@ def _on_ptt_chatter_warning() -> None:
     print("[PTT] 警告: 連打（chatter）を検出しました。しばらく操作をお待ちください。", flush=True)
 
 
+def _on_ptt_gui_button_click(sender, app_data, user_data) -> None:
+    """GUI PTT ボタンのコールバック。Route B の起動/停止をトグルする。
+
+    キーボード PTT (F8) の代替として、マウスでトグル操作する場合に使用する。
+    _konnyaku_running=False の場合は no-op。
+    """
+    _log_user("GUI PTT ボタン押下")
+    if not _konnyaku_running:
+        return
+    if _konnyaku_system is None or _konnyaku_system.route_b_system is None:
+        return
+
+    from main import RouteState
+    if _konnyaku_system.route_b_system.state == RouteState.RUNNING:
+        print("[PTT][GUI] ボタン: route_b 停止", flush=True)
+        threading.Thread(
+            target=_konnyaku_system.stop_route,
+            args=("b",),
+            daemon=True,
+            name="PttGuiBtnStopRouteB",
+        ).start()
+    else:
+        _konnyaku_system.route_b_system.resume_from_idle()
+        print("[PTT][GUI] ボタン: route_b 起動", flush=True)
+        threading.Thread(
+            target=_konnyaku_system.start_route,
+            args=("b",),
+            daemon=True,
+            name="PttGuiBtnStartRouteB",
+        ).start()
+    _gui_queue.put({"cmd": "update_ptt_visual"})
+
+
 def _load_ptt_settings(saved: dict) -> dict:
     """settings.json の saved データから PTT 設定を読み込む純関数。
 
@@ -1899,6 +1933,9 @@ def _on_route_b_enable_change_ptt_aware(enabled: bool) -> None:
     # S-1 PR4: 状態更新（_ptt_enabled 等）完了後に永続化する
     _save_settings()
     _update_ptt_visual_feedback()
+    # GUI PTT ボタンの表示/非表示を同期（系統B ON/OFF に追従）
+    if _dpg_ready and dpg.does_item_exist(TAG_PTT_GUI_BTN):
+        dpg.configure_item(TAG_PTT_GUI_BTN, show=enabled)
 
 
 def _update_ptt_visual_feedback() -> None:
@@ -1953,6 +1990,17 @@ def _update_ptt_visual_feedback() -> None:
     # 入力デバイスコンボの enabled/disabled 切替（TBD-3）
     if dpg.does_item_exist(TAG_ROUTE_B_DEVICE_COMBO):
         dpg.configure_item(TAG_ROUTE_B_DEVICE_COMBO, enabled=not pressing)
+
+    # GUI PTT ボタンのラベル更新
+    if dpg.does_item_exist(TAG_PTT_GUI_BTN):
+        from main import RouteState
+        route_b_running = (
+            _konnyaku_system is not None
+            and _konnyaku_system.route_b_system is not None
+            and _konnyaku_system.route_b_system.state == RouteState.RUNNING
+        )
+        btn_label = "[ ● 送信中 (PTT) ]" if route_b_running else "[ 話す (PTT) ]"
+        dpg.configure_item(TAG_PTT_GUI_BTN, label=btn_label)
 
 
 @_verbose_callback()
@@ -3232,6 +3280,18 @@ def _build_gui():
                     callback=_on_both_routes_off,
                 )
 
+            dpg.add_separator()
+
+            # --- PTT GUI ボタン（タブ外・上部）---
+            # 系統B が有効なときのみ表示。クリックで Route B の起動/停止をトグルする。
+            _route_b_on_at_init = bool(route_b_saved.get("enabled", True))
+            dpg.add_button(
+                tag=TAG_PTT_GUI_BTN,
+                label="[ 話す (PTT) ]",
+                width=-1,
+                callback=_on_ptt_gui_button_click,
+                show=_route_b_on_at_init,
+            )
             dpg.add_separator()
 
             _lang_display_names = get_language_display_names()
