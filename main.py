@@ -1674,6 +1674,7 @@ def _open_quota_usage_page(webbrowser_module=None) -> None:
         テスト時に差し替え可能な webbrowser 互換オブジェクト。
         None の場合は標準ライブラリの webbrowser を使用する。
     """
+    print(f"[ACTION] ブラウザで {_QUOTA_USAGE_URL} を開く", flush=True)
     if webbrowser_module is None:
         import webbrowser
         webbrowser_module = webbrowser
