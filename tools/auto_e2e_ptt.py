@@ -109,22 +109,23 @@ def main() -> int:
     if not args.no_app:
         env = {**os.environ, "PYTHONFAULTHANDLER": "1", "PYTHONUNBUFFERED": "1"}
         console_log = ROOT / f"console_e2e_ptt_{datetime.now().strftime('%Y%m%d-%H%M%S')}.log"
-        with console_log.open("w", encoding="utf-8") as out:
-            print(f"[E2E-PTT] starting app.py --auto-konnyaku={args.duration} --verbose", flush=True)
-            print(f"[E2E-PTT] console log: {console_log}", flush=True)
-            app_proc = subprocess.Popen(
-                [
-                    str(ROOT / "python" / "python.exe"),
-                    "-X", "faulthandler",
-                    str(ROOT / "app.py"),
-                    "--auto-konnyaku", str(args.duration),
-                    "--verbose",
-                ],
-                stdout=out,
-                stderr=subprocess.STDOUT,
-                env=env,
-                cwd=str(ROOT),
-            )
+        # with ブロックを使わず明示的クローズ: app_proc が終了するまで書き込みを継続するため
+        out = console_log.open("w", encoding="utf-8")
+        print(f"[E2E-PTT] starting app.py --auto-konnyaku={args.duration} --verbose", flush=True)
+        print(f"[E2E-PTT] console log: {console_log}", flush=True)
+        app_proc = subprocess.Popen(
+            [
+                str(ROOT / "python" / "python.exe"),
+                "-X", "faulthandler",
+                str(ROOT / "app.py"),
+                "--auto-konnyaku", str(args.duration),
+                "--verbose",
+            ],
+            stdout=out,
+            stderr=subprocess.STDOUT,
+            env=env,
+            cwd=str(ROOT),
+        )
 
         print(f"[E2E-PTT] waiting 12s for app to start...", flush=True)
         time.sleep(12)
@@ -156,6 +157,7 @@ def main() -> int:
     if not args.no_app:
         print(f"[E2E-PTT] waiting for app.py to exit...", flush=True)
         rc = app_proc.wait(timeout=args.duration + 30)
+        out.close()  # app_proc 終了後に明示クローズ
         print(f"[E2E-PTT] app.py exited with code {rc}", flush=True)
 
         # コンソールログの PTT 関連イベントを確認
@@ -171,13 +173,13 @@ def main() -> int:
         print(f"  PTT release イベント: {ptt_release}", flush=True)
         print(f"  route_b start サイクル: {b_started}", flush=True)
         print(f"  route_b stop サイクル: {b_stopped}", flush=True)
-        print(f"  翻訳出力ログ ([翻訳(RT)]): {translation_count}", flush=True)
+        print(f"  翻訳出力ログ ([翻訳(RT)]): {translation_count} (参考値: Route A/B 合計)", flush=True)
 
-        if ptt_press >= 2 and ptt_release >= 2 and b_started >= 2 and b_stopped >= 2:
-            print(f"  [OK] PTT start/stop サイクルが {ptt_press} 回確認できました", flush=True)
+        if ptt_press >= 2 and ptt_release >= 2 and b_started >= 2 and b_stopped >= 2 and translation_count >= 1:
+            print(f"  [OK] PTT start/stop サイクルが {ptt_press} 回、翻訳出力 {translation_count} 件確認できました", flush=True)
             return 0
         else:
-            print(f"  [NG] PTT サイクルが期待通りでない", flush=True)
+            print(f"  [NG] PTT サイクルまたは翻訳出力が期待通りでない", flush=True)
             return 1
 
     return 0
