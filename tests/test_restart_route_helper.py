@@ -35,6 +35,7 @@ class FakeRouteSystem:
     def __init__(self, state: RouteState = RouteState.IDLE):
         self._state = state
         self.set_output_device = MagicMock()
+        self.update_output_config = MagicMock()
 
     @property
     def state(self) -> RouteState:
