@@ -1619,6 +1619,7 @@ def _on_ptt_chatter_warning() -> None:
     print("[PTT] 警告: 連打（chatter）を検出しました。しばらく操作をお待ちください。", flush=True)
 
 
+@_verbose_callback()
 def _on_ptt_gui_button_click(sender, app_data, user_data) -> None:
     """GUI PTT ボタンのコールバック。Route B の起動/停止をトグルする。
 
