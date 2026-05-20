@@ -695,8 +695,8 @@ class CaptionSystem:
         実際の WebSocket 接続確立よりも前に RUNNING 状態になる。
         on_connected コールバックが呼ばれるタイミング（WS 接続完了）とは異なる。
         """
-        # 冪等性ガード
-        if self.state in (RouteState.STARTING, RouteState.RUNNING):
+        # 冪等性ガード（STOPPING 中は stop() の後片付けと競合するため早期リターン）
+        if self.state in (RouteState.STARTING, RouteState.RUNNING, RouteState.STOPPING):
             return
 
         self._set_state(RouteState.STARTING)
@@ -725,6 +725,9 @@ class CaptionSystem:
             self._stop_event.clear()
 
             # asyncio.run(self.run()) を別スレッドで実行
+            # _is_current_thread: 新サイクル開始時に self._asyncio_thread が更新されるため、
+            # 旧スレッドは自身が「現行スレッド」でなくなったことを検知できる。
+            # これにより「旧サイクルの後片付けが新サイクルの RUNNING 状態を上書き」するバグを防ぐ。
             def _run_in_thread():
                 try:
                     asyncio.run(self.run())
@@ -736,11 +739,14 @@ class CaptionSystem:
                         flush=True,
                     )
                     print(traceback.format_exc(), flush=True)
-                    self._set_state(RouteState.ERROR)
+                    if threading.current_thread() is self._asyncio_thread:
+                        self._set_state(RouteState.ERROR)
                     return
-                # 正常終了: IDLE に戻す（stop() が先に IDLE にしている場合は no-op）
-                if self.state not in (RouteState.IDLE,):
-                    self._set_state(RouteState.IDLE)
+                # 正常終了: 自分が現行スレッドの場合のみ IDLE に戻す
+                # （新サイクルが起動済みの場合は self._asyncio_thread が新スレッドを指すため no-op）
+                if threading.current_thread() is self._asyncio_thread:
+                    if self.state not in (RouteState.IDLE,):
+                        self._set_state(RouteState.IDLE)
 
             self._asyncio_thread = threading.Thread(
                 target=_run_in_thread,
