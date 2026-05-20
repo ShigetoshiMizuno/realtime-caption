@@ -20,6 +20,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 import app  # noqa: E402
+from main import RouteState  # noqa: E402
 
 
 # ---------------------------------------------------------------------------
@@ -984,10 +985,14 @@ class TestOutputDeviceRTReflect:
             "callback=_on_route_a_output_enable_change が設定されていない"
         )
 
-    def test_on_route_a_output_device_change_calls_set_output_device(self):
-        """_on_route_a_output_device_change が稼働中に route_a_system.set_output_device を呼ぶこと。"""
+    def test_on_route_a_output_device_change_idle_calls_set_output_device(self):
+        """IDLE時に _on_route_a_output_device_change が route_a_system.set_output_device を呼ぶこと。
+
+        RUNNING中の動作（update_output_config + restart）は test_hotswap_crash_fix.py で検証済み。
+        """
         mock_system = MagicMock()
         mock_system.route_a_system = MagicMock()
+        mock_system.route_a_system.state = RouteState.IDLE
         mock_system.route_a_system.set_output_device = MagicMock()
 
         fake_out_devices = [
@@ -1005,10 +1010,11 @@ class TestOutputDeviceRTReflect:
 
         mock_system.route_a_system.set_output_device.assert_called_once_with(2)
 
-    def test_on_route_a_output_device_change_none_label_stops_stream(self):
-        """_on_route_a_output_device_change に空ラベルを渡すと set_output_device(None) が呼ばれること。"""
+    def test_on_route_a_output_device_change_none_label_idle_calls_set_output_device_none(self):
+        """IDLE時に空ラベルを渡すと set_output_device(None) が呼ばれること。"""
         mock_system = MagicMock()
         mock_system.route_a_system = MagicMock()
+        mock_system.route_a_system.state = RouteState.IDLE
         mock_system.route_a_system.set_output_device = MagicMock()
 
         with patch.object(app, "_konnyaku_system", mock_system):
@@ -1018,10 +1024,14 @@ class TestOutputDeviceRTReflect:
 
         mock_system.route_a_system.set_output_device.assert_called_once_with(None)
 
-    def test_on_route_b_output_device_change_calls_set_output_device(self):
-        """_on_route_b_output_device_change が稼働中に route_b_system.set_output_device を呼ぶこと。"""
+    def test_on_route_b_output_device_change_idle_calls_set_output_device(self):
+        """IDLE時に _on_route_b_output_device_change が route_b_system.set_output_device を呼ぶこと。
+
+        RUNNING中の動作（update_output_config + restart）は test_hotswap_crash_fix.py で検証済み。
+        """
         mock_system = MagicMock()
         mock_system.route_b_system = MagicMock()
+        mock_system.route_b_system.state = RouteState.IDLE
         mock_system.route_b_system.set_output_device = MagicMock()
 
         fake_out_devices = [
@@ -1039,10 +1049,14 @@ class TestOutputDeviceRTReflect:
 
         mock_system.route_b_system.set_output_device.assert_called_once_with(4)
 
-    def test_on_route_a_output_enable_change_enables_stream(self):
-        """_on_route_a_output_enable_change(True) がデバイスを取得して set_output_device を呼ぶこと。"""
+    def test_on_route_a_output_enable_change_idle_enables_with_set_output_device(self):
+        """IDLE時に _on_route_a_output_enable_change(True) がデバイスを取得して set_output_device を呼ぶこと。
+
+        RUNNING中の動作（update_output_config + restart）は test_hotswap_crash_fix.py で検証済み。
+        """
         mock_system = MagicMock()
         mock_system.route_a_system = MagicMock()
+        mock_system.route_a_system.state = RouteState.IDLE
         mock_system.route_a_system.set_output_device = MagicMock()
 
         fake_out_devices = [{"index": 2, "name": "Fake Speaker", "isLoopback": False}]
@@ -1052,6 +1066,7 @@ class TestOutputDeviceRTReflect:
 
         with (
             patch.object(app, "_konnyaku_system", mock_system),
+            patch.object(app, "_konnyaku_running", False),
             patch.object(app, "dpg", mock_dpg),
             patch("app.list_audio_devices", return_value=fake_out_devices),
             patch("app.find_device_by_name", return_value=fake_out_devices[0]),
@@ -1062,26 +1077,40 @@ class TestOutputDeviceRTReflect:
 
         mock_system.route_a_system.set_output_device.assert_called_once_with(2)
 
-    def test_on_route_a_output_enable_change_disables_stream(self):
-        """_on_route_a_output_enable_change(False) が set_output_device(None) を呼ぶこと。"""
+    def test_on_route_a_output_enable_change_idle_disables_with_set_output_device_none(self):
+        """IDLE時に _on_route_a_output_enable_change(False) が set_output_device(None) を呼ぶこと。
+
+        RUNNING中の動作（update_output_config + restart）は test_hotswap_crash_fix.py で検証済み。
+        """
         mock_system = MagicMock()
         mock_system.route_a_system = MagicMock()
+        mock_system.route_a_system.state = RouteState.IDLE
         mock_system.route_a_system.set_output_device = MagicMock()
 
-        with patch.object(app, "_konnyaku_system", mock_system):
+        with (
+            patch.object(app, "_konnyaku_system", mock_system),
+            patch.object(app, "_konnyaku_running", False),
+        ):
             app._on_route_a_output_enable_change(
                 sender=None, app_data=False, user_data=None
             )
 
         mock_system.route_a_system.set_output_device.assert_called_once_with(None)
 
-    def test_on_route_b_output_enable_change_disables_stream(self):
-        """_on_route_b_output_enable_change(False) が set_output_device(None) を呼ぶこと。"""
+    def test_on_route_b_output_enable_change_idle_disables_with_set_output_device_none(self):
+        """IDLE時に _on_route_b_output_enable_change(False) が set_output_device(None) を呼ぶこと。
+
+        RUNNING中の動作（update_output_config + restart）は test_hotswap_crash_fix.py で検証済み。
+        """
         mock_system = MagicMock()
         mock_system.route_b_system = MagicMock()
+        mock_system.route_b_system.state = RouteState.IDLE
         mock_system.route_b_system.set_output_device = MagicMock()
 
-        with patch.object(app, "_konnyaku_system", mock_system):
+        with (
+            patch.object(app, "_konnyaku_system", mock_system),
+            patch.object(app, "_konnyaku_running", False),
+        ):
             app._on_route_b_output_enable_change(
                 sender=None, app_data=False, user_data=None
             )
