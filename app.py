@@ -437,6 +437,9 @@ TAG_PTT_HOTKEY = "ptt_hotkey_input"
 TAG_ROUTE_B_LABEL = "route_b_label"       # 系統2 見出しテキスト（ラベル動的切替用）
 TAG_PTT_STATUS_LABEL = "ptt_status_label"  # 押下中ステータス表示ラベル
 TAG_PTT_GUI_BTN = "ptt_gui_btn"           # GUI PTT ボタン（タブ外・上部）
+TAG_PTT_GUI_CONTAINER = "ptt_gui_container"  # PTT ボタンのコンテナ（show/hide 用）
+TAG_PTT_THEME_IDLE = "ptt_theme_idle"     # PTT ボタン待機時テーマ（青）
+TAG_PTT_THEME_ACTIVE = "ptt_theme_active" # PTT ボタン送信中テーマ（赤）
 
 # 系統1/2 TabBar タグ（GUI縦長解消 第3弾）
 TAG_ROUTE_TAB_BAR = "route_tab_bar"       # 系統タブバーコンテナ
@@ -1935,8 +1938,8 @@ def _on_route_b_enable_change_ptt_aware(enabled: bool) -> None:
     _save_settings()
     _update_ptt_visual_feedback()
     # GUI PTT ボタンの表示/非表示を同期（系統B ON/OFF に追従）
-    if _dpg_ready and dpg.does_item_exist(TAG_PTT_GUI_BTN):
-        dpg.configure_item(TAG_PTT_GUI_BTN, show=enabled)
+    if _dpg_ready and dpg.does_item_exist(TAG_PTT_GUI_CONTAINER):
+        dpg.configure_item(TAG_PTT_GUI_CONTAINER, show=enabled)
 
 
 def _update_ptt_visual_feedback() -> None:
@@ -1992,7 +1995,7 @@ def _update_ptt_visual_feedback() -> None:
     if dpg.does_item_exist(TAG_ROUTE_B_DEVICE_COMBO):
         dpg.configure_item(TAG_ROUTE_B_DEVICE_COMBO, enabled=not pressing)
 
-    # GUI PTT ボタンのラベル更新
+    # GUI PTT ボタンのラベル・テーマ更新
     if dpg.does_item_exist(TAG_PTT_GUI_BTN):
         from main import RouteState
         route_b_running = (
@@ -2000,8 +2003,12 @@ def _update_ptt_visual_feedback() -> None:
             and _konnyaku_system.route_b_system is not None
             and _konnyaku_system.route_b_system.state == RouteState.RUNNING
         )
-        btn_label = "[ ● 送信中 (PTT) ]" if route_b_running else "[ 話す (PTT) ]"
-        dpg.configure_item(TAG_PTT_GUI_BTN, label=btn_label)
+        if route_b_running:
+            dpg.configure_item(TAG_PTT_GUI_BTN, label="■ 送信中 (PTT)")
+            dpg.bind_item_theme(TAG_PTT_GUI_BTN, TAG_PTT_THEME_ACTIVE)
+        else:
+            dpg.configure_item(TAG_PTT_GUI_BTN, label="● 話す (PTT)")
+            dpg.bind_item_theme(TAG_PTT_GUI_BTN, TAG_PTT_THEME_IDLE)
 
 
 @_verbose_callback()
@@ -3040,6 +3047,19 @@ def _build_gui():
         with dpg.theme(tag=TAG_LEVEL_THEME_RED):
             with dpg.theme_component(dpg.mvProgressBar):
                 dpg.add_theme_color(dpg.mvThemeCol_PlotHistogram, (230, 60, 60))
+        # PTT ボタンテーマ: 待機=青、送信中=赤
+        with dpg.theme(tag=TAG_PTT_THEME_IDLE):
+            with dpg.theme_component(dpg.mvButton):
+                dpg.add_theme_color(dpg.mvThemeCol_Button,        (30,  90, 160, 220))
+                dpg.add_theme_color(dpg.mvThemeCol_ButtonHovered, (50, 120, 200, 240))
+                dpg.add_theme_color(dpg.mvThemeCol_ButtonActive,  (20,  70, 130, 255))
+                dpg.add_theme_style(dpg.mvStyleVar_FramePadding, 6, 10)
+        with dpg.theme(tag=TAG_PTT_THEME_ACTIVE):
+            with dpg.theme_component(dpg.mvButton):
+                dpg.add_theme_color(dpg.mvThemeCol_Button,        (180,  30,  30, 230))
+                dpg.add_theme_color(dpg.mvThemeCol_ButtonHovered, (210,  50,  50, 245))
+                dpg.add_theme_color(dpg.mvThemeCol_ButtonActive,  (150,  20,  20, 255))
+                dpg.add_theme_style(dpg.mvStyleVar_FramePadding, 6, 10)
 
     # viewport title は Windows API 経由で ANSI 変換されるため ASCII で設定し、
     # 表示後に Win32 API (SetWindowTextW) で UTF-16 に書き換える
@@ -3285,15 +3305,21 @@ def _build_gui():
             dpg.add_separator()
 
             # --- PTT GUI ボタン（タブ外・上部）---
-            # 系統B が有効なときのみ表示。クリックで Route B の起動/停止をトグルする。
+            # 系統B が有効なときのみ表示。幅=ビューポート1/4、センター配置。
             _route_b_on_at_init = bool(route_b_saved.get("enabled", True))
-            dpg.add_button(
-                tag=TAG_PTT_GUI_BTN,
-                label="[ 話す (PTT) ]",
-                width=-1,
-                callback=_on_ptt_gui_button_click,
-                show=_route_b_on_at_init,
-            )
+            _vp_w = dpg.get_viewport_width()
+            _btn_w = _vp_w // 4
+            _pad_l = (_vp_w - _btn_w) // 2
+            with dpg.group(horizontal=True, tag=TAG_PTT_GUI_CONTAINER,
+                           show=_route_b_on_at_init):
+                dpg.add_dummy(width=_pad_l)
+                dpg.add_button(
+                    tag=TAG_PTT_GUI_BTN,
+                    label="● 話す (PTT)",
+                    width=_btn_w,
+                    callback=_on_ptt_gui_button_click,
+                )
+                dpg.bind_item_theme(TAG_PTT_GUI_BTN, TAG_PTT_THEME_IDLE)
             dpg.add_separator()
 
             _lang_display_names = get_language_display_names()
