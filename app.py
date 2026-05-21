@@ -1675,10 +1675,7 @@ def _on_ptt_btn_pressed(sender, app_data, user_data) -> None:
     from main import RouteState
     if _konnyaku_system.route_b_system.state not in (RouteState.RUNNING, RouteState.STARTING):
         _konnyaku_system.route_b_system.resume_from_idle()
-        threading.Thread(
-            target=_konnyaku_system.start_route, args=("b",),
-            daemon=True, name="PttBtnPress"
-        ).start()
+        _konnyaku_system.start_route("b")  # 直接呼び出し: start()内でRUNNINGに即遷移するためスレッド不要
     _gui_queue.put({"cmd": "update_ptt_visual"})
 
 
@@ -1712,10 +1709,7 @@ def _on_ptt_latch_changed(sender, app_data, user_data) -> None:
     if checked:
         if _konnyaku_system.route_b_system.state not in (RouteState.RUNNING, RouteState.STARTING):
             _konnyaku_system.route_b_system.resume_from_idle()
-            threading.Thread(
-                target=_konnyaku_system.start_route, args=("b",),
-                daemon=True, name="PttLatchOn"
-            ).start()
+            _konnyaku_system.start_route("b")  # 直接呼び出し: start()内でRUNNINGに即遷移するためスレッド不要
     else:
         if _konnyaku_system.route_b_system.state in (RouteState.RUNNING, RouteState.STARTING):
             threading.Thread(
@@ -2101,20 +2095,23 @@ def _update_ptt_visual_feedback() -> None:
     # GUI PTT ボタンのラベル・テーマ更新
     if dpg.does_item_exist(TAG_PTT_GUI_BTN):
         from main import RouteState
-        route_b_running = (
-            _konnyaku_system is not None
-            and _konnyaku_system.route_b_system is not None
-            and _konnyaku_system.route_b_system.state == RouteState.RUNNING
+        route_b_state = (
+            _konnyaku_system.route_b_system.state
+            if (_konnyaku_system is not None and _konnyaku_system.route_b_system is not None)
+            else None
         )
+        route_b_running = route_b_state == RouteState.RUNNING
+        route_b_active = route_b_state in (RouteState.RUNNING, RouteState.STARTING)
         if route_b_running:
             dpg.configure_item(TAG_PTT_GUI_BTN, label="■ 送信中 (PTT)")
             dpg.bind_item_theme(TAG_PTT_GUI_BTN, TAG_PTT_THEME_ACTIVE)
         else:
             dpg.configure_item(TAG_PTT_GUI_BTN, label="● 話す (PTT)")
             dpg.bind_item_theme(TAG_PTT_GUI_BTN, TAG_PTT_THEME_IDLE)
-            # 外部停止時にラッチチェックを自動 OFF
-            if dpg.does_item_exist(TAG_PTT_LATCH_CHECK) and dpg.get_value(TAG_PTT_LATCH_CHECK):
-                dpg.set_value(TAG_PTT_LATCH_CHECK, False)
+            # 外部停止時にラッチチェックを自動 OFF（STARTING 中は除く）
+            if not route_b_active:
+                if dpg.does_item_exist(TAG_PTT_LATCH_CHECK) and dpg.get_value(TAG_PTT_LATCH_CHECK):
+                    dpg.set_value(TAG_PTT_LATCH_CHECK, False)
 
 
 @_verbose_callback()
