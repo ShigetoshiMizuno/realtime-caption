@@ -1675,6 +1675,7 @@ def _on_ptt_btn_pressed(sender, app_data, user_data) -> None:
     # ラッチ中にボタンを押したら解除して停止
     if dpg.does_item_exist(TAG_PTT_LATCH_CHECK) and dpg.get_value(TAG_PTT_LATCH_CHECK):
         dpg.set_value(TAG_PTT_LATCH_CHECK, False)
+        _konnyaku_system.route_b_system.close_audio_gate()  # Case D: ラッチ解除時にゲートを閉じる
         threading.Thread(
             target=_konnyaku_system.stop_route, args=("b",),
             daemon=True, name="PttBtnLatchOff"
@@ -1727,7 +1728,9 @@ def _on_ptt_latch_changed(sender, app_data, user_data) -> None:
         if _konnyaku_system.route_b_system.state not in (RouteState.RUNNING, RouteState.STARTING):
             _konnyaku_system.route_b_system.resume_from_idle()
             _konnyaku_system.start_route("b")  # 直接呼び出し: start()内でRUNNINGに即遷移するためスレッド不要
+        _konnyaku_system.route_b_system.open_audio_gate()  # Case D: ラッチON時は音声ゲートを開く
     else:
+        _konnyaku_system.route_b_system.close_audio_gate()  # Case D: ラッチOFF時はゲートを閉じる
         if _konnyaku_system.route_b_system.state in (RouteState.RUNNING, RouteState.STARTING):
             threading.Thread(
                 target=_konnyaku_system.stop_route, args=("b",),
@@ -1752,6 +1755,7 @@ def _on_ptt_gui_button_click(sender, app_data, user_data) -> None:
     from main import RouteState
     if _konnyaku_system.route_b_system.state == RouteState.RUNNING:
         print("[PTT][GUI] ボタン: route_b 停止", flush=True)
+        _konnyaku_system.route_b_system.close_audio_gate()  # Case D: GUI トグルボタン停止時にゲートを閉じる
         threading.Thread(
             target=_konnyaku_system.stop_route,
             args=("b",),
@@ -1767,6 +1771,7 @@ def _on_ptt_gui_button_click(sender, app_data, user_data) -> None:
             daemon=True,
             name="PttGuiBtnStartRouteB",
         ).start()
+        _konnyaku_system.route_b_system.open_audio_gate()  # Case D: GUI トグルボタン起動時にゲートを開く
     _gui_queue.put({"cmd": "update_ptt_visual"})
 
 

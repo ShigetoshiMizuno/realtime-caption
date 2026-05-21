@@ -607,6 +607,8 @@ class TestIdleLabelUsesCurrentHotkey:
         with patch.object(dpg_real, 'does_item_exist', return_value=True), \
              patch.object(dpg_real, 'set_value') as mock_set_value, \
              patch.object(dpg_real, 'configure_item'), \
+             patch.object(dpg_real, 'bind_item_theme'), \
+             patch.object(dpg_real, 'get_value', return_value=False), \
              patch.object(app, '_is_ptt_pressing', return_value=False):
             app._update_ptt_visual_feedback()
 
