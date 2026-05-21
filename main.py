@@ -518,6 +518,18 @@ class CaptionSystem:
         # RouteState: IDLE / STARTING / RUNNING / STOPPING / ERROR
         self._state: RouteState = RouteState.IDLE
         self._state_lock = threading.Lock()
+        # Case D 音声ゲート: True の間のみ feed_audio が音声を送る（issue #156）
+        self._audio_gate: bool = False
+
+    # ---- 音声ゲート制御（Case D / issue #156）----------------------------
+
+    def open_audio_gate(self) -> None:
+        """音声ゲートを開く（PTT 押下時）。"""
+        self._audio_gate = True
+
+    def close_audio_gate(self) -> None:
+        """音声ゲートを閉じる（PTT 離脱時）。"""
+        self._audio_gate = False
 
     # ---- スレッドセーフな共有状態アクセス --------------------------------
     @property
@@ -1387,6 +1399,9 @@ class CaptionSystem:
 
                 # モードに応じて音声データの投入先を切替
                 if self._realtime_mode:
+                    # Case D 音声ゲート: _audio_gate=False の間は音声をサイレント破棄（issue #156）
+                    if not self._audio_gate:
+                        continue
                     if self._realtime_translator is not None:
                         self._realtime_translator.feed_audio(pcm_bytes)
                 else:

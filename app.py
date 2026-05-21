@@ -1618,6 +1618,8 @@ def _on_ptt_press(event) -> None:
     # W-COST-4 PR3: PTT 押下時にアイドル切断中なら自動再開（系統 B のみ）
     if _konnyaku_system.route_b_system is not None:
         _konnyaku_system.route_b_system.resume_from_idle()
+        # Case D: 音声ゲートを開く（PTT 押下時のみ音声を送る）
+        _konnyaku_system.route_b_system.open_audio_gate()
     print("[PTT] press: route_b 起動", flush=True)
     threading.Thread(
         target=_konnyaku_system.start_route,
@@ -1644,6 +1646,9 @@ def _on_ptt_release(event) -> None:
         return
     if _konnyaku_system is None:
         return
+    # Case D: 音声ゲートを閉じる（PTT 離脱時）
+    if _konnyaku_system.route_b_system is not None:
+        _konnyaku_system.route_b_system.close_audio_gate()
     print("[PTT] release: route_b 停止", flush=True)
     threading.Thread(
         target=_konnyaku_system.stop_route,
@@ -1684,6 +1689,8 @@ def _on_ptt_btn_pressed(sender, app_data, user_data) -> None:
             target=_konnyaku_system.start_route, args=("b",),
             daemon=True, name="PttBtnStartRouteB"
         ).start()
+    # Case D: 音声ゲートを開く（PTT 押下時のみ音声を送る）
+    _konnyaku_system.route_b_system.open_audio_gate()
     _gui_queue.put({"cmd": "update_ptt_visual"})
 
 
@@ -1696,6 +1703,8 @@ def _on_ptt_btn_released(sender, app_data, user_data) -> None:
         return
     if dpg.does_item_exist(TAG_PTT_LATCH_CHECK) and dpg.get_value(TAG_PTT_LATCH_CHECK):
         return  # ラッチ中はリリースしても停止しない
+    # Case D: 音声ゲートを閉じる（PTT 離脱時）
+    _konnyaku_system.route_b_system.close_audio_gate()
     from main import RouteState
     if _konnyaku_system.route_b_system.state in (RouteState.RUNNING, RouteState.STARTING):
         threading.Thread(
@@ -2108,9 +2117,14 @@ def _update_ptt_visual_feedback() -> None:
             if (_konnyaku_system is not None and _konnyaku_system.route_b_system is not None)
             else None
         )
-        route_b_running = route_b_state == RouteState.RUNNING
         route_b_active = route_b_state in (RouteState.RUNNING, RouteState.STARTING)
-        if route_b_running:
+        # Case D: Route B は常時 RUNNING のためゲート状態（_audio_gate）で「送信中」を判定する
+        route_b_sending = (
+            _konnyaku_system is not None
+            and _konnyaku_system.route_b_system is not None
+            and getattr(_konnyaku_system.route_b_system, "_audio_gate", False)
+        )
+        if route_b_sending:
             dpg.configure_item(TAG_PTT_GUI_BTN, label="■ 送信中 (PTT)")
             dpg.bind_item_theme(TAG_PTT_GUI_BTN, TAG_PTT_THEME_ACTIVE)
         else:

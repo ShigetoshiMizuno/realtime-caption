@@ -37,6 +37,7 @@ from main import RouteState  # noqa: E402
 def _make_route(state: RouteState) -> MagicMock:
     m = MagicMock()
     m.state = state
+    m._audio_gate = False  # Case D: デフォルトはゲート閉（音声非送信）
     return m
 
 
