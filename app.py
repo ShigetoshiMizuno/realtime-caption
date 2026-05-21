@@ -1638,6 +1638,10 @@ def _on_ptt_release(event) -> None:
     _log_user("PTT 離脱")
     if not _konnyaku_running:
         return
+    # G-3.4: ラッチ中は F8 離脱で route B を止めない
+    if _dpg_ready and dpg.does_item_exist(TAG_PTT_LATCH_CHECK) and dpg.get_value(TAG_PTT_LATCH_CHECK):
+        _gui_queue.put({"cmd": "update_ptt_visual"})
+        return
     if _konnyaku_system is None:
         return
     print("[PTT] release: route_b 停止", flush=True)
@@ -1675,7 +1679,11 @@ def _on_ptt_btn_pressed(sender, app_data, user_data) -> None:
     from main import RouteState
     if _konnyaku_system.route_b_system.state not in (RouteState.RUNNING, RouteState.STARTING):
         _konnyaku_system.route_b_system.resume_from_idle()
-        _konnyaku_system.start_route("b")  # 直接呼び出し: start()内でRUNNINGに即遷移するためスレッド不要
+        # G-1.4: start_route('b') はスレッド経由で実行（レンダリングスレッドのブロック防止）
+        threading.Thread(
+            target=_konnyaku_system.start_route, args=("b",),
+            daemon=True, name="PttBtnStartRouteB"
+        ).start()
     _gui_queue.put({"cmd": "update_ptt_visual"})
 
 
