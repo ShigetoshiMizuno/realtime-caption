@@ -527,3 +527,83 @@ class TestUpdatePttVisualFeedbackGate:
         ]
         assert any("● 話す" in lbl for lbl in ptt_btn_labels), \
             f"ゲート OFF のとき「● 話す (PTT)」ラベルを期待したが: {ptt_btn_labels}"
+
+
+# ===========================================================================
+# 6. 音声ゲート漏れ修正テスト（W-5 / G-1 / G-2 / G-3 / G-4）
+# ===========================================================================
+
+class TestAudioGateLatchAndGuiButton:
+    """W-5/G-1〜G-4: ラッチ・GUIトグルボタンの音声ゲート open/close 呼び出し確認。"""
+
+    def _make_konnyaku_with_gate(self, b_state: RouteState) -> MagicMock:
+        b_route = MagicMock()
+        b_route.state = b_state
+        m = MagicMock()
+        type(m).route_a_system = property(lambda self: MagicMock())
+        type(m).route_b_system = property(lambda self: b_route)
+        m.start_route.side_effect = lambda r: None
+        m.stop_route.side_effect = lambda r: None
+        return m
+
+    def test_latch_on_opens_audio_gate(self):
+        """G-1: ラッチ ON 時に route_b_system.open_audio_gate() が呼ばれること。"""
+        system = self._make_konnyaku_with_gate(RouteState.IDLE)
+
+        with patch.object(app, "_konnyaku_running", True), \
+             patch.object(app, "_konnyaku_system", system), \
+             patch.object(app, "_gui_queue"):
+            app._on_ptt_latch_changed(None, True, None)
+
+        system.route_b_system.open_audio_gate.assert_called_once()
+
+    def test_latch_off_closes_audio_gate(self):
+        """G-2: ラッチ OFF 時に route_b_system.close_audio_gate() が呼ばれること。"""
+        system = self._make_konnyaku_with_gate(RouteState.RUNNING)
+
+        with patch.object(app, "_konnyaku_running", True), \
+             patch.object(app, "_konnyaku_system", system), \
+             patch.object(app, "_gui_queue"), \
+             patch("threading.Thread"):
+            app._on_ptt_latch_changed(None, False, None)
+
+        system.route_b_system.close_audio_gate.assert_called_once()
+
+    def test_gui_toggle_start_opens_audio_gate(self):
+        """G-3: GUI トグルボタンで route_b 起動時に open_audio_gate() が呼ばれること。"""
+        system = self._make_konnyaku_with_gate(RouteState.IDLE)
+
+        with patch.object(app, "_konnyaku_running", True), \
+             patch.object(app, "_konnyaku_system", system), \
+             patch.object(app, "_gui_queue"), \
+             patch("threading.Thread"):
+            app._on_ptt_gui_button_click(None, None, None)
+
+        system.route_b_system.open_audio_gate.assert_called_once()
+
+    def test_gui_toggle_stop_closes_audio_gate(self):
+        """G-4: GUI トグルボタンで route_b 停止時に close_audio_gate() が呼ばれること。"""
+        system = self._make_konnyaku_with_gate(RouteState.RUNNING)
+
+        with patch.object(app, "_konnyaku_running", True), \
+             patch.object(app, "_konnyaku_system", system), \
+             patch.object(app, "_gui_queue"), \
+             patch("threading.Thread"):
+            app._on_ptt_gui_button_click(None, None, None)
+
+        system.route_b_system.close_audio_gate.assert_called_once()
+
+    def test_btn_pressed_latch_off_closes_audio_gate(self):
+        """W-5: ラッチ解除ボタン押下時に route_b_system.close_audio_gate() が呼ばれること。"""
+        system = self._make_konnyaku_with_gate(RouteState.RUNNING)
+        dpg_mock = _make_dpg_mock(latch_value=True)
+
+        with patch.object(app, "_konnyaku_running", True), \
+             patch.object(app, "_konnyaku_system", system), \
+             patch.object(app, "_dpg_ready", True), \
+             patch.object(app, "dpg", dpg_mock), \
+             patch.object(app, "_gui_queue"), \
+             patch("threading.Thread"):
+            app._on_ptt_btn_pressed(None, None, None)
+
+        system.route_b_system.close_audio_gate.assert_called_once()
