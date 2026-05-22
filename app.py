@@ -2687,6 +2687,68 @@ def _trigger_preload():
     threading.Thread(target=_do_prepare, daemon=True).start()
 
 
+class _TestRouteSystem:
+    """テストモード用の軽量 CaptionSystem スタブ。"""
+    def __init__(self):
+        from main import RouteState
+        self.state = RouteState.IDLE
+        self._audio_gate: bool = False
+
+    @property
+    def audio_gate_open(self) -> bool:
+        return self._audio_gate
+
+    def open_audio_gate(self):
+        self._audio_gate = True
+
+    def close_audio_gate(self):
+        self._audio_gate = False
+
+    def resume_from_idle(self):
+        pass
+
+    # 他の属性アクセスは AttributeError を出さないようにする
+    def __getattr__(self, name):
+        return lambda *a, **k: None
+
+
+class _TestModeSystem:
+    """テストモード用の軽量 MultiCaptionSystem スタブ。"""
+    def __init__(self):
+        self.route_a_system = None
+        self.route_b_system = _TestRouteSystem()
+
+    def start_route(self, route_id: str):
+        from main import RouteState
+        if route_id == "b":
+            self.route_b_system.state = RouteState.RUNNING
+
+    def stop_route(self, route_id: str):
+        from main import RouteState
+        if route_id == "b":
+            self.route_b_system.state = RouteState.IDLE
+            self.route_b_system.close_audio_gate()
+
+    def stop_all(self):
+        from main import RouteState
+        self.route_b_system.state = RouteState.IDLE
+        self.route_b_system.close_audio_gate()
+
+    def terminate(self):
+        pass
+
+    def __getattr__(self, name):
+        return lambda *a, **k: None
+
+
+def _setup_test_mode() -> None:
+    """E2E テスト用: mock konnyaku system を設定して即時 running 状態にする。"""
+    global _konnyaku_system, _konnyaku_running
+    _konnyaku_system = _TestModeSystem()
+    _konnyaku_running = True
+    print("[TEST-MODE] mock MultiCaptionSystem 起動完了", flush=True)
+
+
 def _register_ui_callbacks() -> None:
     """GUI 構築後に呼ぶ。TAG 名 → {event: callable} マッピングを構築。"""
     global _ui_callbacks
@@ -4153,6 +4215,14 @@ def main():
         "--verbose", action="store_true",
         help="Enable verbose logging (RT_* events to _verbose.txt) from startup",
     )
+    parser.add_argument(
+        "--test-mode", action="store_true",
+        help="E2E テスト用: mock _konnyaku_system で起動（実 API キー不要）",
+    )
+    parser.add_argument(
+        "--rpc-port", type=int, default=None,
+        help="RPC ポートを上書き（E2E テスト用）",
+    )
     args = parser.parse_args()
 
     if args.verbose:
@@ -4168,7 +4238,7 @@ def main():
         _host_api = _config.get("audio", {}).get("host_api", "wasapi")
         _devices = list_audio_devices(host_api=_host_api)
 
-    rpc_port = _config.get("rpc", {}).get("port", 8767)
+    rpc_port = args.rpc_port if args.rpc_port is not None else _config.get("rpc", {}).get("port", 8767)
     with _startup_step("RPC サーバー起動"):
         _start_rpc_server(rpc_port)
 
@@ -4190,6 +4260,8 @@ def main():
         _build_gui()
     with _startup_step("UI コールバックレジストリ登録"):
         _register_ui_callbacks()
+    if args.test_mode:
+        _setup_test_mode()
     with _startup_step("ビューポート表示"):
         dpg.show_viewport()
 
