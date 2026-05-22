@@ -323,16 +323,17 @@ class TestRestartRouteActionLog:
 
 
 # ---------------------------------------------------------------------------
-# 5. RPC ハンドラ — [RPC] ログを含むこと
+# 5. RPC Flask エンドポイント — [RPC] ログを含むこと
 # ---------------------------------------------------------------------------
 
 class TestRpcHandlerLog:
-    """_RPCHandler.do_GET / do_POST が [RPC] ログを出力すること。"""
+    """_make_flask_app() の各エンドポイントが [RPC] ログを出力すること。"""
 
-    def _make_handler(self, path: str, method: str = "GET", body: bytes = b""):
-        """_RPCHandler のインスタンスを最低限の属性で構築する。"""
-        handler = _RPCHandler_NoServer(path=path, method=method, body=body)
-        return handler
+    def _make_test_client(self):
+        """Flask テストクライアントを構築して返す。"""
+        flask_app = app._make_flask_app()
+        flask_app.config["TESTING"] = True
+        return flask_app.test_client()
 
     def _mock_dpg(self):
         """dpg をモックする。does_item_exist=False で全ウィジェット無効にする。"""
@@ -343,10 +344,9 @@ class TestRpcHandlerLog:
 
     def test_do_get_status_emits_rpc(self, capsys):
         """GET /api/status が [RPC] ログを出力すること。"""
-        handler = self._make_handler("/api/status")
-        with patch.object(handler, "_send_json"), \
-             patch("app.dpg", self._mock_dpg()):
-            handler.do_GET()
+        client = self._make_test_client()
+        with patch("app.dpg", self._mock_dpg()):
+            client.get("/api/status")
         captured = capsys.readouterr()
         assert "[RPC]" in captured.out, \
             f"[RPC] が出力されること。got: {captured.out!r}"
@@ -355,41 +355,37 @@ class TestRpcHandlerLog:
 
     def test_do_get_log_emits_rpc(self, capsys):
         """GET /api/log が [RPC] ログを出力すること。"""
-        handler = self._make_handler("/api/log")
-        with patch.object(handler, "_send_json"), \
-             patch("app.dpg", self._mock_dpg()):
-            handler.do_GET()
+        client = self._make_test_client()
+        with patch("app.dpg", self._mock_dpg()):
+            client.get("/api/log")
         captured = capsys.readouterr()
         assert "[RPC]" in captured.out, \
             f"[RPC] が出力されること。got: {captured.out!r}"
 
     def test_do_get_devices_emits_rpc(self, capsys):
         """GET /api/devices が [RPC] ログを出力すること。"""
-        handler = self._make_handler("/api/devices")
-        with patch.object(handler, "_send_json"), \
-             patch("app.dpg", self._mock_dpg()):
-            handler.do_GET()
+        client = self._make_test_client()
+        with patch("app.dpg", self._mock_dpg()):
+            client.get("/api/devices")
         captured = capsys.readouterr()
         assert "[RPC]" in captured.out, \
             f"[RPC] が出力されること。got: {captured.out!r}"
 
     def test_do_get_audio_emits_rpc(self, capsys):
         """GET /api/audio が [RPC] ログを出力すること。"""
-        handler = self._make_handler("/api/audio")
-        with patch.object(handler, "_send_json"), \
-             patch("app.dpg", self._mock_dpg()):
-            handler.do_GET()
+        client = self._make_test_client()
+        with patch("app.dpg", self._mock_dpg()):
+            client.get("/api/audio")
         captured = capsys.readouterr()
         assert "[RPC]" in captured.out, \
             f"[RPC] が出力されること。got: {captured.out!r}"
 
     def test_do_post_stop_emits_rpc(self, capsys):
         """POST /api/stop が [RPC] ログを出力すること。"""
-        handler = self._make_handler("/api/stop", method="POST")
-        with patch.object(handler, "_send_json"), \
-             patch.object(app, "_enqueue"), \
+        client = self._make_test_client()
+        with patch.object(app, "_enqueue"), \
              patch("app.dpg", self._mock_dpg()):
-            handler.do_POST()
+            client.post("/api/stop")
         captured = capsys.readouterr()
         assert "[RPC]" in captured.out, \
             f"[RPC] が出力されること。got: {captured.out!r}"
@@ -399,40 +395,19 @@ class TestRpcHandlerLog:
     def test_do_post_start_emits_rpc(self, capsys):
         """POST /api/start が [RPC] ログを出力すること。"""
         import json as _json
-        body = _json.dumps({"device_index": 22}).encode("utf-8")
-        handler = self._make_handler("/api/start", method="POST", body=body)
-        with patch.object(handler, "_send_json"), \
-             patch.object(app, "_enqueue"), \
+        client = self._make_test_client()
+        with patch.object(app, "_enqueue"), \
              patch("app.dpg", self._mock_dpg()):
-            handler.do_POST()
+            client.post(
+                "/api/start",
+                data=_json.dumps({"device_index": 22}),
+                content_type="application/json",
+            )
         captured = capsys.readouterr()
         assert "[RPC]" in captured.out, \
             f"[RPC] が出力されること。got: {captured.out!r}"
         assert "/api/start" in captured.out, \
             f"/api/start が含まれること。got: {captured.out!r}"
-
-
-class _RPCHandler_NoServer(app._RPCHandler):
-    """テスト用 _RPCHandler のサブクラス。HTTPServer なしで動かせるようにする。"""
-
-    def __init__(self, path: str, method: str = "GET", body: bytes = b""):
-        # BaseHTTPRequestHandler.__init__ を呼ばずに直接属性を設定
-        self.path = path
-        self.command = method
-        self._body = body
-        import io
-        self.headers = {"Content-Length": str(len(body))}
-        self.rfile = io.BytesIO(body)
-        self.wfile = io.BytesIO()
-
-    def send_response(self, code):
-        pass
-
-    def send_header(self, key, value):
-        pass
-
-    def end_headers(self):
-        pass
 
 
 # ---------------------------------------------------------------------------

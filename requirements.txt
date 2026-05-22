@@ -21,3 +21,6 @@ keyboard>=0.13.5
 pyyaml>=6.0
 numpy>=1.24.0
 scipy>=1.11.0
+
+# RPC サーバー（GUI E2E テスト制御用）
+flask>=3.0

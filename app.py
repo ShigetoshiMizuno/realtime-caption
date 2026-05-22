@@ -76,7 +76,8 @@ import threading
 import time
 import traceback as _traceback
 from datetime import datetime
-from http.server import BaseHTTPRequestHandler, HTTPServer
+from flask import Flask as _Flask, request as _flask_request, jsonify as _flask_jsonify
+import logging as _logging
 
 import dearpygui.dearpygui as dpg
 
@@ -293,7 +294,7 @@ _log_entries: list[dict] = []  # {"ts": str, "original": str, "translated": str}
 _system: CaptionSystem | None = None
 _system_thread: threading.Thread | None = None
 _is_running = False
-_rpc_server: HTTPServer | None = None
+_rpc_server: _Flask | None = None
 
 # 翻訳こんにゃくモード用
 _konnyaku_system: MultiCaptionSystem | None = None
@@ -2970,125 +2971,240 @@ def _device_label(d: dict) -> str:
 # RPC サーバー
 # ---------------------------------------------------------------------------
 
-class _RPCHandler(BaseHTTPRequestHandler):
-    def log_message(self, format, *args):
-        pass  # アクセスログ抑制
+def _make_flask_app() -> _Flask:
+    """Flask RPC アプリを構築して返す。"""
+    flask_app = _Flask(__name__)
+    _logging.getLogger("werkzeug").setLevel(_logging.ERROR)
+    flask_app.logger.setLevel(_logging.ERROR)
 
-    def _send_json(self, data, status=200):
-        body = json.dumps(data, ensure_ascii=False).encode("utf-8")
-        self.send_response(status)
-        self.send_header("Content-Type", "application/json; charset=utf-8")
-        self.send_header("Content-Length", str(len(body)))
-        self.end_headers()
-        self.wfile.write(body)
+    def _json_response(data: dict, status: int = 200):
+        r = _flask_jsonify(data)
+        r.status_code = status
+        return r
 
-    def do_GET(self):
-        t0 = time.monotonic()
-        _verbose_write("RPC", f"start GET {self.path}")
-        response_status = 200
+    # ── GET エンドポイント ──────────────────────────────────────────────────
+
+    @flask_app.route("/api/status")
+    def api_status():
+        _log_rpc("GET /api/status")
+        ws_clients = _system._broadcaster.client_count if _system else 0
+        device_label = dpg.get_value(TAG_DEVICE_COMBO) if dpg.does_item_exist(TAG_DEVICE_COMBO) else ""
+        model = dpg.get_value(TAG_MODEL_COMBO) if dpg.does_item_exist(TAG_MODEL_COMBO) else ""
+        peak = _system.audio_peak if _system else 0
+        chunks = _system.audio_chunks_per_sec if _system else 0
+        return _json_response({
+            "state": "running" if _is_running else "stopped",
+            "device": device_label,
+            "model": model,
+            "ws_clients": ws_clients,
+            "audio_peak": peak,
+            "audio_peak_pct": peak * 100 // 32767,
+            "audio_chunks_per_sec": chunks,
+            "konnyaku_running": _konnyaku_running,
+            "route_b_state": (
+                _konnyaku_system.route_b_system.state.name
+                if _konnyaku_system is not None and _konnyaku_system.route_b_system is not None
+                else None
+            ),
+            "route_b_audio_gate": (
+                _konnyaku_system.route_b_system.audio_gate_open
+                if _konnyaku_system is not None and _konnyaku_system.route_b_system is not None
+                else None
+            ),
+        })
+
+    @flask_app.route("/api/log")
+    def api_log():
+        _log_rpc("GET /api/log")
+        return _json_response(_log_entries[-100:])
+
+    @flask_app.route("/api/devices")
+    def api_devices():
+        _log_rpc("GET /api/devices")
+        return _json_response(_devices)
+
+    @flask_app.route("/api/audio")
+    def api_audio():
+        _log_rpc("GET /api/audio")
+        peak = _system.audio_peak if _system else 0
+        chunks = _system.audio_chunks_per_sec if _system else 0
+        gain = _system.effective_gain if _system else 1.0
+        mode = _system.gain_mode if _system else "off"
+        return _json_response({
+            "peak": peak,
+            "peak_pct": peak * 100 // 32767,
+            "chunks_per_sec": chunks,
+            "gain": round(gain, 2),
+            "gain_mode": mode,
+        })
+
+    # ── UI クエリ系 GET ──────────────────────────────────────────────────────
+
+    @flask_app.route("/api/ui/get_value")
+    def api_ui_get_value():
+        tag = _flask_request.args.get("tag", "")
+        if not tag:
+            return _json_response({"error": "tag required"}, 400)
+        if not dpg.does_item_exist(tag):
+            return _json_response({"error": f"tag not found: {tag}"}, 404)
+        return _json_response({"tag": tag, "value": dpg.get_value(tag)})
+
+    @flask_app.route("/api/ui/get_config")
+    def api_ui_get_config():
+        tag = _flask_request.args.get("tag", "")
+        field = _flask_request.args.get("field", "")
+        if not tag:
+            return _json_response({"error": "tag required"}, 400)
+        if not dpg.does_item_exist(tag):
+            return _json_response({"error": f"tag not found: {tag}"}, 404)
+        cfg = dpg.get_item_configuration(tag)
+        if field:
+            return _json_response({"tag": tag, "field": field, "value": cfg.get(field)})
+        return _json_response({"tag": tag, "config": cfg})
+
+    @flask_app.route("/api/ui/exists")
+    def api_ui_exists():
+        tag = _flask_request.args.get("tag", "")
+        if not tag:
+            return _json_response({"error": "tag required"}, 400)
+        return _json_response({"tag": tag, "exists": dpg.does_item_exist(tag)})
+
+    @flask_app.route("/api/ui/tags")
+    def api_ui_tags():
+        import sys as _sys
+        _app_module = _sys.modules.get("__main__") or _sys.modules.get("app")
+        if _app_module is None:
+            return _json_response({})
+        tags = {k: v for k, v in vars(_app_module).items() if k.startswith("TAG_") and isinstance(v, str)}
+        return _json_response(tags)
+
+    # ── POST エンドポイント ──────────────────────────────────────────────────
+
+    @flask_app.route("/api/stop", methods=["POST"])
+    def api_stop():
+        _log_rpc("POST /api/stop")
+        _enqueue("stop_system")
+        return _json_response({"ok": True})
+
+    @flask_app.route("/api/start", methods=["POST"])
+    def api_start():
+        body = _flask_request.get_json(silent=True) or {}
+        _log_rpc("POST /api/start", device_index=body.get("device_index"))
+        _enqueue("start_system", device_index=body.get("device_index"), model=body.get("model"))
+        return _json_response({"ok": True})
+
+    # ── UI 操作系 POST ───────────────────────────────────────────────────────
+
+    @flask_app.route("/api/ui/press", methods=["POST"])
+    def api_ui_press():
+        body = _flask_request.get_json(silent=True) or {}
+        tag = body.get("tag") or _flask_request.args.get("tag", "")
+        if not tag:
+            return _json_response({"error": "tag required"}, 400)
+        callbacks = _ui_callbacks.get(tag, {})
+        fn = callbacks.get("press")
+        if fn is None:
+            return _json_response({"error": f"no press callback for tag: {tag}"}, 404)
         try:
-            if self.path == "/api/status":
-                _log_rpc("GET /api/status")
-                ws_clients = _system._broadcaster.client_count if _system else 0
-                device_label = dpg.get_value(TAG_DEVICE_COMBO) if dpg.does_item_exist(TAG_DEVICE_COMBO) else ""
-                model = dpg.get_value(TAG_MODEL_COMBO) if dpg.does_item_exist(TAG_MODEL_COMBO) else ""
-                peak = _system.audio_peak if _system else 0
-                chunks = _system.audio_chunks_per_sec if _system else 0
-                self._send_json({
-                    "state": "running" if _is_running else "stopped",
-                    "device": device_label,
-                    "model": model,
-                    "ws_clients": ws_clients,
-                    "audio_peak": peak,
-                    "audio_peak_pct": peak * 100 // 32767,
-                    "audio_chunks_per_sec": chunks,
-                })
+            _invoke_on_render_thread(fn)
+            return _json_response({"ok": True, "tag": tag, "event": "press"})
+        except TimeoutError as e:
+            return _json_response({"error": str(e)}, 504)
 
-            elif self.path == "/api/log":
-                _log_rpc("GET /api/log")
-                self._send_json(_log_entries[-100:])
-
-            elif self.path == "/api/devices":
-                _log_rpc("GET /api/devices")
-                self._send_json(_devices)
-
-            elif self.path == "/api/audio":
-                _log_rpc("GET /api/audio")
-                peak = _system.audio_peak if _system else 0
-                chunks = _system.audio_chunks_per_sec if _system else 0
-                gain = _system.effective_gain if _system else 1.0
-                mode = _system.gain_mode if _system else "off"
-                self._send_json({
-                    "peak": peak,
-                    "peak_pct": peak * 100 // 32767,
-                    "chunks_per_sec": chunks,
-                    "gain": round(gain, 2),
-                    "gain_mode": mode,
-                })
-
-            else:
-                response_status = 404
-                self._send_json({"error": "not found"}, status=404)
-        except Exception as e:
-            if _verbose_state:
-                tb = _traceback.format_exc()
-                _verbose_write(
-                    "RPC",
-                    f"error GET {self.path} error_type={type(e).__name__} traceback={tb[:5000]}",
-                )
-            raise
-        finally:
-            dt_ms = (time.monotonic() - t0) * 1000
-            _verbose_write("RPC", f"end GET {self.path} duration_ms={dt_ms:.2f} status={response_status}")
-
-    def do_POST(self):
-        t0 = time.monotonic()
-        # リクエスト body を先読み（verbose 記録 + 既存ロジックへの流用）
-        body_len = int(self.headers.get("Content-Length", 0))
-        body_bytes = self.rfile.read(body_len) if body_len else b""
-        if _verbose_state:
-            body_str = _redact_secrets(body_bytes.decode("utf-8", errors="replace"))
-            _verbose_write(
-                "RPC",
-                f"start POST {self.path} body_len={body_len} body={body_str[:5000]!r}",
-            )
-        response_status = 200
+    @flask_app.route("/api/ui/release", methods=["POST"])
+    def api_ui_release():
+        body = _flask_request.get_json(silent=True) or {}
+        tag = body.get("tag") or _flask_request.args.get("tag", "")
+        if not tag:
+            return _json_response({"error": "tag required"}, 400)
+        callbacks = _ui_callbacks.get(tag, {})
+        fn = callbacks.get("release")
+        if fn is None:
+            return _json_response({"error": f"no release callback for tag: {tag}"}, 404)
         try:
-            if self.path == "/api/stop":
-                _log_rpc("POST /api/stop")
-                _enqueue("stop_system")
-                self._send_json({"ok": True})
-            elif self.path == "/api/start":
-                body = {}
-                if body_bytes:
-                    try:
-                        body = json.loads(body_bytes)
-                    except Exception:
-                        pass
-                _log_rpc("POST /api/start", device_index=body.get("device_index"))
-                _enqueue("start_system", device_index=body.get("device_index"),
-                         model=body.get("model"))
-                self._send_json({"ok": True})
-            else:
-                response_status = 404
-                self._send_json({"error": "not found"}, status=404)
-        except Exception as e:
-            if _verbose_state:
-                tb = _traceback.format_exc()
-                _verbose_write(
-                    "RPC",
-                    f"error POST {self.path} error_type={type(e).__name__} traceback={tb[:5000]}",
-                )
-            raise
-        finally:
-            dt_ms = (time.monotonic() - t0) * 1000
-            _verbose_write("RPC", f"end POST {self.path} duration_ms={dt_ms:.2f} status={response_status}")
+            _invoke_on_render_thread(fn)
+            return _json_response({"ok": True, "tag": tag, "event": "release"})
+        except TimeoutError as e:
+            return _json_response({"error": str(e)}, 504)
+
+    @flask_app.route("/api/ui/click", methods=["POST"])
+    def api_ui_click():
+        body = _flask_request.get_json(silent=True) or {}
+        tag = body.get("tag") or _flask_request.args.get("tag", "")
+        if not tag:
+            return _json_response({"error": "tag required"}, 400)
+        callbacks = _ui_callbacks.get(tag, {})
+        fn = callbacks.get("click") or (
+            lambda: (callbacks["press"](), callbacks["release"]())
+            if "press" in callbacks and "release" in callbacks else None
+        )
+        if fn is None:
+            return _json_response({"error": f"no click callback for tag: {tag}"}, 404)
+        try:
+            _invoke_on_render_thread(fn)
+            return _json_response({"ok": True, "tag": tag, "event": "click"})
+        except TimeoutError as e:
+            return _json_response({"error": str(e)}, 504)
+
+    @flask_app.route("/api/ui/set_value", methods=["POST"])
+    def api_ui_set_value():
+        body = _flask_request.get_json(silent=True) or {}
+        tag = body.get("tag") or _flask_request.args.get("tag", "")
+        value = body.get("value")
+        if value is None:
+            value = _flask_request.args.get("value")
+        if not tag:
+            return _json_response({"error": "tag required"}, 400)
+        if value is None:
+            return _json_response({"error": "value required"}, 400)
+        callbacks = _ui_callbacks.get(tag, {})
+        set_fn = callbacks.get("set")
+
+        def _do_set():
+            dpg.set_value(tag, value)
+            if set_fn is not None:
+                set_fn(value)
+
+        try:
+            _invoke_on_render_thread(_do_set)
+            return _json_response({"ok": True, "tag": tag, "value": value})
+        except TimeoutError as e:
+            return _json_response({"error": str(e)}, 504)
+
+    @flask_app.route("/api/ui/select_tab", methods=["POST"])
+    def api_ui_select_tab():
+        body = _flask_request.get_json(silent=True) or {}
+        tag = body.get("tag") or _flask_request.args.get("tag", "")
+        if not tag:
+            return _json_response({"error": "tag required"}, 400)
+
+        def _do_select():
+            if not dpg.does_item_exist(tag):
+                raise ValueError(f"tag not found: {tag}")
+            dpg.set_value(tag, tag)
+
+        try:
+            _invoke_on_render_thread(_do_select)
+            return _json_response({"ok": True, "tag": tag})
+        except ValueError as e:
+            return _json_response({"error": str(e)}, 404)
+        except TimeoutError as e:
+            return _json_response({"error": str(e)}, 504)
+
+    return flask_app
 
 
 def _start_rpc_server(port: int):
     global _rpc_server
-    _rpc_server = HTTPServer(("localhost", port), _RPCHandler)
-    t = threading.Thread(target=_rpc_server.serve_forever, daemon=True)
+    flask_app = _make_flask_app()
+    _rpc_server = flask_app
+    t = threading.Thread(
+        target=lambda: flask_app.run(
+            host="localhost", port=port, threaded=True, use_reloader=False, debug=False
+        ),
+        daemon=True,
+        name="FlaskRPC",
+    )
     t.start()
 
 

@@ -477,6 +477,7 @@ class TestVerboseCallbackAutoName:
 # 8. RPC エンドポイントで duration_ms が verbose に記録される
 # ---------------------------------------------------------------------------
 
+@pytest.mark.skip(reason="Flask 移行により _RPCHandler.do_GET/do_POST は廃止 (issue #158)")
 class TestRPCVerboseDuration:
     """_RPCHandler.do_GET / do_POST で RPC end が verbose に記録される。"""
 

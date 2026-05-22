@@ -80,6 +80,7 @@ def _make_rpc_handler(path: str, body_bytes: bytes = b"", method: str = "POST"):
 # 1. do_POST 入口で body 全文が verbose 記録される
 # ---------------------------------------------------------------------------
 
+@pytest.mark.skip(reason="Flask 移行により _RPCHandler.do_POST/do_GET は廃止 (issue #158)")
 class TestRPCBodyLogging:
     """do_POST / do_GET の入口で body 全文が verbose に記録される。"""
 
@@ -198,6 +199,7 @@ class TestRedactSecrets:
 
         assert result == body, f"無関係なフィールドが変更された: {result}"
 
+    @pytest.mark.skip(reason="Flask 移行により _RPCHandler.do_POST は廃止 (issue #158)")
     def test_post_body_api_key_not_in_verbose(self, tmp_path):
         """do_POST の body に api_key があっても verbose には残らない。"""
         import app
@@ -221,6 +223,7 @@ class TestRedactSecrets:
 # 3. response status が end ログに含まれる
 # ---------------------------------------------------------------------------
 
+@pytest.mark.skip(reason="Flask 移行により _RPCHandler.do_POST/do_GET は廃止 (issue #158)")
 class TestRPCEndStatusLogging:
     """response status が end ログに含まれる。"""
 
@@ -304,6 +307,7 @@ class TestRPCEndStatusLogging:
 # 4. 例外時に traceback が記録される
 # ---------------------------------------------------------------------------
 
+@pytest.mark.skip(reason="Flask 移行により _RPCHandler.do_POST/do_GET は廃止 (issue #158)")
 class TestRPCExceptionTraceback:
     """例外発生時に traceback が verbose に記録される。"""
 
@@ -385,6 +389,7 @@ class TestRPCExceptionTraceback:
 # 5. _verbose_state=False で何も記録されない（オーバーヘッド 0）
 # ---------------------------------------------------------------------------
 
+@pytest.mark.skip(reason="Flask 移行により _RPCHandler.do_POST/do_GET は廃止 (issue #158)")
 class TestRPCVerboseStateOff:
     """_verbose_state=False のとき verbose ログは書かれない。"""
 
