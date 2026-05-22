@@ -2693,7 +2693,13 @@ class _TestRouteSystem:
         from main import RouteState
         self.state = RouteState.IDLE
         self._audio_gate: bool = False
-        self._idle_monitor = None  # _update_idle_status() の is None チェックを通すため
+        self._idle_monitor = None       # _update_idle_status() の is None チェックを通すため
+        self.audio_peak_now = 0         # _update_konnyaku_level_meters() で数値として使われる
+        self._audio_stream = None       # 出力レベルメーター用
+        self.audio_peak = 0             # /api/audio 等で使われる
+        self.audio_chunks_per_sec = 0
+        self.effective_gain = 1.0
+        self.gain_mode = "off"
 
     @property
     def audio_gate_open(self) -> bool:
