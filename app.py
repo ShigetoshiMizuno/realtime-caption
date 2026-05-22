@@ -295,6 +295,7 @@ _system: CaptionSystem | None = None
 _system_thread: threading.Thread | None = None
 _is_running = False
 _rpc_server: _Flask | None = None
+_ui_callbacks: dict[str, dict] = {}
 
 # 翻訳こんにゃくモード用
 _konnyaku_system: MultiCaptionSystem | None = None
@@ -2451,6 +2452,28 @@ def _enqueue(cmd: str, **kwargs):
     _gui_queue.put({"cmd": cmd, **kwargs})
 
 
+def _invoke_on_render_thread(fn, timeout: float = 5.0):
+    """fn をレンダリングスレッドのキューに積み、完了まで待機して結果を返す。"""
+    done = threading.Event()
+    result_box: list = []
+    error_box: list = []
+
+    def _wrapper():
+        try:
+            result_box.append(fn())
+        except Exception as exc:
+            error_box.append(exc)
+        finally:
+            done.set()
+
+    _gui_queue.put({"cmd": "invoke_callback", "fn": _wrapper})
+    if not done.wait(timeout=timeout):
+        raise TimeoutError(f"render thread did not respond in {timeout}s")
+    if error_box:
+        raise error_box[0]
+    return result_box[0] if result_box else None
+
+
 # =============================================================================
 # UI 変化ログユーティリティ (Issue #66)
 # OLD->NEW を [GUI] プレフィックスで記録して、UI 動作の検証を容易にする
@@ -2664,6 +2687,29 @@ def _trigger_preload():
     threading.Thread(target=_do_prepare, daemon=True).start()
 
 
+def _register_ui_callbacks() -> None:
+    """GUI 構築後に呼ぶ。TAG 名 → {event: callable} マッピングを構築。"""
+    global _ui_callbacks
+    _ui_callbacks = {
+        TAG_PTT_GUI_BTN: {
+            "press":   lambda: _on_ptt_btn_pressed(TAG_PTT_GUI_BTN, None, None),
+            "release": lambda: _on_ptt_btn_released(TAG_PTT_GUI_BTN, None, None),
+        },
+        TAG_PTT_LATCH_CHECK: {
+            "set": lambda val: _on_ptt_latch_changed(TAG_PTT_LATCH_CHECK, bool(val), None),
+        },
+        TAG_ROUTE_B_ENABLE: {
+            "set": lambda val: _on_route_b_enable_change(TAG_ROUTE_B_ENABLE, bool(val), None),
+        },
+        TAG_ROUTE_A_ENABLE: {
+            "set": lambda val: _on_route_a_enable_change(TAG_ROUTE_A_ENABLE, bool(val), None),
+        },
+        TAG_KONNYAKU_START_BTN: {
+            "click": lambda: _on_konnyaku_start_stop_click(),
+        },
+    }
+
+
 def _drain_queue():
     """レンダリングループから毎フレーム呼ぶ。キューを処理して GUI を更新する。"""
     while not _gui_queue.empty():
@@ -2706,6 +2752,9 @@ def _drain_queue():
 
         elif cmd == "update_ptt_visual":
             _update_ptt_visual_feedback()
+
+        elif cmd == "invoke_callback":
+            item["fn"]()
 
 
 def _clear_log():
@@ -4139,6 +4188,8 @@ def main():
 
     with _startup_step("GUI 構築"):
         _build_gui()
+    with _startup_step("UI コールバックレジストリ登録"):
+        _register_ui_callbacks()
     with _startup_step("ビューポート表示"):
         dpg.show_viewport()
 
