@@ -2693,6 +2693,7 @@ class _TestRouteSystem:
         from main import RouteState
         self.state = RouteState.IDLE
         self._audio_gate: bool = False
+        self._idle_monitor = None  # _update_idle_status() の is None チェックを通すため
 
     @property
     def audio_gate_open(self) -> bool:
