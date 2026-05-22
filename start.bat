@@ -57,6 +57,10 @@ if exist "%PYTHON_DIR%\python.exe" (
     echo.
 )
 
+:: --- パッケージ更新チェック（requirements.txt が変更されていれば自動更新）---
+set REQ_MARKER=%PYTHON_DIR%\.req_installed
+powershell -NoProfile -Command "$req=(Get-Item 'requirements.txt').LastWriteTime; $m='%REQ_MARKER%'; if(-not(Test-Path $m)-or(Get-Item $m).LastWriteTime-lt $req){Write-Host '[UPDATE] requirements.txt が更新されました。パッケージをインストールします...'; & '%PYTHON_DIR%\python.exe' -m pip install -r requirements.txt --quiet --no-warn-script-location; New-Item -Path $m -ItemType File -Force | Out-Null}" || goto error
+
 :: --- launch ---
 :: Capture stdout/stderr to console_*.log with UTF-8 BOM for Notepad compatibility.
 :: PYTHONIOENCODING=utf-8 forces Python to emit UTF-8.

@@ -76,7 +76,8 @@ import threading
 import time
 import traceback as _traceback
 from datetime import datetime
-from http.server import BaseHTTPRequestHandler, HTTPServer
+from flask import Flask as _Flask, request as _flask_request, jsonify as _flask_jsonify
+import logging as _logging
 
 import dearpygui.dearpygui as dpg
 
@@ -293,7 +294,8 @@ _log_entries: list[dict] = []  # {"ts": str, "original": str, "translated": str}
 _system: CaptionSystem | None = None
 _system_thread: threading.Thread | None = None
 _is_running = False
-_rpc_server: HTTPServer | None = None
+_rpc_server: _Flask | None = None
+_ui_callbacks: dict[str, dict] = {}
 
 # 翻訳こんにゃくモード用
 _konnyaku_system: MultiCaptionSystem | None = None
@@ -351,7 +353,9 @@ TAG_STATUS_COST = "status_cost"
 TAG_HOST_API_COMBO = "host_api_combo"
 
 # 課金状態ランプ (Issue #99)
-TAG_BILLING_LAMP = "billing_lamp"
+TAG_BILLING_LAMP = "billing_lamp"      # 旧: 一体ランプ（後方互換のため残置）
+TAG_BILLING_LAMP_A = "billing_lamp_a"  # 系統A 個別ランプ
+TAG_BILLING_LAMP_B = "billing_lamp_b"  # 系統B 個別ランプ
 
 # ---------------------------------------------------------------------------
 # 翻訳こんにゃくモード GUI タグ (Issue #38 Phase 4)
@@ -436,6 +440,12 @@ TAG_PTT_HOTKEY = "ptt_hotkey_input"
 # PTT 視覚フィードバック用タグ (ptt-mode-design.md F-6)
 TAG_ROUTE_B_LABEL = "route_b_label"       # 系統2 見出しテキスト（ラベル動的切替用）
 TAG_PTT_STATUS_LABEL = "ptt_status_label"  # 押下中ステータス表示ラベル
+TAG_PTT_GUI_BTN = "ptt_gui_btn"           # GUI PTT ボタン（タブ外・上部）
+TAG_PTT_GUI_CONTAINER = "ptt_gui_container"  # PTT ボタンのコンテナ（show/hide 用）
+TAG_PTT_THEME_IDLE = "ptt_theme_idle"     # PTT ボタン待機時テーマ（青）
+TAG_PTT_THEME_ACTIVE = "ptt_theme_active" # PTT ボタン送信中テーマ（赤）
+TAG_PTT_LATCH_CHECK  = "ptt_latch_check"   # 固定チェックボックス
+TAG_PTT_BTN_HANDLER  = "ptt_btn_handler"   # ボタンのアイテムハンドラ登録
 
 # 系統1/2 TabBar タグ（GUI縦長解消 第3弾）
 TAG_ROUTE_TAB_BAR = "route_tab_bar"       # 系統タブバーコンテナ
@@ -1610,6 +1620,8 @@ def _on_ptt_press(event) -> None:
     # W-COST-4 PR3: PTT 押下時にアイドル切断中なら自動再開（系統 B のみ）
     if _konnyaku_system.route_b_system is not None:
         _konnyaku_system.route_b_system.resume_from_idle()
+        # Case D: 音声ゲートを開く（PTT 押下時のみ音声を送る）
+        _konnyaku_system.route_b_system.open_audio_gate()
     print("[PTT] press: route_b 起動", flush=True)
     threading.Thread(
         target=_konnyaku_system.start_route,
@@ -1630,8 +1642,15 @@ def _on_ptt_release(event) -> None:
     _log_user("PTT 離脱")
     if not _konnyaku_running:
         return
+    # G-3.4: ラッチ中は F8 離脱で route B を止めない
+    if _dpg_ready and dpg.does_item_exist(TAG_PTT_LATCH_CHECK) and dpg.get_value(TAG_PTT_LATCH_CHECK):
+        _gui_queue.put({"cmd": "update_ptt_visual"})
+        return
     if _konnyaku_system is None:
         return
+    # Case D: 音声ゲートを閉じる（PTT 離脱時）
+    if _konnyaku_system.route_b_system is not None:
+        _konnyaku_system.route_b_system.close_audio_gate()
     print("[PTT] release: route_b 停止", flush=True)
     threading.Thread(
         target=_konnyaku_system.stop_route,
@@ -1646,6 +1665,116 @@ def _on_ptt_release(event) -> None:
 def _on_ptt_chatter_warning() -> None:
     """連打上限（10秒内に 5 回以上）検出時のコールバック（F-4.3）。"""
     print("[PTT] 警告: 連打（chatter）を検出しました。しばらく操作をお待ちください。", flush=True)
+
+
+@_verbose_callback()
+def _on_ptt_btn_pressed(sender, app_data, user_data) -> None:
+    """PTT ボタン マウスダウン。ラッチ中なら解除して停止。"""
+    if not _konnyaku_running:
+        return
+    if _konnyaku_system is None or _konnyaku_system.route_b_system is None:
+        return
+    # ラッチ中にボタンを押したら解除して停止
+    if dpg.does_item_exist(TAG_PTT_LATCH_CHECK) and dpg.get_value(TAG_PTT_LATCH_CHECK):
+        dpg.set_value(TAG_PTT_LATCH_CHECK, False)
+        _konnyaku_system.route_b_system.close_audio_gate()  # Case D: ラッチ解除時にゲートを閉じる
+        threading.Thread(
+            target=_konnyaku_system.stop_route, args=("b",),
+            daemon=True, name="PttBtnLatchOff"
+        ).start()
+        _gui_queue.put({"cmd": "update_ptt_visual"})
+        return
+    from main import RouteState
+    if _konnyaku_system.route_b_system.state not in (RouteState.RUNNING, RouteState.STARTING):
+        _konnyaku_system.route_b_system.resume_from_idle()
+        # G-1.4: start_route('b') はスレッド経由で実行（レンダリングスレッドのブロック防止）
+        threading.Thread(
+            target=_konnyaku_system.start_route, args=("b",),
+            daemon=True, name="PttBtnStartRouteB"
+        ).start()
+    # Case D: 音声ゲートを開く（PTT 押下時のみ音声を送る）
+    _konnyaku_system.route_b_system.open_audio_gate()
+    _gui_queue.put({"cmd": "update_ptt_visual"})
+
+
+@_verbose_callback()
+def _on_ptt_btn_released(sender, app_data, user_data) -> None:
+    """PTT ボタン マウスアップ。ラッチ中は停止しない。"""
+    if not _konnyaku_running:
+        return
+    if _konnyaku_system is None or _konnyaku_system.route_b_system is None:
+        return
+    if dpg.does_item_exist(TAG_PTT_LATCH_CHECK) and dpg.get_value(TAG_PTT_LATCH_CHECK):
+        return  # ラッチ中はリリースしても停止しない
+    # Case D: 音声ゲートを閉じる（PTT 離脱時）
+    _konnyaku_system.route_b_system.close_audio_gate()
+    from main import RouteState
+    if _konnyaku_system.route_b_system.state in (RouteState.RUNNING, RouteState.STARTING):
+        threading.Thread(
+            target=_konnyaku_system.stop_route, args=("b",),
+            daemon=True, name="PttBtnRelease"
+        ).start()
+    _gui_queue.put({"cmd": "update_ptt_visual"})
+
+
+@_verbose_callback()
+def _on_ptt_latch_changed(sender, app_data, user_data) -> None:
+    """固定チェックボックス変更: ON → Route B 開始、OFF → 停止。"""
+    checked = bool(app_data)
+    if not _konnyaku_running:
+        return
+    if _konnyaku_system is None or _konnyaku_system.route_b_system is None:
+        return
+    from main import RouteState
+    if checked:
+        if _konnyaku_system.route_b_system.state not in (RouteState.RUNNING, RouteState.STARTING):
+            _konnyaku_system.route_b_system.resume_from_idle()
+            _konnyaku_system.start_route("b")  # 直接呼び出し: start()内でRUNNINGに即遷移するためスレッド不要
+        _konnyaku_system.route_b_system.open_audio_gate()  # Case D: ラッチON時は音声ゲートを開く
+    else:
+        _konnyaku_system.route_b_system.close_audio_gate()  # Case D: ラッチOFF時はゲートを閉じる
+        if _konnyaku_system.route_b_system.state in (RouteState.RUNNING, RouteState.STARTING):
+            threading.Thread(
+                target=_konnyaku_system.stop_route, args=("b",),
+                daemon=True, name="PttLatchOff"
+            ).start()
+    _gui_queue.put({"cmd": "update_ptt_visual"})
+
+
+@_verbose_callback()
+def _on_ptt_gui_button_click(sender, app_data, user_data) -> None:
+    """GUI PTT ボタンのコールバック。Route B の起動/停止をトグルする。
+
+    キーボード PTT (F8) の代替として、マウスでトグル操作する場合に使用する。
+    _konnyaku_running=False の場合は no-op。
+    """
+    _log_user("GUI PTT ボタン押下")
+    if not _konnyaku_running:
+        return
+    if _konnyaku_system is None or _konnyaku_system.route_b_system is None:
+        return
+
+    from main import RouteState
+    if _konnyaku_system.route_b_system.state == RouteState.RUNNING:
+        print("[PTT][GUI] ボタン: route_b 停止", flush=True)
+        _konnyaku_system.route_b_system.close_audio_gate()  # Case D: GUI トグルボタン停止時にゲートを閉じる
+        threading.Thread(
+            target=_konnyaku_system.stop_route,
+            args=("b",),
+            daemon=True,
+            name="PttGuiBtnStopRouteB",
+        ).start()
+    else:
+        _konnyaku_system.route_b_system.resume_from_idle()
+        print("[PTT][GUI] ボタン: route_b 起動", flush=True)
+        threading.Thread(
+            target=_konnyaku_system.start_route,
+            args=("b",),
+            daemon=True,
+            name="PttGuiBtnStartRouteB",
+        ).start()
+        _konnyaku_system.route_b_system.open_audio_gate()  # Case D: GUI トグルボタン起動時にゲートを開く
+    _gui_queue.put({"cmd": "update_ptt_visual"})
 
 
 def _load_ptt_settings(saved: dict) -> dict:
@@ -1929,6 +2058,9 @@ def _on_route_b_enable_change_ptt_aware(enabled: bool) -> None:
     # S-1 PR4: 状態更新（_ptt_enabled 等）完了後に永続化する
     _save_settings()
     _update_ptt_visual_feedback()
+    # GUI PTT ボタンの表示/非表示を同期（系統B ON/OFF に追従）
+    if _dpg_ready and dpg.does_item_exist(TAG_PTT_GUI_CONTAINER):
+        dpg.configure_item(TAG_PTT_GUI_CONTAINER, show=enabled)
 
 
 def _update_ptt_visual_feedback() -> None:
@@ -1983,6 +2115,32 @@ def _update_ptt_visual_feedback() -> None:
     # 入力デバイスコンボの enabled/disabled 切替（TBD-3）
     if dpg.does_item_exist(TAG_ROUTE_B_DEVICE_COMBO):
         dpg.configure_item(TAG_ROUTE_B_DEVICE_COMBO, enabled=not pressing)
+
+    # GUI PTT ボタンのラベル・テーマ更新
+    if dpg.does_item_exist(TAG_PTT_GUI_BTN):
+        from main import RouteState
+        route_b_state = (
+            _konnyaku_system.route_b_system.state
+            if (_konnyaku_system is not None and _konnyaku_system.route_b_system is not None)
+            else None
+        )
+        route_b_active = route_b_state in (RouteState.RUNNING, RouteState.STARTING)
+        # Case D: Route B は常時 RUNNING のためゲート状態（_audio_gate）で「送信中」を判定する
+        route_b_sending = (
+            _konnyaku_system is not None
+            and _konnyaku_system.route_b_system is not None
+            and getattr(_konnyaku_system.route_b_system, "_audio_gate", False)
+        )
+        if route_b_sending:
+            dpg.configure_item(TAG_PTT_GUI_BTN, label="■ 送信中 (PTT)")
+            dpg.bind_item_theme(TAG_PTT_GUI_BTN, TAG_PTT_THEME_ACTIVE)
+        else:
+            dpg.configure_item(TAG_PTT_GUI_BTN, label="● 話す (PTT)")
+            dpg.bind_item_theme(TAG_PTT_GUI_BTN, TAG_PTT_THEME_IDLE)
+            # 外部停止時にラッチチェックを自動 OFF（STARTING 中は除く）
+            if not route_b_active:
+                if dpg.does_item_exist(TAG_PTT_LATCH_CHECK) and dpg.get_value(TAG_PTT_LATCH_CHECK):
+                    dpg.set_value(TAG_PTT_LATCH_CHECK, False)
 
 
 @_verbose_callback()
@@ -2294,6 +2452,28 @@ def _enqueue(cmd: str, **kwargs):
     _gui_queue.put({"cmd": cmd, **kwargs})
 
 
+def _invoke_on_render_thread(fn, timeout: float = 5.0):
+    """fn をレンダリングスレッドのキューに積み、完了まで待機して結果を返す。"""
+    done = threading.Event()
+    result_box: list = []
+    error_box: list = []
+
+    def _wrapper():
+        try:
+            result_box.append(fn())
+        except Exception as exc:
+            error_box.append(exc)
+        finally:
+            done.set()
+
+    _gui_queue.put({"cmd": "invoke_callback", "fn": _wrapper})
+    if not done.wait(timeout=timeout):
+        raise TimeoutError(f"render thread did not respond in {timeout}s")
+    if error_box:
+        raise error_box[0]
+    return result_box[0] if result_box else None
+
+
 # =============================================================================
 # UI 変化ログユーティリティ (Issue #66)
 # OLD->NEW を [GUI] プレフィックスで記録して、UI 動作の検証を容易にする
@@ -2339,7 +2519,7 @@ def _gui_set_label(tag: str, new_label: str, name: str | None = None,
 # ---------------------------------------------------------------------------
 
 def _get_billing_state() -> str:
-    """課金状態を判定して 'none' / 'single' / 'both' を返す。
+    """課金状態を判定して 'none' / 'single' / 'both' を返す（後方互換）。
 
     STARTING / RUNNING のいずれかを課金中とみなす。
     """
@@ -2361,6 +2541,18 @@ def _get_billing_state() -> str:
     return "none"
 
 
+def _get_route_billing_active(route_id: str) -> bool:
+    """指定系統が課金中（STARTING/RUNNING）かを返す。"""
+    system = _konnyaku_system
+    if system is None:
+        return False
+    route = system.route_a_system if route_id == "a" else system.route_b_system
+    return (
+        route is not None
+        and route.state in (RouteState.STARTING, RouteState.RUNNING)
+    )
+
+
 _BILLING_LAMP_LABELS = {
     "none": "● 課金なし",
     "single": "● 片方課金",
@@ -2373,18 +2565,38 @@ _BILLING_LAMP_COLORS = {
     "both": (220, 0, 0, 255),      # 赤
 }
 
+_BILLING_ROUTE_LAMP_COLOR_ON = (220, 0, 0, 255)    # 赤: 課金中
+_BILLING_ROUTE_LAMP_COLOR_OFF = (0, 200, 0, 255)   # 緑: 課金なし
+
 
 def _update_billing_lamp() -> None:
     """課金ランプを現在の状態に更新する。dpg は GUI スレッド前提。"""
     if not _dpg_ready:
         return
-    if not dpg.does_item_exist(TAG_BILLING_LAMP):
-        return
-    state = _get_billing_state()
-    label = _BILLING_LAMP_LABELS.get(state, _BILLING_LAMP_LABELS["none"])
-    color = _BILLING_LAMP_COLORS.get(state, _BILLING_LAMP_COLORS["none"])
-    _gui_set_value(TAG_BILLING_LAMP, label)
-    dpg.configure_item(TAG_BILLING_LAMP, color=color)
+
+    # 旧・一体ランプ（存在する場合のみ更新）
+    if dpg.does_item_exist(TAG_BILLING_LAMP):
+        state = _get_billing_state()
+        label = _BILLING_LAMP_LABELS.get(state, _BILLING_LAMP_LABELS["none"])
+        color = _BILLING_LAMP_COLORS.get(state, _BILLING_LAMP_COLORS["none"])
+        _gui_set_value(TAG_BILLING_LAMP, label)
+        dpg.configure_item(TAG_BILLING_LAMP, color=color)
+
+    # 系統A 個別ランプ
+    if dpg.does_item_exist(TAG_BILLING_LAMP_A):
+        a_on = _get_route_billing_active("a")
+        dpg.configure_item(
+            TAG_BILLING_LAMP_A,
+            color=_BILLING_ROUTE_LAMP_COLOR_ON if a_on else _BILLING_ROUTE_LAMP_COLOR_OFF,
+        )
+
+    # 系統B 個別ランプ
+    if dpg.does_item_exist(TAG_BILLING_LAMP_B):
+        b_on = _get_route_billing_active("b")
+        dpg.configure_item(
+            TAG_BILLING_LAMP_B,
+            color=_BILLING_ROUTE_LAMP_COLOR_ON if b_on else _BILLING_ROUTE_LAMP_COLOR_OFF,
+        )
 
 
 def _classify_preload_cache(cached_system, cached_key, requested_key) -> tuple[str, object | None]:
@@ -2475,6 +2687,98 @@ def _trigger_preload():
     threading.Thread(target=_do_prepare, daemon=True).start()
 
 
+class _TestRouteSystem:
+    """テストモード用の軽量 CaptionSystem スタブ。"""
+    def __init__(self):
+        from main import RouteState
+        self.state = RouteState.IDLE
+        self._audio_gate: bool = False
+        self._idle_monitor = None       # _update_idle_status() の is None チェックを通すため
+        self.audio_peak_now = 0         # _update_konnyaku_level_meters() で数値として使われる
+        self._audio_stream = None       # 出力レベルメーター用
+        self.audio_peak = 0             # /api/audio 等で使われる
+        self.audio_chunks_per_sec = 0
+        self.effective_gain = 1.0
+        self.gain_mode = "off"
+
+    @property
+    def audio_gate_open(self) -> bool:
+        return self._audio_gate
+
+    def open_audio_gate(self):
+        self._audio_gate = True
+
+    def close_audio_gate(self):
+        self._audio_gate = False
+
+    def resume_from_idle(self):
+        pass
+
+    # 他の属性アクセスは AttributeError を出さないようにする
+    def __getattr__(self, name):
+        return lambda *a, **k: None
+
+
+class _TestModeSystem:
+    """テストモード用の軽量 MultiCaptionSystem スタブ。"""
+    def __init__(self):
+        self.route_a_system = None
+        self.route_b_system = _TestRouteSystem()
+
+    def start_route(self, route_id: str):
+        from main import RouteState
+        if route_id == "b":
+            self.route_b_system.state = RouteState.RUNNING
+
+    def stop_route(self, route_id: str):
+        from main import RouteState
+        if route_id == "b":
+            self.route_b_system.state = RouteState.IDLE
+            self.route_b_system.close_audio_gate()
+
+    def stop_all(self):
+        from main import RouteState
+        self.route_b_system.state = RouteState.IDLE
+        self.route_b_system.close_audio_gate()
+
+    def terminate(self):
+        pass
+
+    def __getattr__(self, name):
+        return lambda *a, **k: None
+
+
+def _setup_test_mode() -> None:
+    """E2E テスト用: mock konnyaku system を設定して即時 running 状態にする。"""
+    global _konnyaku_system, _konnyaku_running
+    _konnyaku_system = _TestModeSystem()
+    _konnyaku_running = True
+    print("[TEST-MODE] mock MultiCaptionSystem 起動完了", flush=True)
+
+
+def _register_ui_callbacks() -> None:
+    """GUI 構築後に呼ぶ。TAG 名 → {event: callable} マッピングを構築。"""
+    global _ui_callbacks
+    _ui_callbacks = {
+        TAG_PTT_GUI_BTN: {
+            "press":   lambda: _on_ptt_btn_pressed(TAG_PTT_GUI_BTN, None, None),
+            "release": lambda: _on_ptt_btn_released(TAG_PTT_GUI_BTN, None, None),
+        },
+        TAG_PTT_LATCH_CHECK: {
+            "set": lambda val: _on_ptt_latch_changed(TAG_PTT_LATCH_CHECK, bool(val), None),
+        },
+        TAG_ROUTE_B_ENABLE: {
+            "set": lambda val: _on_route_b_enable_change(TAG_ROUTE_B_ENABLE, bool(val), None),
+        },
+        TAG_ROUTE_A_ENABLE: {
+            "set": lambda val: _on_route_a_enable_change(TAG_ROUTE_A_ENABLE, bool(val), None),
+        },
+        TAG_KONNYAKU_START_BTN: {
+            "click": lambda: _on_konnyaku_start_stop_click(),
+        },
+    }
+
+
 def _drain_queue():
     """レンダリングループから毎フレーム呼ぶ。キューを処理して GUI を更新する。"""
     while not _gui_queue.empty():
@@ -2517,6 +2821,9 @@ def _drain_queue():
 
         elif cmd == "update_ptt_visual":
             _update_ptt_visual_feedback()
+
+        elif cmd == "invoke_callback":
+            item["fn"]()
 
 
 def _clear_log():
@@ -2782,125 +3089,240 @@ def _device_label(d: dict) -> str:
 # RPC サーバー
 # ---------------------------------------------------------------------------
 
-class _RPCHandler(BaseHTTPRequestHandler):
-    def log_message(self, format, *args):
-        pass  # アクセスログ抑制
+def _make_flask_app() -> _Flask:
+    """Flask RPC アプリを構築して返す。"""
+    flask_app = _Flask(__name__)
+    _logging.getLogger("werkzeug").setLevel(_logging.ERROR)
+    flask_app.logger.setLevel(_logging.ERROR)
 
-    def _send_json(self, data, status=200):
-        body = json.dumps(data, ensure_ascii=False).encode("utf-8")
-        self.send_response(status)
-        self.send_header("Content-Type", "application/json; charset=utf-8")
-        self.send_header("Content-Length", str(len(body)))
-        self.end_headers()
-        self.wfile.write(body)
+    def _json_response(data: dict, status: int = 200):
+        r = _flask_jsonify(data)
+        r.status_code = status
+        return r
 
-    def do_GET(self):
-        t0 = time.monotonic()
-        _verbose_write("RPC", f"start GET {self.path}")
-        response_status = 200
+    # ── GET エンドポイント ──────────────────────────────────────────────────
+
+    @flask_app.route("/api/status")
+    def api_status():
+        _log_rpc("GET /api/status")
+        ws_clients = _system._broadcaster.client_count if _system else 0
+        device_label = dpg.get_value(TAG_DEVICE_COMBO) if dpg.does_item_exist(TAG_DEVICE_COMBO) else ""
+        model = dpg.get_value(TAG_MODEL_COMBO) if dpg.does_item_exist(TAG_MODEL_COMBO) else ""
+        peak = _system.audio_peak if _system else 0
+        chunks = _system.audio_chunks_per_sec if _system else 0
+        return _json_response({
+            "state": "running" if _is_running else "stopped",
+            "device": device_label,
+            "model": model,
+            "ws_clients": ws_clients,
+            "audio_peak": peak,
+            "audio_peak_pct": peak * 100 // 32767,
+            "audio_chunks_per_sec": chunks,
+            "konnyaku_running": _konnyaku_running,
+            "route_b_state": (
+                _konnyaku_system.route_b_system.state.name
+                if _konnyaku_system is not None and _konnyaku_system.route_b_system is not None
+                else None
+            ),
+            "route_b_audio_gate": (
+                _konnyaku_system.route_b_system.audio_gate_open
+                if _konnyaku_system is not None and _konnyaku_system.route_b_system is not None
+                else None
+            ),
+        })
+
+    @flask_app.route("/api/log")
+    def api_log():
+        _log_rpc("GET /api/log")
+        return _json_response(_log_entries[-100:])
+
+    @flask_app.route("/api/devices")
+    def api_devices():
+        _log_rpc("GET /api/devices")
+        return _json_response(_devices)
+
+    @flask_app.route("/api/audio")
+    def api_audio():
+        _log_rpc("GET /api/audio")
+        peak = _system.audio_peak if _system else 0
+        chunks = _system.audio_chunks_per_sec if _system else 0
+        gain = _system.effective_gain if _system else 1.0
+        mode = _system.gain_mode if _system else "off"
+        return _json_response({
+            "peak": peak,
+            "peak_pct": peak * 100 // 32767,
+            "chunks_per_sec": chunks,
+            "gain": round(gain, 2),
+            "gain_mode": mode,
+        })
+
+    # ── UI クエリ系 GET ──────────────────────────────────────────────────────
+
+    @flask_app.route("/api/ui/get_value")
+    def api_ui_get_value():
+        tag = _flask_request.args.get("tag", "")
+        if not tag:
+            return _json_response({"error": "tag required"}, 400)
+        if not dpg.does_item_exist(tag):
+            return _json_response({"error": f"tag not found: {tag}"}, 404)
+        return _json_response({"tag": tag, "value": dpg.get_value(tag)})
+
+    @flask_app.route("/api/ui/get_config")
+    def api_ui_get_config():
+        tag = _flask_request.args.get("tag", "")
+        field = _flask_request.args.get("field", "")
+        if not tag:
+            return _json_response({"error": "tag required"}, 400)
+        if not dpg.does_item_exist(tag):
+            return _json_response({"error": f"tag not found: {tag}"}, 404)
+        cfg = dpg.get_item_configuration(tag)
+        if field:
+            return _json_response({"tag": tag, "field": field, "value": cfg.get(field)})
+        return _json_response({"tag": tag, "config": cfg})
+
+    @flask_app.route("/api/ui/exists")
+    def api_ui_exists():
+        tag = _flask_request.args.get("tag", "")
+        if not tag:
+            return _json_response({"error": "tag required"}, 400)
+        return _json_response({"tag": tag, "exists": dpg.does_item_exist(tag)})
+
+    @flask_app.route("/api/ui/tags")
+    def api_ui_tags():
+        import sys as _sys
+        _app_module = _sys.modules.get("__main__") or _sys.modules.get("app")
+        if _app_module is None:
+            return _json_response({})
+        tags = {k: v for k, v in vars(_app_module).items() if k.startswith("TAG_") and isinstance(v, str)}
+        return _json_response(tags)
+
+    # ── POST エンドポイント ──────────────────────────────────────────────────
+
+    @flask_app.route("/api/stop", methods=["POST"])
+    def api_stop():
+        _log_rpc("POST /api/stop")
+        _enqueue("stop_system")
+        return _json_response({"ok": True})
+
+    @flask_app.route("/api/start", methods=["POST"])
+    def api_start():
+        body = _flask_request.get_json(silent=True) or {}
+        _log_rpc("POST /api/start", device_index=body.get("device_index"))
+        _enqueue("start_system", device_index=body.get("device_index"), model=body.get("model"))
+        return _json_response({"ok": True})
+
+    # ── UI 操作系 POST ───────────────────────────────────────────────────────
+
+    @flask_app.route("/api/ui/press", methods=["POST"])
+    def api_ui_press():
+        body = _flask_request.get_json(silent=True) or {}
+        tag = body.get("tag") or _flask_request.args.get("tag", "")
+        if not tag:
+            return _json_response({"error": "tag required"}, 400)
+        callbacks = _ui_callbacks.get(tag, {})
+        fn = callbacks.get("press")
+        if fn is None:
+            return _json_response({"error": f"no press callback for tag: {tag}"}, 404)
         try:
-            if self.path == "/api/status":
-                _log_rpc("GET /api/status")
-                ws_clients = _system._broadcaster.client_count if _system else 0
-                device_label = dpg.get_value(TAG_DEVICE_COMBO) if dpg.does_item_exist(TAG_DEVICE_COMBO) else ""
-                model = dpg.get_value(TAG_MODEL_COMBO) if dpg.does_item_exist(TAG_MODEL_COMBO) else ""
-                peak = _system.audio_peak if _system else 0
-                chunks = _system.audio_chunks_per_sec if _system else 0
-                self._send_json({
-                    "state": "running" if _is_running else "stopped",
-                    "device": device_label,
-                    "model": model,
-                    "ws_clients": ws_clients,
-                    "audio_peak": peak,
-                    "audio_peak_pct": peak * 100 // 32767,
-                    "audio_chunks_per_sec": chunks,
-                })
+            _invoke_on_render_thread(fn)
+            return _json_response({"ok": True, "tag": tag, "event": "press"})
+        except TimeoutError as e:
+            return _json_response({"error": str(e)}, 504)
 
-            elif self.path == "/api/log":
-                _log_rpc("GET /api/log")
-                self._send_json(_log_entries[-100:])
-
-            elif self.path == "/api/devices":
-                _log_rpc("GET /api/devices")
-                self._send_json(_devices)
-
-            elif self.path == "/api/audio":
-                _log_rpc("GET /api/audio")
-                peak = _system.audio_peak if _system else 0
-                chunks = _system.audio_chunks_per_sec if _system else 0
-                gain = _system.effective_gain if _system else 1.0
-                mode = _system.gain_mode if _system else "off"
-                self._send_json({
-                    "peak": peak,
-                    "peak_pct": peak * 100 // 32767,
-                    "chunks_per_sec": chunks,
-                    "gain": round(gain, 2),
-                    "gain_mode": mode,
-                })
-
-            else:
-                response_status = 404
-                self._send_json({"error": "not found"}, status=404)
-        except Exception as e:
-            if _verbose_state:
-                tb = _traceback.format_exc()
-                _verbose_write(
-                    "RPC",
-                    f"error GET {self.path} error_type={type(e).__name__} traceback={tb[:5000]}",
-                )
-            raise
-        finally:
-            dt_ms = (time.monotonic() - t0) * 1000
-            _verbose_write("RPC", f"end GET {self.path} duration_ms={dt_ms:.2f} status={response_status}")
-
-    def do_POST(self):
-        t0 = time.monotonic()
-        # リクエスト body を先読み（verbose 記録 + 既存ロジックへの流用）
-        body_len = int(self.headers.get("Content-Length", 0))
-        body_bytes = self.rfile.read(body_len) if body_len else b""
-        if _verbose_state:
-            body_str = _redact_secrets(body_bytes.decode("utf-8", errors="replace"))
-            _verbose_write(
-                "RPC",
-                f"start POST {self.path} body_len={body_len} body={body_str[:5000]!r}",
-            )
-        response_status = 200
+    @flask_app.route("/api/ui/release", methods=["POST"])
+    def api_ui_release():
+        body = _flask_request.get_json(silent=True) or {}
+        tag = body.get("tag") or _flask_request.args.get("tag", "")
+        if not tag:
+            return _json_response({"error": "tag required"}, 400)
+        callbacks = _ui_callbacks.get(tag, {})
+        fn = callbacks.get("release")
+        if fn is None:
+            return _json_response({"error": f"no release callback for tag: {tag}"}, 404)
         try:
-            if self.path == "/api/stop":
-                _log_rpc("POST /api/stop")
-                _enqueue("stop_system")
-                self._send_json({"ok": True})
-            elif self.path == "/api/start":
-                body = {}
-                if body_bytes:
-                    try:
-                        body = json.loads(body_bytes)
-                    except Exception:
-                        pass
-                _log_rpc("POST /api/start", device_index=body.get("device_index"))
-                _enqueue("start_system", device_index=body.get("device_index"),
-                         model=body.get("model"))
-                self._send_json({"ok": True})
-            else:
-                response_status = 404
-                self._send_json({"error": "not found"}, status=404)
-        except Exception as e:
-            if _verbose_state:
-                tb = _traceback.format_exc()
-                _verbose_write(
-                    "RPC",
-                    f"error POST {self.path} error_type={type(e).__name__} traceback={tb[:5000]}",
-                )
-            raise
-        finally:
-            dt_ms = (time.monotonic() - t0) * 1000
-            _verbose_write("RPC", f"end POST {self.path} duration_ms={dt_ms:.2f} status={response_status}")
+            _invoke_on_render_thread(fn)
+            return _json_response({"ok": True, "tag": tag, "event": "release"})
+        except TimeoutError as e:
+            return _json_response({"error": str(e)}, 504)
+
+    @flask_app.route("/api/ui/click", methods=["POST"])
+    def api_ui_click():
+        body = _flask_request.get_json(silent=True) or {}
+        tag = body.get("tag") or _flask_request.args.get("tag", "")
+        if not tag:
+            return _json_response({"error": "tag required"}, 400)
+        callbacks = _ui_callbacks.get(tag, {})
+        fn = callbacks.get("click") or (
+            lambda: (callbacks["press"](), callbacks["release"]())
+            if "press" in callbacks and "release" in callbacks else None
+        )
+        if fn is None:
+            return _json_response({"error": f"no click callback for tag: {tag}"}, 404)
+        try:
+            _invoke_on_render_thread(fn)
+            return _json_response({"ok": True, "tag": tag, "event": "click"})
+        except TimeoutError as e:
+            return _json_response({"error": str(e)}, 504)
+
+    @flask_app.route("/api/ui/set_value", methods=["POST"])
+    def api_ui_set_value():
+        body = _flask_request.get_json(silent=True) or {}
+        tag = body.get("tag") or _flask_request.args.get("tag", "")
+        value = body.get("value")
+        if value is None:
+            value = _flask_request.args.get("value")
+        if not tag:
+            return _json_response({"error": "tag required"}, 400)
+        if value is None:
+            return _json_response({"error": "value required"}, 400)
+        callbacks = _ui_callbacks.get(tag, {})
+        set_fn = callbacks.get("set")
+
+        def _do_set():
+            dpg.set_value(tag, value)
+            if set_fn is not None:
+                set_fn(value)
+
+        try:
+            _invoke_on_render_thread(_do_set)
+            return _json_response({"ok": True, "tag": tag, "value": value})
+        except TimeoutError as e:
+            return _json_response({"error": str(e)}, 504)
+
+    @flask_app.route("/api/ui/select_tab", methods=["POST"])
+    def api_ui_select_tab():
+        body = _flask_request.get_json(silent=True) or {}
+        tag = body.get("tag") or _flask_request.args.get("tag", "")
+        if not tag:
+            return _json_response({"error": "tag required"}, 400)
+
+        def _do_select():
+            if not dpg.does_item_exist(tag):
+                raise ValueError(f"tag not found: {tag}")
+            dpg.set_value(tag, tag)
+
+        try:
+            _invoke_on_render_thread(_do_select)
+            return _json_response({"ok": True, "tag": tag})
+        except ValueError as e:
+            return _json_response({"error": str(e)}, 404)
+        except TimeoutError as e:
+            return _json_response({"error": str(e)}, 504)
+
+    return flask_app
 
 
 def _start_rpc_server(port: int):
     global _rpc_server
-    _rpc_server = HTTPServer(("localhost", port), _RPCHandler)
-    t = threading.Thread(target=_rpc_server.serve_forever, daemon=True)
+    flask_app = _make_flask_app()
+    _rpc_server = flask_app
+    t = threading.Thread(
+        target=lambda: flask_app.run(
+            host="localhost", port=port, threaded=True, use_reloader=False, debug=False
+        ),
+        daemon=True,
+        name="FlaskRPC",
+    )
     t.start()
 
 
@@ -2994,6 +3416,7 @@ def _load_fonts(size: int = 16):
             # 追加しないと CJK が描画されない。
             with dpg.font(jp_font_path, size) as _font_main_ctx:
                 dpg.add_font_range_hint(dpg.mvFontRangeHint_Japanese)
+                dpg.add_font_range(0x25A0, 0x25FF)  # Geometric Shapes: ■●○◆▶ etc.
             _font_main = _font_main_ctx
         _font_emoji = None
 
@@ -3020,6 +3443,19 @@ def _build_gui():
         with dpg.theme(tag=TAG_LEVEL_THEME_RED):
             with dpg.theme_component(dpg.mvProgressBar):
                 dpg.add_theme_color(dpg.mvThemeCol_PlotHistogram, (230, 60, 60))
+        # PTT ボタンテーマ: 待機=青、送信中=赤
+        with dpg.theme(tag=TAG_PTT_THEME_IDLE):
+            with dpg.theme_component(dpg.mvButton):
+                dpg.add_theme_color(dpg.mvThemeCol_Button,        (30,  90, 160, 220))
+                dpg.add_theme_color(dpg.mvThemeCol_ButtonHovered, (50, 120, 200, 240))
+                dpg.add_theme_color(dpg.mvThemeCol_ButtonActive,  (20,  70, 130, 255))
+                dpg.add_theme_style(dpg.mvStyleVar_FramePadding, 6, 10)
+        with dpg.theme(tag=TAG_PTT_THEME_ACTIVE):
+            with dpg.theme_component(dpg.mvButton):
+                dpg.add_theme_color(dpg.mvThemeCol_Button,        (180,  30,  30, 230))
+                dpg.add_theme_color(dpg.mvThemeCol_ButtonHovered, (210,  50,  50, 245))
+                dpg.add_theme_color(dpg.mvThemeCol_ButtonActive,  (150,  20,  20, 255))
+                dpg.add_theme_style(dpg.mvStyleVar_FramePadding, 6, 10)
 
     # viewport title は Windows API 経由で ANSI 変換されるため ASCII で設定し、
     # 表示後に Win32 API (SetWindowTextW) で UTF-16 に書き換える
@@ -3264,6 +3700,37 @@ def _build_gui():
 
             dpg.add_separator()
 
+            # --- PTT GUI ボタン（タブ外・上部）---
+            # 系統B が有効なときのみ表示。幅=ビューポート1/4、センター配置。
+            _route_b_on_at_init = bool(route_b_saved.get("enabled", True))
+            _vp_w = dpg.get_viewport_width()
+            _btn_w = _vp_w // 4
+            _cb_gap = 10
+            _cb_label_w = 50   # "固定" チェックボックスの概算幅
+            _pad_l = (_vp_w - _btn_w - _cb_gap - _cb_label_w) // 2
+            with dpg.group(horizontal=True, tag=TAG_PTT_GUI_CONTAINER,
+                           show=_route_b_on_at_init):
+                dpg.add_dummy(width=_pad_l)
+                dpg.add_button(
+                    tag=TAG_PTT_GUI_BTN,
+                    label="● 話す (PTT)",
+                    width=_btn_w,
+                )
+                dpg.bind_item_theme(TAG_PTT_GUI_BTN, TAG_PTT_THEME_IDLE)
+                dpg.add_spacer(width=_cb_gap)
+                dpg.add_checkbox(
+                    tag=TAG_PTT_LATCH_CHECK,
+                    label="固定",
+                    default_value=False,
+                    callback=_on_ptt_latch_changed,
+                )
+            # ホールド式ハンドラ登録（グループ外で定義）
+            with dpg.item_handler_registry(tag=TAG_PTT_BTN_HANDLER):
+                dpg.add_item_activated_handler(callback=_on_ptt_btn_pressed)
+                dpg.add_item_deactivated_handler(callback=_on_ptt_btn_released)
+            dpg.bind_item_handler_registry(TAG_PTT_GUI_BTN, TAG_PTT_BTN_HANDLER)
+            dpg.add_separator()
+
             _lang_display_names = get_language_display_names()
 
             # --- 系統1/2 TabBar（GUI縦長解消 第3弾）---
@@ -3506,7 +3973,10 @@ def _build_gui():
 
         # --- ステータスバー ---
         with dpg.group(horizontal=True):
-            dpg.add_text("● 課金なし", tag=TAG_BILLING_LAMP)
+            dpg.add_text("系統A●", tag=TAG_BILLING_LAMP_A,
+                         color=_BILLING_ROUTE_LAMP_COLOR_OFF)
+            dpg.add_text(" 系統B●", tag=TAG_BILLING_LAMP_B,
+                         color=_BILLING_ROUTE_LAMP_COLOR_OFF)
             dpg.add_text("  ", )
             dpg.add_text("■ 待機中", tag=TAG_STATUS_STATE)
             dpg.add_text("  |  認識 ○", tag=TAG_STATUS_STT)
@@ -3752,6 +4222,14 @@ def main():
         "--verbose", action="store_true",
         help="Enable verbose logging (RT_* events to _verbose.txt) from startup",
     )
+    parser.add_argument(
+        "--test-mode", action="store_true",
+        help="E2E テスト用: mock _konnyaku_system で起動（実 API キー不要）",
+    )
+    parser.add_argument(
+        "--rpc-port", type=int, default=None,
+        help="RPC ポートを上書き（E2E テスト用）",
+    )
     args = parser.parse_args()
 
     if args.verbose:
@@ -3767,7 +4245,7 @@ def main():
         _host_api = _config.get("audio", {}).get("host_api", "wasapi")
         _devices = list_audio_devices(host_api=_host_api)
 
-    rpc_port = _config.get("rpc", {}).get("port", 8767)
+    rpc_port = args.rpc_port if args.rpc_port is not None else _config.get("rpc", {}).get("port", 8767)
     with _startup_step("RPC サーバー起動"):
         _start_rpc_server(rpc_port)
 
@@ -3787,6 +4265,10 @@ def main():
 
     with _startup_step("GUI 構築"):
         _build_gui()
+    with _startup_step("UI コールバックレジストリ登録"):
+        _register_ui_callbacks()
+    if args.test_mode:
+        _setup_test_mode()
     with _startup_step("ビューポート表示"):
         dpg.show_viewport()
 
