@@ -96,6 +96,43 @@ if sys.stdout.encoding != "utf-8":
     sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding="utf-8", errors="replace")
 
 
+class _TimestampedWriter:
+    """stdout/stderr wrapper that prepends HH:MM:SS.sss to every output line."""
+    def __init__(self, wrapped):
+        self._wrapped = wrapped
+        self._buf = ""
+        self._lock = threading.Lock()
+
+    def write(self, s) -> int:
+        if isinstance(s, (bytes, bytearray)):
+            s = s.decode("utf-8", errors="replace")
+        if not s:
+            return 0
+        with self._lock:
+            self._buf += s
+            while "\n" in self._buf:
+                line, self._buf = self._buf.split("\n", 1)
+                ts = datetime.now().strftime("%H:%M:%S.%f")[:-3]
+                self._wrapped.write(f"{ts} {line}\n")
+            self._wrapped.flush()
+        return len(s)
+
+    def flush(self):
+        with self._lock:
+            if self._buf:
+                ts = datetime.now().strftime("%H:%M:%S.%f")[:-3]
+                self._wrapped.write(f"{ts} {self._buf}")
+                self._buf = ""
+            self._wrapped.flush()
+
+    def __getattr__(self, name):
+        return getattr(self._wrapped, name)
+
+
+sys.stdout = _TimestampedWriter(sys.stdout)
+sys.stderr = _TimestampedWriter(sys.stderr)
+
+
 # ---------------------------------------------------------------------------
 # 起動進捗ログ (issue #101)
 # ---------------------------------------------------------------------------
@@ -306,8 +343,11 @@ _restart_locks: dict[str, threading.Lock] = {"a": threading.Lock(), "b": threadi
 
 # PTT (Push-to-Talk) モード用 (issue #82 / ptt-mode-design.md)
 _ptt_manager: PttHotkeyManager | None = None
-_ptt_enabled: bool = False
 _ptt_hotkey: str = "f8"
+# ラッチが Python コールバック経由で確実に ON になったかを追跡するフラグ
+# dpg.get_value(TAG_PTT_LATCH_CHECK) は DPG 内部値（コールバック発火前に True になり得る）
+# であるため、誤リセットを防ぐために Python 側で状態を管理する（issue #158 fix）
+_ptt_latch_active: bool = False
 
 # プリロードキャッシュ
 _preloaded_system: CaptionSystem | None = None
@@ -434,7 +474,6 @@ TAG_QUOTA_WEB_BTN = "quota_web_btn"  # issue #80: クォータ確認ボタン
 
 # PTT 設定 UI タグ (issue #82 / ptt-mode-design.md F-5)
 TAG_PTT_SECTION = "ptt_section"
-TAG_PTT_ENABLED = "ptt_enabled_checkbox"
 TAG_PTT_HOTKEY = "ptt_hotkey_input"
 
 # PTT 視覚フィードバック用タグ (ptt-mode-design.md F-6)
@@ -566,7 +605,6 @@ def _save_settings():
         }
         data["route_b"] = _build_ptt_settings_dict(
             existing_data={"route_b": _route_b_base},
-            ptt_enabled=_ptt_enabled,
             ptt_hotkey=_ptt_hotkey,
         )["route_b"]
         # W-COST-4: アイドル切断設定を保存（系統共通設定としてトップレベルに保存）
@@ -579,7 +617,7 @@ def _save_settings():
 
         data["idle_disconnect_enabled"] = bool(_get(TAG_IDLE_DISCONNECT_ENABLED, False))
         data["idle_timeout_sec"] = _safe_get_int(TAG_IDLE_TIMEOUT_SEC, 300)
-        data["idle_audio_threshold"] = _safe_get_int(TAG_IDLE_AUDIO_THRESHOLD, 200)  # TBD-4-2: 100→200
+        data["idle_audio_threshold"] = _safe_get_int(TAG_IDLE_AUDIO_THRESHOLD, 100)  # TBD-4 確定
         with open(_SETTINGS_PATH, "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False, indent=2)
     except Exception:
@@ -1327,27 +1365,6 @@ def _on_zoom_preset_click():
     _save_settings()
 
 
-@_verbose_callback()
-def _on_both_routes_on(sender=None, app_data=None, user_data=None):
-    """系統1・系統2 を両方とも有効化（一括 ON）。"""
-    _log_user("両方 ON ボタン押下")
-    if dpg.does_item_exist(TAG_ROUTE_A_ENABLE):
-        dpg.set_value(TAG_ROUTE_A_ENABLE, True)
-    if dpg.does_item_exist(TAG_ROUTE_B_ENABLE):
-        dpg.set_value(TAG_ROUTE_B_ENABLE, True)
-    _save_settings()
-
-
-@_verbose_callback()
-def _on_both_routes_off(sender=None, app_data=None, user_data=None):
-    """系統1・系統2 を両方とも無効化（一括 OFF）。"""
-    _log_user("両方 OFF ボタン押下")
-    if dpg.does_item_exist(TAG_ROUTE_A_ENABLE):
-        dpg.set_value(TAG_ROUTE_A_ENABLE, False)
-    if dpg.does_item_exist(TAG_ROUTE_B_ENABLE):
-        dpg.set_value(TAG_ROUTE_B_ENABLE, False)
-    _save_settings()
-
 
 def _konnyaku_thread_error_handler(route_id: str, exc: Exception, tb: str) -> None:
     """MultiCaptionSystem のバックグラウンドスレッドが例外で終了したときに呼ばれるコールバック。
@@ -1531,7 +1548,7 @@ def _create_konnyaku_system() -> None:
     # W-COST-4: アイドル切断設定を保存設定から読み込む（系統共通設定、トップレベルキー）
     idle_disconnect_enabled = bool(saved.get("idle_disconnect_enabled", False))
     idle_timeout_sec = _safe_int(saved.get("idle_timeout_sec", 300), 300)
-    idle_audio_threshold = _safe_int(saved.get("idle_audio_threshold", 200), 200)  # TBD-4-2: 100→200
+    idle_audio_threshold = _safe_int(saved.get("idle_audio_threshold", 100), 100)  # TBD-4 確定
 
     route_a_cfg = RouteConfig(
         route_id="a",
@@ -1591,6 +1608,8 @@ def _on_route_a_enable_change(sender, app_data, user_data) -> None:
         return
     if app_data:
         _konnyaku_system.start_route("a")
+        if _konnyaku_system.route_a_system is not None:
+            _konnyaku_system.route_a_system.open_audio_gate()
     else:
         _konnyaku_system.stop_route("a")
 
@@ -1643,7 +1662,7 @@ def _on_ptt_release(event) -> None:
     if not _konnyaku_running:
         return
     # G-3.4: ラッチ中は F8 離脱で route B を止めない
-    if _dpg_ready and dpg.does_item_exist(TAG_PTT_LATCH_CHECK) and dpg.get_value(TAG_PTT_LATCH_CHECK):
+    if _ptt_latch_active:
         _gui_queue.put({"cmd": "update_ptt_visual"})
         return
     if _konnyaku_system is None:
@@ -1651,13 +1670,10 @@ def _on_ptt_release(event) -> None:
     # Case D: 音声ゲートを閉じる（PTT 離脱時）
     if _konnyaku_system.route_b_system is not None:
         _konnyaku_system.route_b_system.close_audio_gate()
-    print("[PTT] release: route_b 停止", flush=True)
-    threading.Thread(
-        target=_konnyaku_system.stop_route,
-        args=("b",),
-        daemon=True,
-        name="PttStopRouteB",
-    ).start()
+    # Case D: 接続維持。stop_route は呼ばない。
+    # 音声ゲートを閉じるだけで、再生中の TTS は最後まで出力される。
+    # Route B は次の PTT 押下まで RUNNING のまま待機（W-COST-4 で再接続も対応済み）。
+    print("[PTT] release: 音声ゲートを閉じる（Route B 接続維持）", flush=True)
     _gui_queue.put({"cmd": "update_ptt_visual"})
 
 
@@ -1670,13 +1686,16 @@ def _on_ptt_chatter_warning() -> None:
 @_verbose_callback()
 def _on_ptt_btn_pressed(sender, app_data, user_data) -> None:
     """PTT ボタン マウスダウン。ラッチ中なら解除して停止。"""
+    global _ptt_latch_active
     if not _konnyaku_running:
         return
     if _konnyaku_system is None or _konnyaku_system.route_b_system is None:
         return
     # ラッチ中にボタンを押したら解除して停止
-    if dpg.does_item_exist(TAG_PTT_LATCH_CHECK) and dpg.get_value(TAG_PTT_LATCH_CHECK):
-        dpg.set_value(TAG_PTT_LATCH_CHECK, False)
+    if _ptt_latch_active:
+        _ptt_latch_active = False
+        if dpg.does_item_exist(TAG_PTT_LATCH_CHECK):
+            dpg.set_value(TAG_PTT_LATCH_CHECK, False)
         _konnyaku_system.route_b_system.close_audio_gate()  # Case D: ラッチ解除時にゲートを閉じる
         threading.Thread(
             target=_konnyaku_system.stop_route, args=("b",),
@@ -1704,34 +1723,43 @@ def _on_ptt_btn_released(sender, app_data, user_data) -> None:
         return
     if _konnyaku_system is None or _konnyaku_system.route_b_system is None:
         return
-    if dpg.does_item_exist(TAG_PTT_LATCH_CHECK) and dpg.get_value(TAG_PTT_LATCH_CHECK):
+    if _ptt_latch_active:
         return  # ラッチ中はリリースしても停止しない
-    # Case D: 音声ゲートを閉じる（PTT 離脱時）
+    # Case D: 音声ゲートを閉じるだけ。stop_route は呼ばない。
+    # 再生中の TTS は最後まで出力される（接続維持）。
     _konnyaku_system.route_b_system.close_audio_gate()
-    from main import RouteState
-    if _konnyaku_system.route_b_system.state in (RouteState.RUNNING, RouteState.STARTING):
-        threading.Thread(
-            target=_konnyaku_system.stop_route, args=("b",),
-            daemon=True, name="PttBtnRelease"
-        ).start()
     _gui_queue.put({"cmd": "update_ptt_visual"})
 
 
 @_verbose_callback()
 def _on_ptt_latch_changed(sender, app_data, user_data) -> None:
     """固定チェックボックス変更: ON → Route B 開始、OFF → 停止。"""
-    checked = bool(app_data)
+    global _ptt_latch_active
+    # DPG 2.1.1 では app_data が None/False になるケースがあるため
+    # dpg.get_value() でウィジェットの実際の状態を取得する
+    # （コールバック発火時点でDPGは内部値を更新済みなので get_value() が正しい新状態を返す）
+    checked = bool(dpg.get_value(TAG_PTT_LATCH_CHECK)) if dpg.does_item_exist(TAG_PTT_LATCH_CHECK) else bool(app_data)
+    print(f"[LATCH] checked={checked} app_data_raw={app_data!r} konnyaku_running={_konnyaku_running}", flush=True)
     if not _konnyaku_running:
+        print(f"[LATCH] early-return: konnyaku not running", flush=True)
         return
     if _konnyaku_system is None or _konnyaku_system.route_b_system is None:
+        print(f"[LATCH] early-return: no system", flush=True)
         return
     from main import RouteState
+    rb = _konnyaku_system.route_b_system
+    print(f"[LATCH] route_b state={rb.state} gate={getattr(rb, '_audio_gate', '?')}", flush=True)
     if checked:
-        if _konnyaku_system.route_b_system.state not in (RouteState.RUNNING, RouteState.STARTING):
-            _konnyaku_system.route_b_system.resume_from_idle()
-            _konnyaku_system.start_route("b")  # 直接呼び出し: start()内でRUNNINGに即遷移するためスレッド不要
-        _konnyaku_system.route_b_system.open_audio_gate()  # Case D: ラッチON時は音声ゲートを開く
+        _ptt_latch_active = True
+        if rb.state not in (RouteState.RUNNING, RouteState.STARTING):
+            print(f"[LATCH] calling start_route(b) from state={rb.state}", flush=True)
+            rb.resume_from_idle()
+            _konnyaku_system.start_route("b")
+            print(f"[LATCH] after start_route: state={rb.state}", flush=True)
+        _konnyaku_system.route_b_system.open_audio_gate()
+        print(f"[LATCH] gate opened. state={rb.state} gate={rb._audio_gate}", flush=True)
     else:
+        _ptt_latch_active = False
         _konnyaku_system.route_b_system.close_audio_gate()  # Case D: ラッチOFF時はゲートを閉じる
         if _konnyaku_system.route_b_system.state in (RouteState.RUNNING, RouteState.STARTING):
             threading.Thread(
@@ -1779,6 +1807,7 @@ def _on_ptt_gui_button_click(sender, app_data, user_data) -> None:
 
 def _load_ptt_settings(saved: dict) -> dict:
     """settings.json の saved データから PTT 設定を読み込む純関数。
+    ptt_enabled キーは廃止（Q-NEW-1）。ptt_hotkey のみ返す。
 
     Parameters
     ----------
@@ -1788,59 +1817,53 @@ def _load_ptt_settings(saved: dict) -> dict:
     Returns
     -------
     dict
-        "ptt_enabled" (bool) と "ptt_hotkey" (str) を含む辞書。
-        キーが存在しない場合はデフォルト値（False, "f8"）を返す。
+        "ptt_hotkey" (str) を含む辞書。
+        キーが存在しない場合はデフォルト値（"f8"）を返す。
     """
     route_b = saved.get("route_b", {})
     return {
-        "ptt_enabled": bool(route_b.get("ptt_enabled", False)),
         "ptt_hotkey": str(route_b.get("ptt_hotkey", "f8")),
     }
 
 
 def _build_ptt_settings_dict(
     existing_data: dict,
-    ptt_enabled: bool,
     ptt_hotkey: str,
 ) -> dict:
     """PTT 設定を既存データの route_b にマージした辞書を返す純関数。
-
-    既存の route_b キーを破壊せず、ptt_enabled / ptt_hotkey のみ上書きする。
+    ptt_enabled は廃止（Q-NEW-1）。ptt_hotkey のみ書き込む。
 
     Parameters
     ----------
     existing_data : dict
         既存の設定辞書（settings.json 相当）。
-    ptt_enabled : bool
-        保存する PTT 有効フラグ。
     ptt_hotkey : str
         保存するホットキー文字列。
 
     Returns
     -------
     dict
-        ptt_enabled / ptt_hotkey がマージされた設定辞書。
+        ptt_hotkey がマージされた設定辞書。
     """
     import copy
     data = copy.deepcopy(existing_data)
     route_b = data.setdefault("route_b", {})
-    route_b["ptt_enabled"] = ptt_enabled
+    # ptt_enabled は書き込まない（廃止）。既存の ptt_enabled キーがあっても上書きしない。
+    route_b.pop("ptt_enabled", None)  # 既存キーを削除（再保存時にキーを消す）
     route_b["ptt_hotkey"] = ptt_hotkey
     return data
 
 
 def _init_ptt_manager(
-    ptt_enabled: bool,
     ptt_hotkey: str,
     keyboard_module=None,
     timer_factory=None,
 ) -> None:
-    """PttHotkeyManager をインスタンス化し、ptt_enabled=True の場合のみ start() する。
+    """PttHotkeyManager をインスタンス化し、常に start() する。
+    Q-NEW-2: アプリ起動と同時にホットキーを登録する。
 
     Parameters
     ----------
-    ptt_enabled : bool
-        True の場合はホットキーの監視を開始する。
     ptt_hotkey : str
         監視するホットキー文字列（例: "f8"）。
     keyboard_module : optional
@@ -1848,7 +1871,7 @@ def _init_ptt_manager(
     timer_factory : optional
         テスト注入用タイマーファクトリー。
     """
-    global _ptt_manager, _ptt_enabled, _ptt_hotkey
+    global _ptt_manager, _ptt_hotkey
 
     # 既存の manager があれば停止してから置き換え
     if _ptt_manager is not None:
@@ -1857,7 +1880,6 @@ def _init_ptt_manager(
         except Exception:
             pass
 
-    _ptt_enabled = ptt_enabled
     _ptt_hotkey = ptt_hotkey
 
     kwargs = {
@@ -1873,11 +1895,8 @@ def _init_ptt_manager(
 
     _ptt_manager = PttHotkeyManager(**kwargs)
 
-    if ptt_enabled:
-        _ptt_manager.start()
-        print(f"[PTT] 有効化: ホットキー={ptt_hotkey}", flush=True)
-    else:
-        print("[PTT] 無効（ptt_enabled=False）", flush=True)
+    _ptt_manager.start()
+    print(f"[PTT] 有効化（常時）: ホットキー={ptt_hotkey}", flush=True)
 
 
 def _cleanup_ptt_manager() -> None:
@@ -1897,11 +1916,9 @@ def _cleanup_ptt_manager() -> None:
         _ptt_manager = None
 
 
-def _is_route_b_active_for_meter(ptt_enabled: bool) -> bool:
+def _is_route_b_active_for_meter() -> bool:
     """レベルメーター表示用に系統Bが稼働中かどうかを返す純関数（F-7.1）。
-
-    PTT モード有効時は RouteState.RUNNING で判定し、
-    PTT モード無効時はチェックボックスの値（呼び出し側が提供）に委ねる。
+    PTT 常時 ON（Q-SEM-4）: 常に RouteState.RUNNING で判定する。
 
     設計意図（W-2 PR4 — _is_ptt_pressing との差異）:
       この関数は RUNNING のみ True を返す（STARTING は False）。
@@ -1912,21 +1929,12 @@ def _is_route_b_active_for_meter(ptt_enabled: bool) -> bool:
       これは PTT 押下中のデバイスコンボ disable 判定に使うため、
       起動途中も含めて「押下操作中」として扱う必要があるから（TBD-3）。
 
-    Parameters
-    ----------
-    ptt_enabled : bool
-        PTT モードが有効かどうか。
-
     Returns
     -------
     bool
         True = 系統B が RUNNING 状態（レベルメーターを更新すべき）。
         STARTING / IDLE / STOPPING / ERROR は False。
     """
-    if not ptt_enabled:
-        # PTT 無効時: 呼び出し側がチェックボックス値で判定するため True を返す
-        # （既存の route_b_enabled ロジックを維持）
-        return True
     if _konnyaku_system is None:
         return False
     route_b = _konnyaku_system.route_b_system
@@ -1954,45 +1962,18 @@ def _is_ptt_pressing() -> bool:
     bool
         True = PTT ホットキー押下中（系統B稼働中 or 起動中: STARTING or RUNNING）。
     """
-    if not _ptt_enabled:
-        return False
     if _konnyaku_system is None:
         return False
     route_b = _konnyaku_system.route_b_system
     if route_b is None:
         return False
-    return route_b.state in (RouteState.STARTING, RouteState.RUNNING)
+    # Case D: 「押下中」= Route B が起動中 かつ 音声ゲートが開いている
+    # PTT 離脱後は Route B が RUNNING のまま残るが、ゲートが閉じていれば「待機中」扱い
+    return (
+        route_b.state in (RouteState.STARTING, RouteState.RUNNING)
+        and getattr(route_b, "_audio_gate", False)
+    )
 
-
-@_verbose_callback()
-def _on_ptt_enabled_change(enabled: bool) -> None:
-    """PTT モード有効チェックボックス変更時のコールバック（F-5）。
-
-    ON 時: _ptt_manager.start() を呼んでホットキーを有効化。
-    OFF 時: _cleanup_ptt_manager() を呼んでホットキーを解除。
-    変更は即座に _save_settings() で永続化する。
-
-    Parameters
-    ----------
-    enabled : bool
-        チェックボックスの新しい値。
-    """
-    global _ptt_enabled
-    _ptt_enabled = enabled
-    print(f"[PTT] モード変更: {'ON' if enabled else 'OFF'}", flush=True)
-
-    if enabled:
-        if _ptt_manager is not None and not _ptt_manager.running:
-            _ptt_manager.start()
-            print(f"[PTT] 有効化: ホットキー={_ptt_hotkey}", flush=True)
-        elif _ptt_manager is None:
-            print("[PTT] _ptt_manager が None のため start() をスキップ", flush=True)
-        # 既に running の場合は冪等性保証のため no-op
-    else:
-        _cleanup_ptt_manager()
-
-    _save_settings()
-    _update_ptt_visual_feedback()
 
 
 @_verbose_callback()
@@ -2023,39 +2004,25 @@ def _on_ptt_hotkey_change(new_hotkey: str) -> None:
 def _on_route_b_enable_change_ptt_aware(enabled: bool) -> None:
     """系統2 有効チェックボックス変更時の PTT 対応コールバック（TBD-4）。
 
-    PTT モード ON の場合:
-      - OFF にすると PTT モードも自動的に OFF になる（TBD-4 仕様）
-      - ON にしてもここでは PTT を再起動しない（UI 側の PTT チェックボックスで操作）
-    PTT モード OFF の場合:
-      - 従来通り start_route/stop_route を呼ぶ
+    PTT 常時 ON: 系統B OFF → PTT 停止（接続維持ではなく全停止）。
+    系統B ON: PTT が制御を持つため何もしない（route_b 起動は PTT 押下時のみ）。
 
     Parameters
     ----------
     enabled : bool
         チェックボックスの新しい値。
     """
-    global _ptt_enabled
-    _log_user(f"系統2 有効チェック {'ON' if enabled else 'OFF'} (PTT={'ON' if _ptt_enabled else 'OFF'})")
+    _log_user(f"系統2 有効チェック {'ON' if enabled else 'OFF'} (PTT=常時ON)")
 
-    if _ptt_enabled:
-        if not enabled:
-            # PTT ON 状態で系統B を OFF → PTT モードも OFF にする（TBD-4）
-            _ptt_enabled = False  # S-1 PR4: 状態更新を _save_settings() より先に行う
-            _cleanup_ptt_manager()
-            print("[PTT] 系統2 OFF により PTT モードを自動無効化", flush=True)
-            # PTT チェックボックスの表示を同期（dpg_ready 時のみ）
-            if _dpg_ready and dpg.does_item_exist(TAG_PTT_ENABLED):
-                dpg.set_value(TAG_PTT_ENABLED, False)
-        # PTT ON 中に系統B を ON にしても何もしない（PTT が制御を持つ）
-    else:
-        # PTT OFF 時は従来通り
+    # PTT 常時 ON: 系統B OFF → PTT 停止（接続維持ではなく全停止）
+    if not enabled:
+        _cleanup_ptt_manager()
         if _konnyaku_system is not None:
-            if enabled:
-                _konnyaku_system.start_route("b")
-            else:
-                _konnyaku_system.stop_route("b")
+            _konnyaku_system.stop_route("b")
+    # 系統B ON: PTT が制御を持つため何もしない（route_b 起動は PTT 押下時のみ）
+    # （TAG_PTT_GUI_CONTAINER の show/hide は維持）
 
-    # S-1 PR4: 状態更新（_ptt_enabled 等）完了後に永続化する
+    # S-1 PR4: 状態更新完了後に永続化する
     _save_settings()
     _update_ptt_visual_feedback()
     # GUI PTT ボタンの表示/非表示を同期（系統B ON/OFF に追従）
@@ -2083,6 +2050,7 @@ def _update_ptt_visual_feedback() -> None:
         この関数を直接呼ばず _gui_queue に "update_ptt_visual" コマンドを put する。
         _drain_queue() がメインスレッドからこの関数を呼び出す（C-1 対応）。
     """
+    global _ptt_latch_active
     if not _dpg_ready:
         return
 
@@ -2090,9 +2058,7 @@ def _update_ptt_visual_feedback() -> None:
 
     # 系統2 見出しラベルの更新（F-6.1 / F-6.2 / F-5.3）
     if dpg.does_item_exist(TAG_ROUTE_B_LABEL):
-        if not _ptt_enabled:
-            new_label = "【系統2】自分→相手（同時通訳）  I speak, they hear"
-        elif pressing:
+        if pressing:
             new_label = f"【系統2 [送信中]】自分→相手（同時通訳）  I speak, they hear"
         else:
             new_label = (
@@ -2103,9 +2069,7 @@ def _update_ptt_visual_feedback() -> None:
 
     # PTT ステータスラベルの更新（F-6.1 / F-6.2）
     if dpg.does_item_exist(TAG_PTT_STATUS_LABEL):
-        if not _ptt_enabled:
-            dpg.configure_item(TAG_PTT_STATUS_LABEL, show=False)
-        elif pressing:
+        if pressing:
             dpg.set_value(TAG_PTT_STATUS_LABEL, "● 送信中")
             dpg.configure_item(TAG_PTT_STATUS_LABEL, show=True)
         else:
@@ -2134,12 +2098,28 @@ def _update_ptt_visual_feedback() -> None:
         if route_b_sending:
             dpg.configure_item(TAG_PTT_GUI_BTN, label="■ 送信中 (PTT)")
             dpg.bind_item_theme(TAG_PTT_GUI_BTN, TAG_PTT_THEME_ACTIVE)
+            # ゲートが開いているのに route_b が IDLE なら再起動
+            # （STOPPING→IDLE 完了後に自動復旧。start_route は IDLE 以外 no-op なので安全）
+            if (
+                route_b_state == RouteState.IDLE
+                and _konnyaku_system is not None
+                and _konnyaku_system.route_b_system is not None
+            ):
+                _konnyaku_system.route_b_system.resume_from_idle()
+                _konnyaku_system.start_route("b")
         else:
             dpg.configure_item(TAG_PTT_GUI_BTN, label="● 話す (PTT)")
             dpg.bind_item_theme(TAG_PTT_GUI_BTN, TAG_PTT_THEME_IDLE)
-            # 外部停止時にラッチチェックを自動 OFF（STARTING 中は除く）
-            if not route_b_active:
-                if dpg.does_item_exist(TAG_PTT_LATCH_CHECK) and dpg.get_value(TAG_PTT_LATCH_CHECK):
+            # 外部停止時にラッチチェックを自動 OFF
+            # STARTING・STOPPING 中（遷移中）は除外してレースコンディションを防ぐ
+            # _ptt_latch_active: Python コールバック経由で確実に ON になったときのみ True
+            # dpg.get_value は DPG 内部値（コールバック発火前に True になり得る）ため使わない
+            if route_b_state not in (RouteState.RUNNING, RouteState.STARTING, RouteState.STOPPING):
+                if _ptt_latch_active and dpg.does_item_exist(TAG_PTT_LATCH_CHECK):
+                    print(f"[LATCH-RESET] auto-reset latch. route_b_state={route_b_state} gate={getattr(_konnyaku_system.route_b_system, '_audio_gate', '?') if _konnyaku_system and _konnyaku_system.route_b_system else '?'}", flush=True)
+                    _ptt_latch_active = False
+                    if _konnyaku_system and _konnyaku_system.route_b_system:
+                        _konnyaku_system.route_b_system.close_audio_gate()
                     dpg.set_value(TAG_PTT_LATCH_CHECK, False)
 
 
@@ -2289,8 +2269,7 @@ def _on_konnyaku_start_stop_click():
         _log_action("こんにゃくモード 起動開始", route_a=route_a_enabled, route_b=route_b_enabled)
         if route_a_enabled and _konnyaku_system.route_a_system is not None:
             _konnyaku_system.start_route("a")
-        if route_b_enabled and _konnyaku_system.route_b_system is not None and not _ptt_enabled:
-            _konnyaku_system.start_route("b")
+            _konnyaku_system.route_a_system.open_audio_gate()
 
         _konnyaku_running = True
         _log_action("こんにゃくモード 起動完了")
@@ -2553,6 +2532,46 @@ def _get_route_billing_active(route_id: str) -> bool:
     )
 
 
+def _get_route_billing_color(route_id: str) -> str:
+    """系統の課金ランプ色を "red" / "yellow" / "green" で返す（audio_gate ベース）。
+
+    | 条件                                              | 戻り値   | 色 |
+    |---------------------------------------------------|---------|-----|
+    | audio_gate_open == True                           | "red"   | 赤 |
+    | state in (STARTING, RUNNING) + gate=False         | "yellow"| 黄 |
+    | それ以外（IDLE / ERROR / STOPPING / route=None 等）| "green" | 緑 |
+
+    Parameters
+    ----------
+    route_id : str
+        "a" または "b"
+
+    Returns
+    -------
+    str
+        "red" / "yellow" / "green"
+    """
+    system = _konnyaku_system
+    if system is None:
+        return "green"
+
+    route = system.route_a_system if route_id == "a" else system.route_b_system
+    if route is None:
+        return "green"
+
+    # audio_gate が開いていれば送信中（赤）— state 問わず
+    # NOTE: `is True` を使うことで MagicMock（未設定）を False 扱いにする
+    if getattr(route, "audio_gate_open", False) is True:
+        return "red"
+
+    # 接続中だがゲート閉（黄）
+    if route.state in (RouteState.STARTING, RouteState.RUNNING):
+        return "yellow"
+
+    # それ以外（IDLE/ERROR 等）は停止（緑）
+    return "green"
+
+
 _BILLING_LAMP_LABELS = {
     "none": "● 課金なし",
     "single": "● 片方課金",
@@ -2568,6 +2587,10 @@ _BILLING_LAMP_COLORS = {
 _BILLING_ROUTE_LAMP_COLOR_ON = (220, 0, 0, 255)    # 赤: 課金中
 _BILLING_ROUTE_LAMP_COLOR_OFF = (0, 200, 0, 255)   # 緑: 課金なし
 
+_BILLING_ROUTE_LAMP_COLOR_RED    = (220, 0, 0, 255)    # 赤: 送信中（audio_gate=True）
+_BILLING_ROUTE_LAMP_COLOR_YELLOW = (255, 200, 0, 255)  # 黄: 接続中待機（STARTING/RUNNING + gate=False）
+_BILLING_ROUTE_LAMP_COLOR_GREEN  = (0, 200, 0, 255)    # 緑: 停止（IDLE 等）
+
 
 def _update_billing_lamp() -> None:
     """課金ランプを現在の状態に更新する。dpg は GUI スレッド前提。"""
@@ -2582,21 +2605,25 @@ def _update_billing_lamp() -> None:
         _gui_set_value(TAG_BILLING_LAMP, label)
         dpg.configure_item(TAG_BILLING_LAMP, color=color)
 
-    # 系統A 個別ランプ
+    # 系統A 個別ランプ（3 色: audio_gate ベース）
     if dpg.does_item_exist(TAG_BILLING_LAMP_A):
-        a_on = _get_route_billing_active("a")
-        dpg.configure_item(
-            TAG_BILLING_LAMP_A,
-            color=_BILLING_ROUTE_LAMP_COLOR_ON if a_on else _BILLING_ROUTE_LAMP_COLOR_OFF,
-        )
+        _BILLING_ROUTE_3COLOR = {
+            "red":    _BILLING_ROUTE_LAMP_COLOR_RED,
+            "yellow": _BILLING_ROUTE_LAMP_COLOR_YELLOW,
+            "green":  _BILLING_ROUTE_LAMP_COLOR_GREEN,
+        }
+        a_color = _BILLING_ROUTE_3COLOR[_get_route_billing_color("a")]
+        dpg.configure_item(TAG_BILLING_LAMP_A, color=a_color)
 
-    # 系統B 個別ランプ
+    # 系統B 個別ランプ（3 色: audio_gate ベース）
     if dpg.does_item_exist(TAG_BILLING_LAMP_B):
-        b_on = _get_route_billing_active("b")
-        dpg.configure_item(
-            TAG_BILLING_LAMP_B,
-            color=_BILLING_ROUTE_LAMP_COLOR_ON if b_on else _BILLING_ROUTE_LAMP_COLOR_OFF,
-        )
+        _BILLING_ROUTE_3COLOR = {
+            "red":    _BILLING_ROUTE_LAMP_COLOR_RED,
+            "yellow": _BILLING_ROUTE_LAMP_COLOR_YELLOW,
+            "green":  _BILLING_ROUTE_LAMP_COLOR_GREEN,
+        }
+        b_color = _BILLING_ROUTE_3COLOR[_get_route_billing_color("b")]
+        dpg.configure_item(TAG_BILLING_LAMP_B, color=b_color)
 
 
 def _classify_preload_cache(cached_system, cached_key, requested_key) -> tuple[str, object | None]:
@@ -2806,11 +2833,13 @@ def _drain_queue():
             _is_running = item["value"]
             if _is_running:
                 _end_loading()
-                dpg.configure_item(TAG_START_BTN, label="停止")
+                if dpg.does_item_exist(TAG_START_BTN):
+                    dpg.configure_item(TAG_START_BTN, label="停止")
                 dpg.set_value(TAG_STATUS_STATE, "● 録音中")
             else:
                 _end_loading()
-                dpg.configure_item(TAG_START_BTN, label="開始")
+                if dpg.does_item_exist(TAG_START_BTN):
+                    dpg.configure_item(TAG_START_BTN, label="開始")
                 dpg.set_value(TAG_STATUS_STATE, "■ 待機中")
 
         elif cmd == "stop_system":
@@ -2969,7 +2998,8 @@ def _proceed_start(device_info: dict, model_name: str, selected_trans: str):
     _system.manual_gain = gain_value
     _system.verbose = _verbose_state
 
-    dpg.configure_item(TAG_START_BTN, label="停止")
+    if dpg.does_item_exist(TAG_START_BTN):
+        dpg.configure_item(TAG_START_BTN, label="停止")
     if loading:
         if selected_trans == "openai-realtime":
             _enqueue("set_status", text="▸ OpenAI Realtime 接続中...")
@@ -3028,7 +3058,8 @@ def _do_start(device_index: int | None = None, model: str | None = None):
             if dpg.does_item_exist("realtime_cost_modal"):
                 dpg.delete_item("realtime_cost_modal")
             _enqueue("set_status", text="■ 待機中")
-            dpg.configure_item(TAG_START_BTN, label="開始")
+            if dpg.does_item_exist(TAG_START_BTN):
+                dpg.configure_item(TAG_START_BTN, label="開始")
 
         with dpg.window(
             label="コスト確認",
@@ -3060,7 +3091,8 @@ def _do_stop():
         _system.shutdown()
         _system = None
     _is_running = False
-    dpg.configure_item(TAG_START_BTN, label="開始")
+    if dpg.does_item_exist(TAG_START_BTN):
+        dpg.configure_item(TAG_START_BTN, label="開始")
     dpg.set_value(TAG_STATUS_STATE, "■ 待機中")
     # プリロード機能は一時無効化（調査中）
     # threading.Thread(target=_trigger_preload, daemon=True).start()
@@ -3102,6 +3134,20 @@ def _make_flask_app() -> _Flask:
 
     # ── GET エンドポイント ──────────────────────────────────────────────────
 
+    def _get_route_peak(route_id: str) -> int:
+        """route_a / route_b の audio_peak を返す。system が None なら 0 を返す。
+
+        _konnyaku_system または route_X_system が None の場合は 0 を返すことで
+        /api/status が 500 エラーを返すのを防ぐ（api-status-add-peak-level）。
+        """
+        system = _konnyaku_system
+        if system is None:
+            return 0
+        route = system.route_a_system if route_id == "a" else system.route_b_system
+        if route is None:
+            return 0
+        return getattr(route, "audio_peak", 0)
+
     @flask_app.route("/api/status")
     def api_status():
         _log_rpc("GET /api/status")
@@ -3129,6 +3175,10 @@ def _make_flask_app() -> _Flask:
                 if _konnyaku_system is not None and _konnyaku_system.route_b_system is not None
                 else None
             ),
+            "route_a_peak_level": _get_route_peak("a"),
+            "route_a_peak_pct": _get_route_peak("a") * 100 // 32767,
+            "route_b_peak_level": _get_route_peak("b"),
+            "route_b_peak_pct": _get_route_peak("b") * 100 // 32767,
         })
 
     @flask_app.route("/api/log")
@@ -3604,19 +3654,10 @@ def _build_gui():
 
             # --- PTT 設定グループ（issue #82 / ptt-mode-design.md F-5） ---
             _ptt_saved_settings = _load_ptt_settings(saved)
-            _ptt_default_enabled = _ptt_saved_settings["ptt_enabled"]
             _ptt_default_hotkey = _ptt_saved_settings["ptt_hotkey"]
 
             with dpg.group(tag=TAG_PTT_SECTION, horizontal=False):
                 dpg.add_text("PTT (Push-to-Talk) 設定  系統2を F8 押下中のみ稼働させてコストを削減")
-                with dpg.group(horizontal=True):
-                    dpg.add_checkbox(
-                        tag=TAG_PTT_ENABLED,
-                        label="PTT モード有効",
-                        default_value=_ptt_default_enabled,
-                        callback=lambda s, a, u: _on_ptt_enabled_change(enabled=bool(a)),
-                    )
-                    dpg.add_text("  ※ ON にするとキー押下中のみ系統2が起動します")
                 with dpg.group(horizontal=True):
                     dpg.add_text("ホットキー:")
                     dpg.add_input_text(
@@ -3634,7 +3675,7 @@ def _build_gui():
             # --- W-COST-4: アイドル切断設定（全系統共通）（issue #81）---
             _idle_disconnect_enabled_saved = bool(saved.get("idle_disconnect_enabled", False))
             _idle_timeout_sec_saved = int(saved.get("idle_timeout_sec", 300))
-            _idle_audio_threshold_saved = int(saved.get("idle_audio_threshold", 200))  # TBD-4-2: 100→200
+            _idle_audio_threshold_saved = int(saved.get("idle_audio_threshold", 100))  # TBD-4 確定
             dpg.add_text("アイドル切断設定（全系統共通）:", color=(200, 200, 255))
             with dpg.group(horizontal=True):
                 dpg.add_text("自動切断:")
@@ -3685,17 +3726,6 @@ def _build_gui():
                     width=130,
                     callback=_on_konnyaku_start_stop_click,
                     enabled=bool(trans_models),
-                )
-                dpg.add_text("  系統一括:")
-                dpg.add_button(
-                    label="両方 ON",
-                    width=90,
-                    callback=_on_both_routes_on,
-                )
-                dpg.add_button(
-                    label="両方 OFF",
-                    width=90,
-                    callback=_on_both_routes_off,
                 )
 
             dpg.add_separator()
@@ -3872,11 +3902,9 @@ def _build_gui():
                             default_value=bool(route_b_saved.get("enabled", True)),
                             callback=_on_route_b_enable_change,
                         )
-                        # PTT モード時はラベルを動的に切替（F-5.3 / F-6）
+                        # PTT 常時 ON: ラベルは PTT 前提で固定（F-5.3 / F-6）
                         _route_b_initial_label = (
                             f"【系統2 (PTT: {_ptt_hotkey} 押下中)】自分→相手（同時通訳）  I speak, they hear"
-                            if _ptt_enabled
-                            else "【系統2】自分→相手（同時通訳）  I speak, they hear"
                         )
                         dpg.add_text(
                             _route_b_initial_label,
@@ -3886,7 +3914,7 @@ def _build_gui():
                         dpg.add_text(
                             "",
                             tag=TAG_PTT_STATUS_LABEL,
-                            show=_ptt_enabled,
+                            show=True,  # PTT 常時 ON のため常時 show
                         )
                     with dpg.group(horizontal=True):
                         dpg.add_text("入力デバイス:")
@@ -4078,15 +4106,8 @@ def _update_konnyaku_level_meters():
         bool(dpg.get_value(TAG_ROUTE_A_ENABLE))
         if dpg.does_item_exist(TAG_ROUTE_A_ENABLE) else True
     )
-    # PTT モード ON 時は RouteState.RUNNING で判定する（F-7.1）
-    # PTT モード OFF 時は従来通りチェックボックスの値で判定する
-    if _ptt_enabled:
-        route_b_enabled = _is_route_b_active_for_meter(ptt_enabled=True)
-    else:
-        route_b_enabled = (
-            bool(dpg.get_value(TAG_ROUTE_B_ENABLE))
-            if dpg.does_item_exist(TAG_ROUTE_B_ENABLE) else True
-        )
+    # PTT 常時 ON: RouteState.RUNNING で判定する（F-7.1 / Q-SEM-4）
+    route_b_enabled = _is_route_b_active_for_meter()
 
     # 経路A 入力レベル（route_a が None または Enable=OFF なら 0）
     if route_a is not None and route_a_enabled:
@@ -4259,7 +4280,6 @@ def main():
     # PTT マネージャー初期化（_konnyaku_system 生成後に行う）
     with _startup_step("PTT マネージャー初期化"):
         _init_ptt_manager(
-            ptt_enabled=_ptt_saved["ptt_enabled"],
             ptt_hotkey=_ptt_saved["ptt_hotkey"],
         )
 
