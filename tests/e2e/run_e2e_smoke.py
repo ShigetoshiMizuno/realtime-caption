@@ -56,6 +56,17 @@ except ImportError:
 
 from helpers import RpcClient  # tests/e2e/helpers.py
 
+# 完全自動化モジュール（env_check/audio_router/hotkey_simulator）
+# 実行時にインポートエラーになっても smoke テスト全体は継続する
+try:
+    from env_check import run_all_checks as _run_env_checks
+    from audio_router import AudioRouter
+    import hotkey_simulator
+    _FULL_AUTO_AVAILABLE = True
+except ImportError as _e:
+    print(f"[WARN] 完全自動化モジュールのインポート失敗: {_e}")
+    _FULL_AUTO_AVAILABLE = False
+
 # ---------------------------------------------------------------------------
 # 定数
 # ---------------------------------------------------------------------------
@@ -648,6 +659,175 @@ class E2eSmokeRunner:
         )
 
     # ------------------------------------------------------------------
+    # シナリオ S_MIC_F8: マイク（CABLE Output）+ F8 長押し → バグ#8 再現
+    # ------------------------------------------------------------------
+
+    def _scenario_s_mic_f8(self) -> ScenarioResult:
+        """S_MIC_F8: マイク（CABLE Output）+ F8 長押し → バグ#8 再現シナリオ。
+
+        検証項目:
+        - F8 押下後: route_b_state = RUNNING
+        - CABLE Input への TTS 再生中: peak_level > 1000 を維持（バグ#8 なら 0 になる）
+        - F8 離脱: 正常終了
+        """
+        from audio_router import AudioRouter
+        import hotkey_simulator
+
+        print("\n[SCENARIO S_MIC_F8] マイク+F8 バグ#8 再現シナリオを開始...")
+        fails: list[str] = []
+
+        try:
+            self._start_app()
+            self._client.wait_ready(max_wait=APP_START_WAIT_SEC)
+
+            # CABLE Output (VB-Audio Virtual Cable) をデバイスに設定
+            self._client.set_value("route_b_device", "CABLE Output (VB-Audio Virtual Cable)")
+            self._client.set_value("route_a_enable", False)
+            self._client.set_value("route_b_enable", True)
+            time.sleep(0.5)
+
+            # 開始ボタン押下
+            self._client.click("start_btn")
+            time.sleep(2.0)
+
+            # F8 押下（PTT 開始）
+            print("[S_MIC_F8] F8 press...")
+            hotkey_simulator.press_hotkey("f8")
+            time.sleep(0.5)
+
+            # CABLE Input に 10 秒の日本語 TTS を流す
+            print("[S_MIC_F8] TTS 再生中 (Japanese, CABLE Input 経由)...")
+            with AudioRouter() as router:
+                router.speak(
+                    "これはバグ8の再現テストです。マイク入力が継続されているか確認します。",
+                    lang="ja",
+                    volume=60,
+                )
+            time.sleep(1.0)
+
+            # peak_level を確認（バグ#8 なら 0 になる）
+            status = self._client.get_status()
+            peak = status.get("route_b_peak_level", 0)
+            if peak <= 1000:
+                fails.append(
+                    f"peak_level={peak} <= 1000 (バグ#8 疑い: 音声が途中で停止した可能性)"
+                )
+
+            # F8 離脱（PTT 終了）
+            print("[S_MIC_F8] F8 release...")
+            hotkey_simulator.release_hotkey("f8")
+
+        except Exception as exc:
+            fails.append(f"例外発生: {exc}")
+        finally:
+            # F8 を確実に離脱（念のため）
+            try:
+                hotkey_simulator.release_hotkey("f8")
+            except Exception:
+                pass
+            # 課金リスク管理: 必ずアプリを停止
+            try:
+                self._client.click("start_btn")
+                time.sleep(1.0)
+            except Exception:
+                pass
+            self._stop_app()
+            time.sleep(SCENARIO_COOLDOWN_SEC)
+
+        if fails:
+            return ScenarioResult("S_MIC_F8 bug8_repro", False, "; ".join(fails))
+        return ScenarioResult(
+            "S_MIC_F8 bug8_repro", True,
+            f"F8 press/release + TTS + peak_level > 1000"
+        )
+
+    # ------------------------------------------------------------------
+    # シナリオ S_LATCH_TOGGLE: ラッチ ON/OFF 繰り返しでの挙動確認
+    # ------------------------------------------------------------------
+
+    def _scenario_s_latch_toggle(self) -> ScenarioResult:
+        """S_LATCH_TOGGLE: ラッチ ON/OFF 繰り返しでの route_b 挙動確認シナリオ。
+
+        検証項目:
+        - ラッチ ON 後: audio_gate = True
+        - ラッチ OFF 後: audio_gate = False
+        - ラッチ再 ON 後: route_b_state = RUNNING（再起動確認）
+        """
+        from audio_router import AudioRouter
+
+        print("\n[SCENARIO S_LATCH_TOGGLE] ラッチ ON/OFF 繰り返しシナリオを開始...")
+        fails: list[str] = []
+
+        try:
+            self._start_app()
+            self._client.wait_ready(max_wait=APP_START_WAIT_SEC)
+
+            # 系統1 OFF / 系統2 ON
+            self._client.set_value("route_a_enable", False)
+            self._client.set_value("route_b_enable", True)
+            time.sleep(0.5)
+
+            # 開始ボタン押下
+            self._client.click("start_btn")
+            time.sleep(2.0)
+
+            # ラッチ ON → gate=True 確認
+            print("[S_LATCH_TOGGLE] ラッチ ON...")
+            self._client.set_value("ptt_latch_check", True)
+            time.sleep(0.5)
+
+            gate_true_ok = self._client.poll_until(
+                lambda: self._client.get_status().get("route_b_audio_gate") is True,
+                max_wait=5.0,
+            )
+            if not gate_true_ok:
+                fails.append("ラッチ ON 後: audio_gate が True にならなかった")
+
+            # ラッチ OFF → route_b stop 確認
+            print("[S_LATCH_TOGGLE] ラッチ OFF...")
+            self._client.set_value("ptt_latch_check", False)
+            time.sleep(0.5)
+
+            gate_false_ok = self._client.poll_until(
+                lambda: self._client.get_status().get("route_b_audio_gate") is False,
+                max_wait=5.0,
+            )
+            if not gate_false_ok:
+                fails.append("ラッチ OFF 後: audio_gate が False にならなかった")
+
+            # ラッチ再 ON → route_b 再起動確認
+            print("[S_LATCH_TOGGLE] ラッチ ON（再）...")
+            self._client.set_value("ptt_latch_check", True)
+            time.sleep(0.5)
+
+            restart_ok = self._client.poll_until(
+                lambda: _assert_route_b_state(self._client, "RUNNING"),
+                max_wait=5.0,
+            )
+            if not restart_ok:
+                fails.append("ラッチ再 ON 後: route_b_state が RUNNING にならなかった")
+
+        except Exception as exc:
+            fails.append(f"例外発生: {exc}")
+        finally:
+            # 課金リスク管理
+            try:
+                self._client.set_value("ptt_latch_check", False)
+                self._client.click("start_btn")
+                time.sleep(1.0)
+            except Exception:
+                pass
+            self._stop_app()
+            time.sleep(SCENARIO_COOLDOWN_SEC)
+
+        if fails:
+            return ScenarioResult("S_LATCH_TOGGLE", False, "; ".join(fails))
+        return ScenarioResult(
+            "S_LATCH_TOGGLE", True,
+            "latch ON: gate=True, OFF: gate=False, ON再: RUNNING"
+        )
+
+    # ------------------------------------------------------------------
     # 全シナリオ実行
     # ------------------------------------------------------------------
 
@@ -665,6 +845,8 @@ class E2eSmokeRunner:
             ("S1 route_a_solo_eng2jp", self._scenario_s1_route_a_solo, False),
             ("S4-S5 ptt_press_release", self._scenario_s4_s5_ptt, False),
             ("S6 latch_on_off", self._scenario_s6_latch, self._skip_s6),
+            ("S_MIC_F8 bug8_repro", self._scenario_s_mic_f8, False),
+            ("S_LATCH_TOGGLE", self._scenario_s_latch_toggle, False),
         ]
 
         # --dry-run: シナリオ一覧を表示してクリーンアップ確認のみ

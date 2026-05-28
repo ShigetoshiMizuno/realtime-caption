@@ -35,7 +35,11 @@ def check_admin_privileges() -> bool:
     Returns:
         bool: 管理者権限あり → True、なし → False。
     """
-    raise NotImplementedError("TODO: prg-impl が実装する")
+    try:
+        import ctypes
+        return ctypes.windll.shell32.IsUserAnAdmin() != 0
+    except Exception:
+        return False
 
 
 def press_hotkey(key: str = "f8") -> None:
@@ -47,7 +51,12 @@ def press_hotkey(key: str = "f8") -> None:
     Raises:
         RuntimeError: keyboard パッケージが未インストールの場合。
     """
-    raise NotImplementedError("TODO: prg-impl が実装する")
+    if not _KEYBOARD_AVAILABLE or _keyboard is None:
+        raise RuntimeError(
+            "keyboard パッケージが未インストールです。"
+            "pip install keyboard を実行してください。"
+        )
+    _keyboard.press(key)
 
 
 def release_hotkey(key: str = "f8") -> None:
@@ -59,7 +68,12 @@ def release_hotkey(key: str = "f8") -> None:
     Raises:
         RuntimeError: keyboard パッケージが未インストールの場合。
     """
-    raise NotImplementedError("TODO: prg-impl が実装する")
+    if not _KEYBOARD_AVAILABLE or _keyboard is None:
+        raise RuntimeError(
+            "keyboard パッケージが未インストールです。"
+            "pip install keyboard を実行してください。"
+        )
+    _keyboard.release(key)
 
 
 def press_and_hold(key: str = "f8", duration: float = 5.0) -> None:
@@ -72,4 +86,11 @@ def press_and_hold(key: str = "f8", duration: float = 5.0) -> None:
     Raises:
         RuntimeError: keyboard パッケージが未インストールの場合。
     """
-    raise NotImplementedError("TODO: prg-impl が実装する")
+    if not _KEYBOARD_AVAILABLE or _keyboard is None:
+        raise RuntimeError(
+            "keyboard パッケージが未インストールです。"
+            "pip install keyboard を実行してください。"
+        )
+    _keyboard.press(key)
+    time.sleep(duration)
+    _keyboard.release(key)

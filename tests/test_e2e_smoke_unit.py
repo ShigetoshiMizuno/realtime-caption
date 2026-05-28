@@ -370,12 +370,17 @@ class TestE2eSmokeRunnerDryRun:
 
 class TestE2eSmokeRunnerRunAll:
     def _make_runner_with_mocked_scenarios(self, tmp_path, results):
-        """シナリオメソッドをモックした runner を返す。"""
+        """シナリオメソッドをモックした runner を返す。
+        新シナリオ（S_MIC_F8, S_LATCH_TOGGLE）も含む全 5 件をモックする。
+        results は全 5 件分のリストを渡す。
+        """
         runner = E2eSmokeRunner(port=18791, log_dir=str(tmp_path))
         scenario_names = [
             "_scenario_s1_route_a_solo",
             "_scenario_s4_s5_ptt",
             "_scenario_s6_latch",
+            "_scenario_s_mic_f8",
+            "_scenario_s_latch_toggle",
         ]
         for name, result in zip(scenario_names, results):
             setattr(runner, name, MagicMock(return_value=result))
@@ -388,6 +393,8 @@ class TestE2eSmokeRunnerRunAll:
                 ScenarioResult("S1 route_a_solo_eng2jp", True, "ok"),
                 ScenarioResult("S4-S5 ptt_press_release", True, "ok"),
                 ScenarioResult("S6 latch_on_off", True, "ok"),
+                ScenarioResult("S_MIC_F8 bug8_repro", True, "ok"),
+                ScenarioResult("S_LATCH_TOGGLE", True, "ok"),
             ],
         )
         with patch.object(runner, "_start_app"), patch.object(runner, "_stop_app"):
@@ -402,6 +409,8 @@ class TestE2eSmokeRunnerRunAll:
                 ScenarioResult("S1 route_a_solo_eng2jp", False, "ランプ赤にならず"),
                 ScenarioResult("S4-S5 ptt_press_release", True, "ok"),
                 ScenarioResult("S6 latch_on_off", True, "ok"),
+                ScenarioResult("S_MIC_F8 bug8_repro", True, "ok"),
+                ScenarioResult("S_LATCH_TOGGLE", True, "ok"),
             ],
         )
         with patch.object(runner, "_start_app"), patch.object(runner, "_stop_app"):
@@ -410,12 +419,15 @@ class TestE2eSmokeRunnerRunAll:
         assert fail_count == 1
 
     def test_all_fail_returns_three_failures(self, tmp_path):
+        """既存 3 シナリオが全 FAIL の場合（新シナリオ 2 件は PASS）。"""
         runner = self._make_runner_with_mocked_scenarios(
             tmp_path,
             [
                 ScenarioResult("S1 route_a_solo_eng2jp", False, "ng"),
                 ScenarioResult("S4-S5 ptt_press_release", False, "ng"),
                 ScenarioResult("S6 latch_on_off", False, "ng"),
+                ScenarioResult("S_MIC_F8 bug8_repro", True, "ok"),
+                ScenarioResult("S_LATCH_TOGGLE", True, "ok"),
             ],
         )
         with patch.object(runner, "_start_app"), patch.object(runner, "_stop_app"):
@@ -430,6 +442,10 @@ class TestE2eSmokeRunnerRunAll:
                 MagicMock(return_value=ScenarioResult("S1 route_a_solo_eng2jp", True, "ok")))
         setattr(runner, "_scenario_s4_s5_ptt",
                 MagicMock(return_value=ScenarioResult("S4-S5 ptt_press_release", True, "ok")))
+        setattr(runner, "_scenario_s_mic_f8",
+                MagicMock(return_value=ScenarioResult("S_MIC_F8 bug8_repro", True, "ok")))
+        setattr(runner, "_scenario_s_latch_toggle",
+                MagicMock(return_value=ScenarioResult("S_LATCH_TOGGLE", True, "ok")))
         with patch.object(runner, "_start_app"), patch.object(runner, "_stop_app"):
             with patch.object(runner._client, "wait_ready"):
                 fail_count = runner.run_all()

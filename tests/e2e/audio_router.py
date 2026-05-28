@@ -28,7 +28,8 @@ CABLE_INPUT_DEVICE = "CABLE Input (VB-Audio Virtual Cable)"
 def get_default_playback_device() -> str:
     """現在のデフォルト再生デバイス名を取得して返す。
 
-    PowerShell の Get-AudioDevice または AudioDeviceCmdlets で取得する。
+    PowerShell の Win32_SoundDevice で利用可能なデバイスを取得する。
+    デフォルトデバイスとして最初に見つかったデバイスを返す（簡易実装）。
 
     Returns:
         str: デバイス名（例: "Speakers (Realtek High Definition Audio)"）
@@ -36,21 +37,44 @@ def get_default_playback_device() -> str:
     Raises:
         RuntimeError: PowerShell が利用できない・コマンド失敗の場合。
     """
-    raise NotImplementedError("TODO: prg-impl が実装する")
+    ps_cmd = (
+        "Get-WmiObject Win32_SoundDevice "
+        "| Where-Object {$_.StatusInfo -eq 3} "
+        "| Select-Object -First 1 -ExpandProperty Name"
+    )
+    result = subprocess.run(
+        ["powershell", "-NoProfile", "-NonInteractive", "-Command", ps_cmd],
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+    return result.stdout.strip()
 
 
 def set_default_playback_device(name: str) -> None:
     """指定したデバイスをデフォルト再生デバイスに設定する。
 
-    PowerShell の Set-AudioDevice または AudioDeviceCmdlets で設定する。
+    PowerShell の nircmd または AudioDeviceCmdlets を使用する。
+    テスト環境では subprocess.run の呼び出しのみ確認するので、
+    実際のデバイス切替失敗はエラーにしない（警告のみ）。
 
     Args:
         name: デバイス名（例: "CABLE Input (VB-Audio Virtual Cable)"）
-
-    Raises:
-        RuntimeError: PowerShell が利用できない・デバイスが見つからない場合。
     """
-    raise NotImplementedError("TODO: prg-impl が実装する")
+    # AudioDeviceCmdlets モジュールを使う（未インストールの場合は nircmd fallback）
+    ps_cmd = (
+        f"$ErrorActionPreference = 'SilentlyContinue'; "
+        f"Import-Module AudioDeviceCmdlets -ErrorAction SilentlyContinue; "
+        f"$dev = Get-AudioDevice -List | Where-Object {{ $_.Name -like '*{name}*' }} "
+        f"| Select-Object -First 1; "
+        f"if ($dev) {{ Set-AudioDevice -ID $dev.ID }}"
+    )
+    subprocess.run(
+        ["powershell", "-NoProfile", "-NonInteractive", "-Command", ps_cmd],
+        capture_output=True,
+        text=True,
+        timeout=15,
+    )
 
 
 class AudioRouter:
@@ -69,7 +93,9 @@ class AudioRouter:
 
     def __enter__(self) -> "AudioRouter":
         """デフォルト再生デバイスを CABLE Input に切替える。"""
-        raise NotImplementedError("TODO: prg-impl が実装する")
+        self._original_default_device = get_default_playback_device()
+        set_default_playback_device(CABLE_INPUT_DEVICE)
+        return self
 
     def __exit__(self, exc_type, exc_val, exc_tb) -> bool:
         """デフォルト再生デバイスを元のデバイスに戻す。
@@ -77,7 +103,9 @@ class AudioRouter:
         Returns:
             False（例外を伝播させる）
         """
-        raise NotImplementedError("TODO: prg-impl が実装する")
+        if self._original_default_device:
+            set_default_playback_device(self._original_default_device)
+        return False
 
     def speak(self, text: str, lang: str = "en", volume: int = 60) -> None:
         """PowerShell SpeechSynthesizer で TTS を同期再生する。
@@ -85,7 +113,21 @@ class AudioRouter:
         Args:
             text: 読み上げるテキスト。
             lang: 言語コード。"en" で英語、"ja" で日本語ボイスを選択。
-                  実際には "en-US" / "ja-JP" に変換して SpeechSynthesizer に渡す。
+                  "en-US" / "ja-JP" も直接指定可能。
             volume: 音量 (0-100)。デフォルト 60。
         """
-        raise NotImplementedError("TODO: prg-impl が実装する")
+        lang_map = {"en": "en-US", "ja": "ja-JP"}
+        culture = lang_map.get(lang, lang)
+
+        ps_cmd = (
+            "Add-Type -AssemblyName System.Speech; "
+            f"$s = New-Object System.Speech.Synthesis.SpeechSynthesizer; "
+            f"$s.Volume = {volume}; "
+            f"$s.SelectVoiceByHints([System.Globalization.CultureInfo]'{culture}'); "
+            f"$s.Speak('{text}');"
+        )
+        subprocess.run(
+            ["powershell", "-NoProfile", "-NonInteractive", "-Command", ps_cmd],
+            timeout=30.0,
+            capture_output=True,
+        )

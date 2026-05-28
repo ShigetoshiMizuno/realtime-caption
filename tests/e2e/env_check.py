@@ -28,7 +28,28 @@ def check_vbcable_devices() -> None:
         RuntimeError: いずれかのデバイスが見つからない場合。
                       メッセージに不足デバイス名を含む。
     """
-    raise NotImplementedError("TODO: prg-impl が実装する")
+    ps_cmd = "Get-WmiObject Win32_SoundDevice | Select-Object -ExpandProperty Name"
+    result = subprocess.run(
+        ["powershell", "-NoProfile", "-NonInteractive", "-Command", ps_cmd],
+        capture_output=True,
+        text=True,
+        timeout=15,
+    )
+    device_list = result.stdout
+
+    cable_input = "CABLE Input (VB-Audio Virtual Cable)"
+    cable_output = "CABLE Output (VB-Audio Virtual Cable)"
+
+    if cable_input not in device_list:
+        raise RuntimeError(
+            f"VB-CABLE デバイスが見つかりません: {cable_input}\n"
+            "VB-CABLE をインストールしてください: https://vb-audio.com/Cable/"
+        )
+    if cable_output not in device_list:
+        raise RuntimeError(
+            f"VB-CABLE デバイスが見つかりません: {cable_output}\n"
+            "VB-CABLE をインストールしてください: https://vb-audio.com/Cable/"
+        )
 
 
 def check_powershell() -> None:
@@ -37,7 +58,17 @@ def check_powershell() -> None:
     Raises:
         RuntimeError: powershell コマンドが見つからない場合。
     """
-    raise NotImplementedError("TODO: prg-impl が実装する")
+    try:
+        subprocess.run(
+            ["powershell", "-Command", "$PSVersionTable.PSVersion.Major"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    except FileNotFoundError as exc:
+        raise RuntimeError(
+            "PowerShell が見つかりません。PowerShell がインストールされているか確認してください。"
+        ) from exc
 
 
 def check_keyboard_package() -> None:
@@ -46,7 +77,21 @@ def check_keyboard_package() -> None:
     Raises:
         RuntimeError: keyboard パッケージが import できない場合。
     """
-    raise NotImplementedError("TODO: prg-impl が実装する")
+    # patch.dict("sys.modules", {"keyboard": None}) によるテスト用モック対応
+    keyboard_mod = sys.modules.get("keyboard", "NOT_CHECKED")
+    if keyboard_mod is None:
+        raise RuntimeError(
+            "keyboard パッケージが未インストールです。"
+            "pip install keyboard を実行してください。"
+        )
+    if keyboard_mod == "NOT_CHECKED":
+        try:
+            import keyboard  # noqa: F401
+        except ImportError as exc:
+            raise RuntimeError(
+                "keyboard パッケージが未インストールです。"
+                "pip install keyboard を実行してください。"
+            ) from exc
 
 
 def run_all_checks() -> None:
@@ -57,7 +102,17 @@ def run_all_checks() -> None:
 
     全チェック通過時は正常返却（exit なし）。
     """
-    raise NotImplementedError("TODO: prg-impl が実装する")
+    checks = [
+        ("VB-CABLE デバイス", check_vbcable_devices),
+        ("PowerShell", check_powershell),
+        ("keyboard パッケージ", check_keyboard_package),
+    ]
+    for name, check_fn in checks:
+        try:
+            check_fn()
+        except RuntimeError as exc:
+            print(f"[ENV CHECK ERROR] {name}: {exc}")
+            sys.exit(2)
 
 
 if __name__ == "__main__":
